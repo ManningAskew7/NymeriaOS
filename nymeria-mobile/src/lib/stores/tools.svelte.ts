@@ -7,6 +7,7 @@
 
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
+import { registerIdentityReloadHook } from './config.svelte';
 import type {
   CustomTool,
   CustomToolCreateRequest,
@@ -21,6 +22,24 @@ function createToolsStore() {
   let loaded = $state(false);
   let error = $state<string | null>(null);
   let selectedToolId = $state<string | null>(null);
+  // Bumped by the reload hook: a response from the previous backend lands nowhere.
+  let identityGeneration = 0;
+
+  // Custom tools are per backend: drop them on every connection switch so
+  // the panel reloads instead of listing (and editing) the previous
+  // backend's definitions (#242).
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    tools = [];
+    loading = false;
+    loaded = false;
+    error = null;
+    selectedToolId = null;
+  });
+
+  function current(generation: number): boolean {
+    return generation === identityGeneration;
+  }
 
   // Getters
   function getTools(): CustomTool[] {
@@ -79,18 +98,23 @@ function createToolsStore() {
       return;
     }
 
+    const generation = identityGeneration;
     loading = true;
     error = null;
 
     try {
       const response = await api.getCustomTools();
+      if (!current(generation)) return;
       tools = response.tools;
     } catch (e) {
+      if (!current(generation)) return;
       error = humanizeErrorText(e, { action: 'load', resource: 'your custom tools' });
       console.error('Failed to load custom tools:', e);
     } finally {
-      loading = false;
-      loaded = true;
+      if (current(generation)) {
+        loading = false;
+        loaded = true;
+      }
     }
   }
 
@@ -99,19 +123,22 @@ function createToolsStore() {
   }
 
   async function createTool(request: CustomToolCreateRequest): Promise<CustomTool | null> {
+    const generation = identityGeneration;
     loading = true;
     error = null;
 
     try {
       const newTool = await api.createCustomTool(request);
+      if (!current(generation)) return null;
       tools = [...tools, newTool];
       return newTool;
     } catch (e) {
+      if (!current(generation)) return null;
       error = humanizeErrorText(e, { action: 'create', resource: 'the tool' });
       console.error('Failed to create custom tool:', e);
       return null;
     } finally {
-      loading = false;
+      if (current(generation)) loading = false;
     }
   }
 
@@ -119,28 +146,33 @@ function createToolsStore() {
     toolId: string,
     request: CustomToolUpdateRequest
   ): Promise<CustomTool | null> {
+    const generation = identityGeneration;
     loading = true;
     error = null;
 
     try {
       const updatedTool = await api.updateCustomTool(toolId, request);
+      if (!current(generation)) return null;
       tools = tools.map((t) => (t.id === toolId ? updatedTool : t));
       return updatedTool;
     } catch (e) {
+      if (!current(generation)) return null;
       error = humanizeErrorText(e, { action: 'update', resource: 'the tool' });
       console.error('Failed to update custom tool:', e);
       return null;
     } finally {
-      loading = false;
+      if (current(generation)) loading = false;
     }
   }
 
   async function deleteTool(toolId: string): Promise<boolean> {
+    const generation = identityGeneration;
     loading = true;
     error = null;
 
     try {
       await api.deleteCustomTool(toolId);
+      if (!current(generation)) return false;
       tools = tools.filter((t) => t.id !== toolId);
 
       if (selectedToolId === toolId) {
@@ -149,11 +181,12 @@ function createToolsStore() {
 
       return true;
     } catch (e) {
+      if (!current(generation)) return false;
       error = humanizeErrorText(e, { action: 'delete', resource: 'the tool' });
       console.error('Failed to delete custom tool:', e);
       return false;
     } finally {
-      loading = false;
+      if (current(generation)) loading = false;
     }
   }
 
@@ -161,18 +194,20 @@ function createToolsStore() {
     toolId: string,
     params: Record<string, unknown>
   ): Promise<CustomToolTestResponse | null> {
+    const generation = identityGeneration;
     loading = true;
     error = null;
 
     try {
       const result = await api.testCustomTool(toolId, params);
-      return result;
+      return current(generation) ? result : null;
     } catch (e) {
+      if (!current(generation)) return null;
       error = humanizeErrorText(e, { action: 'test', resource: 'the tool' });
       console.error('Failed to test custom tool:', e);
       return null;
     } finally {
-      loading = false;
+      if (current(generation)) loading = false;
     }
   }
 

@@ -20,6 +20,7 @@
 
 import { api } from '$lib/services/api.svelte';
 import type { BrowserLoginSessionStatus } from '$lib/services/api/browser-login';
+import { registerIdentityReloadHook } from './config.svelte';
 
 export interface ActiveBrowserLogin {
   session: BrowserLoginSessionStatus;
@@ -40,6 +41,14 @@ interface BrowserLoginState {
 }
 
 const state = $state<BrowserLoginState>({ active: null });
+
+// A login session lives on the backend that started it. On a connection
+// switch the viewer closes instead of streaming from, or forwarding input
+// to, a session id the new backend never issued (#242). The session's TTL
+// on the old backend owns its cleanup.
+registerIdentityReloadHook(() => {
+  state.active = null;
+});
 
 export const browserLoginStore = {
   get active(): ActiveBrowserLogin | null {

@@ -1,16 +1,25 @@
 import type { AccountIdentity, AppConfig, ThemeName } from '$lib/types';
 import { applyTheme } from '$lib/themes';
+import {
+  carryForwardScopedKey,
+  identityScope,
+  normalizeBackendUrl,
+  sameIdentityScope,
+  scopedStorageKey,
+  type IdentityScope
+} from '$lib/utils/identityScope';
 
 const STORAGE_KEY = 'nymeria-config';
 
 // ---------------------------------------------------------------------------
 // Identity-scoped localStorage helpers
 // ---------------------------------------------------------------------------
-// Mirror of nymeria-desktop/src/lib/stores/config.svelte.ts — keep in sync.
-// User-scoped data lives under `{base_key}-{user_id}` once identity is known,
-// for example `nymeria-threads-{user_id}`. Before /me returns, legacy keys are
-// used so pre-Step-2 installs keep working. First /me success migrates legacy
-// → scoped.
+// Mirror of nymeria-desktop/src/lib/stores/config.svelte.ts; keep in sync.
+// Per-identity data lives under `<base>-<account_id>@<backend_url>` once /me
+// has resolved (`utils/identityScope.ts` owns the format, #242): the scope is
+// the backend PLUS the account, because every backend names its owner
+// `default`. Before /me returns, the unscoped legacy keys are used. The first
+// resolve of a scope carries older-format data into it, once, as a move.
 
 const NON_SCOPED_KEYS = new Set<string>([
   'nymeria-config',
@@ -27,13 +36,30 @@ const SCOPED_KEY_BASES = [
   'nymeria-ui-mobile',
 ];
 
-let currentIdentityId: string | null = null;
+let currentScope: IdentityScope | null = null;
+let reloadGeneration = 0;
 
 export function scopedKey(base: string): string {
-  if (NON_SCOPED_KEYS.has(base) || !currentIdentityId) return base;
-  return `${base}-${currentIdentityId}`;
+  if (NON_SCOPED_KEYS.has(base)) return base;
+  return scopedStorageKey(base, currentScope);
 }
 
+/** The backend + account the scoped stores belong to; null before /me resolves. */
+export function currentIdentityScope(): IdentityScope | null {
+  return currentScope;
+}
+
+/**
+ * Bumped every time the identity reload hooks fire. An async flow that
+ * captured it before an await and finds it changed afterwards must drop its
+ * result: the backend it was talking to is no longer the live one.
+ */
+export function identityReloadGeneration(): number {
+  return reloadGeneration;
+}
+
+// Reload hook registry: the reset contract for backend-scoped client state.
+// Hooks fire on every scope change and on every explicit connection switch.
 type ReloadHook = () => void;
 const reloadHooks: Set<ReloadHook> = new Set();
 
@@ -42,20 +68,10 @@ export function registerIdentityReloadHook(hook: ReloadHook): () => void {
   return () => reloadHooks.delete(hook);
 }
 
-function migrateLegacyKeys(userId: string): void {
+function carryForwardScopedKeys(scope: IdentityScope): void {
   if (typeof localStorage === 'undefined') return;
   for (const base of SCOPED_KEY_BASES) {
-    const legacy = base;
-    const scoped = `${base}-${userId}`;
-    const legacyValue = localStorage.getItem(legacy);
-    if (legacyValue === null) continue;
-    if (localStorage.getItem(scoped) !== null) continue;
-    try {
-      localStorage.setItem(scoped, legacyValue);
-      localStorage.removeItem(legacy);
-    } catch (e) {
-      console.error(`Failed to migrate ${legacy} -> ${scoped}:`, e);
-    }
+    carryForwardScopedKey(localStorage, base, scope);
   }
 }
 
@@ -124,8 +140,11 @@ function createConfigStore() {
   let describeToolCalls = $state(initial.describeToolCalls ?? true);
   let identity = $state<AccountIdentity | null>(initial.identity ?? null);
 
-  if (identity) {
-    currentIdentityId = identity.id;
+  // Seed the scope from the persisted identity before the other stores
+  // construct and read their scoped keys (they import this module).
+  if (identity && apiUrl) {
+    currentScope = identityScope(apiUrl, identity.id);
+    carryForwardScopedKeys(currentScope);
   }
 
   // Apply theme on initial load
@@ -155,11 +174,12 @@ function createConfigStore() {
     showAutonomousPrompts = config.showAutonomousPrompts ?? true;
     describeToolCalls = config.describeToolCalls ?? true;
     identity = config.identity ?? null;
-    currentIdentityId = identity?.id ?? null;
+    currentScope = identity && apiUrl ? identityScope(apiUrl, identity.id) : null;
     applyTheme(theme);
   }
 
   function notifyIdentityReloadHooks(label: string): void {
+    reloadGeneration += 1;
     for (const hook of reloadHooks) {
       try {
         hook();
@@ -173,55 +193,93 @@ function createConfigStore() {
     apiKey = '';
     setupCompleted = false;
     identity = null;
-    currentIdentityId = null;
+    currentScope = null;
     saveCurrentConfig();
     notifyIdentityReloadHooks(label);
   }
 
-  async function refreshIdentity(): Promise<AccountIdentity | null> {
-    if (!apiUrl || !apiKey) return null;
+  /**
+   * Adopt a resolved identity for the backend at `url`. A changed scope
+   * (another backend, or another account) carries older-format keys forward
+   * and fires the reload hooks; `forceReload` fires them on an unchanged
+   * scope too (an explicit connection switch always resets).
+   */
+  function adoptIdentity(data: AccountIdentity, url: string, forceReload: boolean): void {
+    const nextScope = identityScope(url, data.id);
+    const scopeChanged = !sameIdentityScope(currentScope, nextScope);
+    identity = data;
+    currentScope = nextScope;
+    if (scopeChanged) carryForwardScopedKeys(nextScope);
+    if (scopeChanged || forceReload) notifyIdentityReloadHooks('identity');
+    saveCurrentConfig();
+  }
+
+  /**
+   * /me did not resolve. A blip on the connection the scope already belongs
+   * to keeps it; after the backend moved, or on a forced switch, the previous
+   * scope must not stay live: drop it and reset, so the new backend starts
+   * from empty caches instead of showing (and writing back) the old one's.
+   */
+  function settleUnresolvedIdentity(url: string, forceReload: boolean): void {
+    const backendMoved = currentScope !== null && currentScope.backend !== normalizeBackendUrl(url);
+    if (!forceReload && !backendMoved) return;
+    identity = null;
+    currentScope = null;
+    saveCurrentConfig();
+    notifyIdentityReloadHooks('unresolved identity');
+  }
+
+  /**
+   * Fetch GET /me with the live config and update identity state. The reload
+   * hooks fire when the scope (backend + account) changed, or always with
+   * `forceReload` (the connection switch, `backendSwitch.svelte.ts`). A result
+   * for a connection that changed while /me was in flight is dropped.
+   */
+  async function refreshIdentity(
+    options: { forceReload?: boolean } = {}
+  ): Promise<AccountIdentity | null> {
+    const forceReload = options.forceReload === true;
+    const url = apiUrl;
+    const key = apiKey;
+    const connectionMoved = () => apiUrl !== url || apiKey !== key;
+    if (!url || !key) {
+      settleUnresolvedIdentity(url, forceReload);
+      return null;
+    }
     try {
-      const base = apiUrl.replace(/\/$/, '');
+      const base = url.replace(/\/$/, '');
       const response = await fetch(`${base}/me`, {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${key}`,
         },
       });
+      if (connectionMoved()) return null;
       if (!response.ok) {
         if (response.status === 401) {
           // Token no longer valid. Clear the auth session immediately so the
           // root route renders SetupWizard instead of mounting app panels that
           // will all fail with 401s.
           clearAuthSession('refreshIdentity auth failure');
+        } else {
+          settleUnresolvedIdentity(url, forceReload);
         }
         return null;
       }
       const data = (await response.json()) as AccountIdentity;
-      const previousId = currentIdentityId;
-      identity = data;
-      currentIdentityId = data.id;
-      if (previousId !== data.id) {
-        migrateLegacyKeys(data.id);
-        for (const hook of reloadHooks) {
-          try {
-            hook();
-          } catch (e) {
-            console.error('identity reload hook failed:', e);
-          }
-        }
-      }
-      saveCurrentConfig();
+      if (connectionMoved()) return null;
+      adoptIdentity(data, url, forceReload);
       return data;
     } catch (e) {
       console.error('refreshIdentity failed:', e);
+      if (!connectionMoved()) settleUnresolvedIdentity(url, forceReload);
       return null;
     }
   }
 
   function clearIdentity() {
     identity = null;
-    currentIdentityId = null;
+    currentScope = null;
     saveCurrentConfig();
   }
 
@@ -231,8 +289,8 @@ function createConfigStore() {
    */
   function reloadFromStorage(label: string = 'reloadFromStorage'): void {
     applyLoadedConfig(loadConfig());
-    if (currentIdentityId) {
-      migrateLegacyKeys(currentIdentityId);
+    if (currentScope) {
+      carryForwardScopedKeys(currentScope);
     }
     notifyIdentityReloadHooks(label);
   }
@@ -254,12 +312,14 @@ function createConfigStore() {
     const trimmed = name.trim();
     if (!trimmed) throw new Error('Display name cannot be empty');
     if (!apiUrl || !apiKey) throw new Error('Not connected');
-    const base = apiUrl.replace(/\/$/, '');
+    const url = apiUrl;
+    const key = apiKey;
+    const base = url.replace(/\/$/, '');
     const response = await fetch(`${base}/me`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({ display_name: trimmed }),
     });
@@ -268,9 +328,8 @@ function createConfigStore() {
       throw new Error(detail.detail || `Failed to update display name (${response.status})`);
     }
     const data = (await response.json()) as AccountIdentity;
-    identity = data;
-    currentIdentityId = data.id;
-    saveCurrentConfig();
+    // A switch that landed while the PATCH was in flight owns the identity now.
+    if (apiUrl === url && apiKey === key) adoptIdentity(data, url, false);
     return data;
   }
 
@@ -360,7 +419,7 @@ function createConfigStore() {
       showAutonomousPrompts = true;
       describeToolCalls = true;
       identity = null;
-      currentIdentityId = null;
+      currentScope = null;
       applyTheme('light');
       saveCurrentConfig();
     },

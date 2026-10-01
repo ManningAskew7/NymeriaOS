@@ -88,7 +88,7 @@ The default `apiUrl` still differs by platform, but this is no longer the only d
 
 **When changing**: replicate configuration logic carefully, while preserving platform-specific defaults and any mobile setup behavior tied to first-run connection flow.
 
-User-scoped API helpers and stores must stay in sync across both apps. The API service resolves optional `userId` arguments from `configStore.identity?.id`; per-user tool/skill/trigger stores register `registerIdentityReloadHook` and guard async loads with an identity generation so stale responses from the previous account cannot repopulate state after a switch.
+User-scoped API helpers and stores must stay in sync across both apps. The API service resolves optional `userId` arguments from `configStore.identity?.id`. The identity scope is the normalized backend URL plus the account id (`utils/identityScope.ts`, EXACT_MATCH), and the reload hooks fire on every scope change and on every connection switch (`refreshIdentity({ forceReload: true })`), because every backend names its owner `default` (#242). Every store holding something a backend served registers `registerIdentityReloadHook`, clears its values there, and guards its async loads and mutations with an identity generation so stale responses from the previous backend or account cannot repopulate state after a switch. The hook tests are split the same way as the stores: `stores/backendScopedStores.test.ts` (EXACT_MATCH stores) and `stores/backendScopedStores.platform.test.ts` (per-app stores).
 
 #### `services/api.svelte.ts` and `services/api/`
 
@@ -260,7 +260,7 @@ CLIProxy process management should remain out of mobile scope.
 | **Touch targets** | Standard sizes | Min-height 44-48px |
 | **Range sliders** | Default | Custom 24px thumbs |
 | **Safe areas** | None | `env(safe-area-inset-*)` padding |
-| **On save connection** | No side effects | Calls `healthStore.check()` + sets `setupCompleted` |
+| **On save connection** | Switching is the AccountSwitcher's job (`connections.svelte.ts::applyConnection`) | A changed URL or token runs the full switch (`stores/backendSwitch.svelte.ts`: tear down, repoint, forced identity, thread resync, reconnect, Preferences backup); unchanged values only set `setupCompleted`. Test probes the form values and never writes the live config |
 | **Active class** | `.selected` | `.active` |
 | **Lines** | ~2065 | ~1272 |
 
@@ -452,7 +452,7 @@ All account/identity surfaces live under `components/account/` in both apps. Mos
 | `Avatar.svelte`, `RoleChip.svelte`, `avatar.ts` | ✓ | ✓ | Identical helpers; pure functions in `avatar.ts`. |
 | `AccountBadge.svelte` | Sidebar bottom-bar (full + collapsed icon) | LeftPanel footer-actions (40×40) | Replaces the old `ConnectionSwitcher` slot on desktop. |
 | `AccountMenu.svelte` | Anchored popover (NotificationCenter pattern) | Bottom sheet (Modal-style) | Same items: Manage account / Manage users (admin) / Switch / Add / Sign out. |
-| `AccountSwitcher.svelte` | ✓ |  -  | Mobile is single-connection; switching is via Settings → Connection. |
+| `AccountSwitcher.svelte` | ✓ |  -  | Mobile is single-connection; switching is via Settings → Connection, whose Save runs the same reset sequence as desktop's `applyConnection` (`stores/backendSwitch.svelte.ts`). |
 | `AddAccountSheet.svelte` | ✓ |  -  | Same reason. |
 | `AccountTab.svelte` | ✓ | ✓ | Same sections (Identity / Tokens / Platforms (admin) / Sign out); mobile uses larger inputs. |
 | `UsersTab.svelte` | ✓ (admin only tab) | ✓ (admin only tab) | Same master/detail; mobile detail view stacks form fields vertically. |
@@ -622,7 +622,7 @@ Use `hapticImpact('light')` for navigation and sends, `hapticNotification('succe
 
 ### Lifecycle
 Mobile apps pause/resume. The `lifecycle.ts` utility handles:
-- **Background**: Stop health and notification polling, disconnect SSE, backup localStorage to Capacitor Preferences. The backup includes legacy keys and identity-scoped variants such as `nymeria-threads-{user_id}`.
+- **Background**: Stop health and notification polling, disconnect SSE, backup localStorage to Capacitor Preferences. The backup includes legacy keys and identity-scoped variants such as `nymeria-threads-{user_id}@{backend}` (it matches the `{base_key}-` prefix).
 - **Foreground/startup**: Restore missing localStorage keys from Preferences, reload live config if Preferences restored data, then resume health and notification polling and reconnect SSE
 - **Back button**: Navigate to chat panel first, then allow app exit
 

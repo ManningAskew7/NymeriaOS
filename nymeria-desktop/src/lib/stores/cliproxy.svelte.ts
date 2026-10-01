@@ -10,6 +10,7 @@
 
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
+import { registerIdentityReloadHook } from './config.svelte';
 import type {
   CLIProxyAuthFile,
   CLIProxyProviderInfo,
@@ -65,6 +66,30 @@ function createCLIProxyStore() {
   let localRunning = $state(false);
   let localDetail = $state('');
   let localSessions = $state<CLIProxySession[]>([]);
+  // Bumped by the reload hook: a response from the previous backend lands nowhere.
+  let identityGeneration = 0;
+
+  // Everything above the local-sidecar fields is what the CONNECTED
+  // backend's proxy reported. On a connection switch it is dropped and an
+  // in-flight OAuth poll stops, rather than polling the previous backend's
+  // login state against the new one (#242). The local sidecar describes
+  // this machine, not a backend, so it stays.
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    stopOAuthPolling();
+    oauth = null;
+    oauthDeadline = 0;
+    status = null;
+    authFiles = [];
+    knobs = {};
+    models = [];
+    error = null;
+    message = null;
+  });
+
+  function current(generation: number): boolean {
+    return generation === identityGeneration;
+  }
 
   async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
@@ -76,15 +101,17 @@ function createCLIProxyStore() {
   }
 
   async function refresh(probe = false) {
+    const generation = identityGeneration;
     error = null;
     try {
-      status = await api.getCLIProxyStatus(probe);
-      if (status?.reachable) {
-        authFiles = await api.listCLIProxyAuthFiles();
-      } else {
-        authFiles = [];
-      }
+      const nextStatus = await api.getCLIProxyStatus(probe);
+      if (!current(generation)) return;
+      status = nextStatus;
+      const nextFiles = nextStatus?.reachable ? await api.listCLIProxyAuthFiles() : [];
+      if (!current(generation)) return;
+      authFiles = nextFiles;
     } catch (e) {
+      if (!current(generation)) return;
       fail(e, 'load', 'the CLIProxy status');
     }
     // The local Tauri process status is a best-effort extra; absence of the
@@ -101,10 +128,12 @@ function createCLIProxyStore() {
   }
 
   async function loadKnobs() {
+    const generation = identityGeneration;
     try {
-      knobs = await api.getCLIProxyConfig();
+      const next = await api.getCLIProxyConfig();
+      if (current(generation)) knobs = next;
     } catch (e) {
-      fail(e, 'load', 'the proxy settings');
+      if (current(generation)) fail(e, 'load', 'the proxy settings');
     }
   }
 
@@ -112,17 +141,22 @@ function createCLIProxyStore() {
     // Live ids through the proxy (all logged-in subscriptions, no
     // per-provider attribution); [] on failure keeps the model inputs
     // free-text only, so this never blocks the panel.
-    models = await api.listCLIProxyModels();
+    const generation = identityGeneration;
+    const next = await api.listCLIProxyModels();
+    if (current(generation)) models = next;
   }
 
   async function saveKnobs(update: Record<string, unknown>) {
+    const generation = identityGeneration;
     error = null;
     message = null;
     try {
-      knobs = await api.patchCLIProxyConfig(update);
+      const next = await api.patchCLIProxyConfig(update);
+      if (!current(generation)) return;
+      knobs = next;
       message = 'Proxy settings saved.';
     } catch (e) {
-      fail(e, 'save', 'the proxy settings');
+      if (current(generation)) fail(e, 'save', 'the proxy settings');
     }
   }
 
@@ -144,6 +178,9 @@ function createCLIProxyStore() {
 
   function startStatusPolling(providerId: string, providerLabel: string, oauthState: string) {
     stopOAuthPolling();
+    // A tick whose status request is in flight across a connection switch
+    // must not mark the new backend's panel logged in (or failed).
+    const generation = identityGeneration;
     oauthTimer = setInterval(async () => {
       const current = oauth;
       if (!current || current.state !== oauthState) {
@@ -157,6 +194,8 @@ function createCLIProxyStore() {
       }
       try {
         const result = await api.getCLIProxyOAuthStatus(oauthState, providerId);
+        // (`current` is shadowed in this callback by the oauth snapshot.)
+        if (generation !== identityGeneration) return;
         if (result.status === 'ok') {
           stopOAuthPolling();
           oauth = {
@@ -179,6 +218,7 @@ function createCLIProxyStore() {
           };
         }
       } catch (e) {
+        if (generation !== identityGeneration) return;
         stopOAuthPolling();
         oauth = { ...current, status: 'error', detail: humanizeErrorText(e, { action: 'connect', resource: 'the proxy' }) };
       }
@@ -197,11 +237,13 @@ function createCLIProxyStore() {
   }
 
   async function startOAuth(provider: CLIProxyProviderInfo) {
+    const generation = identityGeneration;
     error = null;
     message = null;
     stopOAuthPolling();
     try {
       const started = await api.startCLIProxyOAuth(provider.id);
+      if (!current(generation)) return;
       oauth = {
         provider: provider.id,
         flow: started.flow,
@@ -217,7 +259,7 @@ function createCLIProxyStore() {
       oauthDeadline = Date.now() + LOGIN_TIMEOUT_MS;
       startStatusPolling(provider.id, provider.label, started.state);
     } catch (e) {
-      fail(e, 'start', 'the login');
+      if (current(generation)) fail(e, 'start', 'the login');
     }
   }
 
@@ -317,6 +359,7 @@ function createCLIProxyStore() {
     provider: string,
     options: { model?: string; scope?: 'global' | 'thread'; threadId?: string; gatekeeperKey?: string } = {}
   ) {
+    const generation = identityGeneration;
     error = null;
     message = null;
     try {
@@ -327,6 +370,8 @@ function createCLIProxyStore() {
         thread_id: options.threadId,
         gatekeeper_key: options.gatekeeperKey
       });
+      // Applied on the previous backend: nothing here describes the new one.
+      if (!current(generation)) return null;
       message =
         applied.scope === 'thread'
           ? `Thread routed through CLIProxy (${applied.model}).`
@@ -338,7 +383,7 @@ function createCLIProxyStore() {
       }
       return applied;
     } catch (e) {
-      fail(e, 'save', 'the LLM route');
+      if (current(generation)) fail(e, 'save', 'the LLM route');
       return null;
     }
   }

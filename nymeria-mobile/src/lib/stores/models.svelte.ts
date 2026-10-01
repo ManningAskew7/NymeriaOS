@@ -1,16 +1,30 @@
 /**
  * Lazy-loading store for OpenRouter model metadata.
- * Fetches once per session (no polling).
+ * Fetches once per connection (no polling).
  */
 
 import type { AvailableModel, ModelMetadata } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 
 function createModelsStore() {
   let models = $state<ModelMetadata[]>([]);
   let modelMap = $state<Map<string, ModelMetadata>>(new Map());
   let loaded = $state(false);
   let loading = $state(false);
+  let identityGeneration = 0;
+
+  // The catalog (and the per-thread available models merged into it) is
+  // what the CONNECTED backend serves: drop it on every connection switch
+  // so effort clamps and context hints never describe the previous one's
+  // models (#242).
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    models = [];
+    modelMap = new Map();
+    loaded = false;
+    loading = false;
+  });
 
   function toMetadata(
     model: AvailableModel | ModelMetadata,
@@ -54,18 +68,20 @@ function createModelsStore() {
 
   async function loadModels() {
     if (loaded || loading) return;
+    const generation = identityGeneration;
     loading = true;
     try {
       const result = await api.getOpenRouterModels();
+      if (generation !== identityGeneration) return;
       if (result.length > 0) {
         mergeModelMetadata(result);
         loaded = true;
       }
       // Empty result = cache not populated yet, allow retry
     } catch {
-      // Non-critical — frontend works without metadata
+      // Non-critical: the frontend works without metadata
     } finally {
-      loading = false;
+      if (generation === identityGeneration) loading = false;
     }
   }
 

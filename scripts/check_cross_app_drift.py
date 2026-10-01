@@ -49,6 +49,10 @@ EXACT_MATCH: set[str] = {
     "lib/components/hooks/HookFeed.svelte",
     "lib/components/hooks/HookForm.svelte",
     "lib/components/triggers/TriggerHistoryPanel.svelte",
+    # #242: the connection-switch hook test for the stores above that are
+    # themselves EXACT_MATCH; the per-app stores' half is
+    # backendScopedStores.platform.test.ts (KNOWN_DRIFT).
+    "lib/stores/backendScopedStores.test.ts",
     "lib/stores/chatAppBindings.svelte.ts",
     "lib/stores/commands.svelte.ts",
     "lib/stores/commands.test.ts",
@@ -81,6 +85,8 @@ EXACT_MATCH: set[str] = {
     "lib/utils/fallbackHold.test.ts",
     "lib/utils/fileProcessing.ts",
     "lib/utils/hooks.ts",
+    "lib/utils/identityScope.ts",
+    "lib/utils/identityScope.test.ts",
     "lib/utils/ids.ts",
     "lib/utils/inputTips.ts",
     "lib/utils/modelOptions.ts",
@@ -214,6 +220,10 @@ KNOWN_DRIFT: set[str] = {
     "lib/stores/tools.svelte.ts",
     "lib/stores/triggers.svelte.ts",
     "lib/stores/unifiedTools.svelte.ts",
+    # #242 connection-switch tests: the config store differs (desktop keychain,
+    # mobile Preferences restore) and so do the per-app stores.
+    "lib/stores/config.test.ts",
+    "lib/stores/backendScopedStores.platform.test.ts",
     # Utils with platform tweaks
     "lib/utils/markdown.ts",
     # Rewind/edit affordances (backlog #12): mobile drops the desktop-only

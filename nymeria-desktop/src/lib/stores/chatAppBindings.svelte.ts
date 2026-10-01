@@ -1,5 +1,6 @@
 import type { ChatAppBinding } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 
 /**
  * Per-thread chat-app binding cache (e.g. Telegram chats bound to threads).
@@ -12,6 +13,15 @@ import { api } from '$lib/services/api.svelte';
 function createChatAppBindingsStore() {
   let bindingsByThread = $state<Map<string, ChatAppBinding[]>>(new Map());
   let loading = $state<Set<string>>(new Set());
+  let identityGeneration = 0;
+
+  // Keyed by thread id alone, which can collide across backends (platform
+  // ids are deterministic): drop it on every connection switch (#242).
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    bindingsByThread = new Map();
+    loading = new Set();
+  });
 
   return {
     get bindingsByThread() {
@@ -27,20 +37,27 @@ function createChatAppBindingsStore() {
     },
 
     async loadBindings(threadId: string): Promise<ChatAppBinding[]> {
+      const generation = identityGeneration;
       loading = new Set([...loading, threadId]);
       try {
         const list = await api.listThreadBindings(threadId);
-        bindingsByThread = new Map(bindingsByThread).set(threadId, list);
+        if (generation === identityGeneration) {
+          bindingsByThread = new Map(bindingsByThread).set(threadId, list);
+        }
         return list;
       } finally {
-        const next = new Set(loading);
-        next.delete(threadId);
-        loading = next;
+        if (generation === identityGeneration) {
+          const next = new Set(loading);
+          next.delete(threadId);
+          loading = next;
+        }
       }
     },
 
     async unbind(threadId: string, bindingId: number): Promise<void> {
+      const generation = identityGeneration;
       await api.unbindThreadChatApp(threadId, bindingId);
+      if (generation !== identityGeneration) return;
       const current = bindingsByThread.get(threadId) ?? [];
       const next = new Map(bindingsByThread).set(
         threadId,

@@ -5,6 +5,7 @@
   import type { Thread, ThreadConfig, ThreadConfigUpdateRequest, ThreadPlatform, ProviderRoute } from '$lib/types';
   import { Button, Icon } from '$lib/components/common';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
+  import { registerIdentityReloadHook } from '$lib/stores/config.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
@@ -604,6 +605,12 @@
       notepadLoaded = true;
     });
   });
+
+  // The form was seeded from the backend this panel opened on, and Save
+  // sends a full snapshot. A connection switch (or account change, or
+  // sign-out) closes it before a Save could write that backend's config, or
+  // its Model tab quick-pick, onto the new one (#242).
+  onMount(() => registerIdentityReloadHook(() => onClose()));
 
   function boundedInt(value: string | number, fallback: number, min: number, max: number): number {
     const parsed = parseInt(String(value ?? '').trim(), 10);

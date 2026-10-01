@@ -8,9 +8,12 @@
     size?: number;
     /** Outline state — surfaces account health on the avatar itself. */
     state?: 'connected' | 'disabled' | 'unverified' | 'loading' | 'plain';
+    /** Backend the identity belongs to (a saved connection's URL); defaults to
+     * the connected one. Pictures are kept per backend + account (#242). */
+    backendUrl?: string;
   }
 
-  let { identity, size = 32, state = 'plain' }: Props = $props();
+  let { identity, size = 32, state = 'plain', backendUrl }: Props = $props();
 
   // Default avatar is a Lucide `user` glyph on the theme's bg-base with
   // the accent colour as the icon stroke. Icon scales with the circle
@@ -18,7 +21,9 @@
   // picture (per-account, stored client-side in profilePics), it replaces
   // the icon — the bg circle stays the same so the chrome reads the same.
   let iconSize = $derived(Math.max(12, Math.round(size * 0.56)));
-  let pictureUrl = $derived(profilePics.get(identity?.id));
+  let pictureUrl = $derived(
+    backendUrl ? profilePics.get(identity?.id, backendUrl) : profilePics.get(identity?.id)
+  );
 </script>
 
 <span

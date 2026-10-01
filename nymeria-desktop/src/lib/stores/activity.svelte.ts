@@ -1,5 +1,6 @@
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
+import { registerIdentityReloadHook } from './config.svelte';
 import type { ActivityEntry } from '$lib/types';
 
 const POLL_INTERVAL = 45000; // 45 seconds
@@ -15,23 +16,38 @@ function createActivityStore() {
   let lastFetch = $state<Date | null>(null);
   let pollIntervalId: ReturnType<typeof setInterval> | null = null;
   let visibilityHandler: (() => void) | null = null;
+  // Bumped by the reload hook: a response from the previous backend lands nowhere.
+  let identityGeneration = 0;
 
   let currentThreadFilter = $state<string | undefined>(undefined);
 
+  // The activity feed is per backend: drop it on every connection switch
+  // (#242). A mounted feed keeps polling; its next fetch reads the new one.
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    entries = [];
+    loading = false;
+    error = null;
+    lastFetch = null;
+  });
+
   async function fetch(limit: number = 50, threadId?: string): Promise<void> {
+    const generation = identityGeneration;
     loading = true;
     error = null;
     currentThreadFilter = threadId;
 
     try {
       const response = await api.getActivity(limit, currentThreadFilter);
+      if (generation !== identityGeneration) return;
       entries = response.entries;
       lastFetch = new Date();
     } catch (e) {
+      if (generation !== identityGeneration) return;
       error = humanizeErrorText(e, { action: 'load', resource: 'the activity feed' });
       console.error('Failed to fetch activity:', e);
     } finally {
-      loading = false;
+      if (generation === identityGeneration) loading = false;
     }
   }
 

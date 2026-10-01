@@ -7,6 +7,14 @@ import {
   shouldProbeStoredServer,
   type OriginProbe
 } from '$lib/utils/firstRun';
+import {
+  carryForwardScopedKey,
+  identityScope,
+  normalizeBackendUrl,
+  sameIdentityScope,
+  scopedStorageKey,
+  type IdentityScope
+} from '$lib/utils/identityScope';
 
 const STORAGE_KEY = 'nymeria-config';
 // H-7: the live bearer token is persisted in the OS keychain under this key,
@@ -64,10 +72,14 @@ async function detectBackendOrigin(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 // Identity-scoped localStorage helpers
 // ---------------------------------------------------------------------------
-// User-scoped data is stored under `nymeria-<user_id>-<key>` once identity is
-// known. Before /me returns, the unscoped legacy keys (`nymeria-threads`,
-// etc.) are still used so existing data is visible. On first /me success, a
-// one-time migration copies unscoped → scoped.
+// Per-identity data is stored under `<base>-<account_id>@<backend_url>` once
+// GET /me has resolved (`utils/identityScope.ts` owns the format, #242). The
+// scope is the BACKEND plus the account, not the account alone: every slim
+// and Docker bootstrap names its owner `default`, so an id-only key made two
+// backends share one namespace. Before /me resolves, the unscoped legacy
+// keys (`nymeria-threads`, etc.) are used. The first resolve of a scope
+// carries older-format data into it, once, as a move (the account-only key,
+// else the unscoped one).
 //
 // Keys that should NEVER be namespaced live in NON_SCOPED_KEYS: the config
 // store itself (loads before identity exists) and saved-connections (picking
@@ -79,8 +91,8 @@ const NON_SCOPED_KEYS = new Set<string>([
   'nymeria-active-connection-id',
 ]);
 
-// Keys that DO get migrated from unscoped → scoped on first identity resolve.
-// Keep this list in sync with the `STORAGE_KEY` constants in per-feature stores.
+// Keys namespaced per scope and carried forward on its first resolve. Keep
+// this list in sync with the `STORAGE_KEY` constants in per-feature stores.
 const SCOPED_KEY_BASES = [
   'nymeria-threads',
   'nymeria-current-thread',
@@ -91,21 +103,39 @@ const SCOPED_KEY_BASES = [
   'nymeria-ui-mobile',
 ];
 
-let currentIdentityId: string | null = null;
+let currentScope: IdentityScope | null = null;
+let reloadGeneration = 0;
 
 /**
  * Return the localStorage key to use for a given base key, scoped to the
- * currently-known identity. Falls back to the base key if identity hasn't
+ * current backend and account. Falls back to the base key if identity hasn't
  * been resolved yet (legacy path).
  */
 export function scopedKey(base: string): string {
-  if (NON_SCOPED_KEYS.has(base) || !currentIdentityId) return base;
-  return `${base}-${currentIdentityId}`;
+  if (NON_SCOPED_KEYS.has(base)) return base;
+  return scopedStorageKey(base, currentScope);
+}
+
+/** The backend + account the scoped stores belong to; null before /me resolves. */
+export function currentIdentityScope(): IdentityScope | null {
+  return currentScope;
+}
+
+/**
+ * Bumped every time the identity reload hooks fire (a connection switch, an
+ * account change, a sign-out). An async flow that captured it before an
+ * await and finds it changed afterwards must drop its result: the backend it
+ * was talking to is no longer the live one.
+ */
+export function identityReloadGeneration(): number {
+  return reloadGeneration;
 }
 
 // ---------------------------------------------------------------------------
-// Reload hook registry — stores register here so they can re-read from
-// localStorage after identity changes (new scope = potentially new data).
+// Reload hook registry: the reset contract for backend-scoped client state.
+// Every store that caches anything a backend served registers here and drops
+// it (or re-reads its scoped localStorage) when the hooks fire: on every
+// scope change and on every explicit connection switch (forceReload).
 // ---------------------------------------------------------------------------
 
 type ReloadHook = () => void;
@@ -116,24 +146,10 @@ export function registerIdentityReloadHook(hook: ReloadHook): () => void {
   return () => reloadHooks.delete(hook);
 }
 
-function migrateLegacyKeys(userId: string): void {
+function carryForwardScopedKeys(scope: IdentityScope): void {
   if (typeof localStorage === 'undefined') return;
   for (const base of SCOPED_KEY_BASES) {
-    const legacy = base;
-    const scoped = `${base}-${userId}`;
-    const legacyValue = localStorage.getItem(legacy);
-    if (legacyValue === null) continue;
-    if (localStorage.getItem(scoped) !== null) {
-      // Scoped already populated — don't clobber. Leave legacy alone so a
-      // future identity switch can still read it (Step 7 cleans up).
-      continue;
-    }
-    try {
-      localStorage.setItem(scoped, legacyValue);
-      localStorage.removeItem(legacy);
-    } catch (e) {
-      console.error(`Failed to migrate ${legacy} -> ${scoped}:`, e);
-    }
+    carryForwardScopedKey(localStorage, base, scope);
   }
 }
 
@@ -217,10 +233,13 @@ function createConfigStore() {
   let developerMode = $state(initial.developerMode ?? false);
   let identity = $state<AccountIdentity | null>(initial.identity ?? null);
 
-  // Seed the module-level scope cache with whatever identity is persisted so
-  // stores that load before refreshIdentity() runs still pick the right keys.
-  if (initial.identity) {
-    currentIdentityId = initial.identity.id;
+  // Seed the module-level scope with whatever identity is persisted so stores
+  // that load before refreshIdentity() runs still pick the right keys. The
+  // carry-forward runs here too: those stores read the scoped keys at
+  // construction, which happens right after this module evaluates.
+  if (initial.identity && initial.apiUrl) {
+    currentScope = identityScope(initial.apiUrl, initial.identity.id);
+    carryForwardScopedKeys(currentScope);
   }
 
   // Apply theme on initial load (client-side only)
@@ -285,6 +304,7 @@ function createConfigStore() {
   }
 
   function notifyIdentityReloadHooks(label: string): void {
+    reloadGeneration += 1;
     for (const hook of reloadHooks) {
       try {
         hook();
@@ -298,7 +318,7 @@ function createConfigStore() {
     apiKey = '';
     setupCompleted = false;
     identity = null;
-    currentIdentityId = null;
+    currentScope = null;
     // A sign-out (chosen, or an expired token) lands back on the setup
     // surface; re-arm the stored-URL probe so it opens on sign-in again.
     serverProbe = 'skipped';
@@ -308,58 +328,94 @@ function createConfigStore() {
   }
 
   /**
+   * Adopt a resolved identity for the backend at `url`. A changed scope
+   * (another backend, or another account) carries older-format keys forward
+   * and fires the reload hooks; `forceReload` fires them on an unchanged
+   * scope too (an explicit connection switch always resets).
+   */
+  function adoptIdentity(data: AccountIdentity, url: string, forceReload: boolean): void {
+    const nextScope = identityScope(url, data.id);
+    const scopeChanged = !sameIdentityScope(currentScope, nextScope);
+    identity = data;
+    currentScope = nextScope;
+    if (scopeChanged) carryForwardScopedKeys(nextScope);
+    if (scopeChanged || forceReload) notifyIdentityReloadHooks('identity');
+    saveCurrentConfig();
+  }
+
+  /**
+   * /me did not resolve. A blip on the connection the scope already belongs
+   * to keeps it (a focus refresh during a network hiccup must not wipe the
+   * app). After the backend moved, or on a forced switch, the previous scope
+   * must not stay live: drop it and reset, so the new backend starts from
+   * empty caches instead of showing (and writing back) the old one's.
+   */
+  function settleUnresolvedIdentity(url: string, forceReload: boolean): void {
+    const backendMoved = currentScope !== null && currentScope.backend !== normalizeBackendUrl(url);
+    if (!forceReload && !backendMoved) return;
+    identity = null;
+    currentScope = null;
+    saveCurrentConfig();
+    notifyIdentityReloadHooks('unresolved identity');
+  }
+
+  /**
    * Fetch GET /me using the current apiUrl + apiKey, update identity state,
-   * migrate legacy unscoped localStorage keys, and fire reload hooks so
-   * per-feature stores re-read their data from the newly scoped keys.
+   * and fire the reload hooks when the scope (backend + account) changed or
+   * `forceReload` is set, so per-feature stores drop the previous backend's
+   * state and re-read their scoped keys.
    *
    * Returns the new identity on success, or null if the request failed
-   * (missing credentials, network error, 401, etc.) — callers should treat
-   * null as "route back to SetupWizard".
+   * (missing credentials, network error, 401, etc.); callers should treat
+   * null as "route back to SetupWizard". A result for a connection that
+   * changed while /me was in flight is dropped (the newer call owns the
+   * scope).
    */
-  async function refreshIdentity(): Promise<AccountIdentity | null> {
-    if (!apiUrl || !apiKey) return null;
+  async function refreshIdentity(
+    options: { forceReload?: boolean } = {}
+  ): Promise<AccountIdentity | null> {
+    const forceReload = options.forceReload === true;
+    const url = apiUrl;
+    const key = apiKey;
+    const connectionMoved = () => apiUrl !== url || apiKey !== key;
+    if (!url || !key) {
+      settleUnresolvedIdentity(url, forceReload);
+      return null;
+    }
     try {
-      const base = apiUrl.replace(/\/$/, '');
+      const base = url.replace(/\/$/, '');
       const response = await fetch(`${base}/me`, {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${key}`,
         },
       });
+      if (connectionMoved()) return null;
       if (!response.ok) {
         if (response.status === 401) {
           // Token no longer valid. Clear the auth session immediately so the
           // root route renders SetupWizard instead of mounting app panels that
           // will all fail with 401s.
           clearAuthSession('refreshIdentity auth failure');
+        } else {
+          settleUnresolvedIdentity(url, forceReload);
         }
         return null;
       }
       const data = (await response.json()) as AccountIdentity;
-      const previousId = currentIdentityId;
-      identity = data;
-      currentIdentityId = data.id;
-      if (previousId !== data.id) {
-        migrateLegacyKeys(data.id);
-        for (const hook of reloadHooks) {
-          try {
-            hook();
-          } catch (e) {
-            console.error('identity reload hook failed:', e);
-          }
-        }
-      }
-      saveCurrentConfig();
+      if (connectionMoved()) return null;
+      adoptIdentity(data, url, forceReload);
       return data;
     } catch (e) {
       console.error('refreshIdentity failed:', e);
+      if (!connectionMoved()) settleUnresolvedIdentity(url, forceReload);
       return null;
     }
   }
 
   function clearIdentity() {
     identity = null;
-    currentIdentityId = null;
+    currentScope = null;
     saveCurrentConfig();
   }
 
@@ -381,12 +437,14 @@ function createConfigStore() {
     const trimmed = name.trim();
     if (!trimmed) throw new Error('Display name cannot be empty');
     if (!apiUrl || !apiKey) throw new Error('Not connected');
-    const base = apiUrl.replace(/\/$/, '');
+    const url = apiUrl;
+    const key = apiKey;
+    const base = url.replace(/\/$/, '');
     const response = await fetch(`${base}/me`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({ display_name: trimmed }),
     });
@@ -395,9 +453,8 @@ function createConfigStore() {
       throw new Error(detail.detail || `Failed to update display name (${response.status})`);
     }
     const data = (await response.json()) as AccountIdentity;
-    identity = data;
-    currentIdentityId = data.id;
-    saveCurrentConfig();
+    // A switch that landed while the PATCH was in flight owns the identity now.
+    if (apiUrl === url && apiKey === key) adoptIdentity(data, url, false);
     return data;
   }
 
@@ -581,7 +638,7 @@ function createConfigStore() {
       describeToolCalls = true;
       developerMode = false;
       identity = null;
-      currentIdentityId = null;
+      currentScope = null;
       originProbe = 'skipped';
       originProbePromise = null;
       serverProbe = 'skipped';

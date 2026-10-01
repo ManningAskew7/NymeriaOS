@@ -14,7 +14,7 @@
   import { todosStore } from '$lib/stores/todos.svelte';
   import { activityStore } from '$lib/stores/activity.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
-  import { configStore } from '$lib/stores/config.svelte';
+  import { configStore, identityReloadGeneration } from '$lib/stores/config.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
@@ -119,6 +119,29 @@
 
   function handleConfigSaved(config: ThreadConfig) {
     // Config is already in the store via updateConfig/deleteConfig
+  }
+
+  // The settings form seeds ONCE from the cached config and Save sends a full
+  // snapshot, so it must not open on an empty cache while the thread's config
+  // is still loading (a quick Save would write defaults over it). Open at
+  // once when the cache holds this thread's config, else after the load
+  // settles (the sidebar's path already waited), and never for a thread a
+  // connection switch has replaced meanwhile (#242).
+  async function openThreadSettings(tab?: string) {
+    const threadId = threadsStore.currentThreadId;
+    if (!threadId) return;
+    if (!threadConfigStore.getConfig(threadId)) {
+      const generation = identityReloadGeneration();
+      try {
+        await threadConfigStore.loadConfig(threadId);
+      } catch {
+        // Open with the empty fallback state; saving surfaces API errors.
+      }
+      if (generation !== identityReloadGeneration()) return;
+      if (threadsStore.currentThreadId !== threadId) return;
+    }
+    threadSettingsTab = tab ?? 'behavior';
+    showThreadSettings = true;
   }
 
   function closeAttachmentWarningModal() {
@@ -1237,10 +1260,7 @@
     <ThreadHeader
       thread={threadsStore.currentThread}
       threadConfig={currentThreadConfig}
-      onOpenSettings={(tab) => {
-        threadSettingsTab = tab ?? 'behavior';
-        showThreadSettings = true;
-      }}
+      onOpenSettings={(tab) => void openThreadSettings(tab)}
     />
   {/if}
 

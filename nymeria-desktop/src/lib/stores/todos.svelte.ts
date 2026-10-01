@@ -1,5 +1,6 @@
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
+import { registerIdentityReloadHook } from './config.svelte';
 import type { TodoItem, TodoStatus, TodoCreateRequest, TodoUpdateRequest } from '$lib/types';
 
 interface StatusGroup {
@@ -13,6 +14,22 @@ function createTodosStore() {
   let loading = $state(false);
   let error = $state<string | null>(null);
   let lastFetch = $state<Date | null>(null);
+  // Bumped by the reload hook: a response from the previous backend lands nowhere.
+  let identityGeneration = 0;
+
+  // Scheduled tasks are per backend: drop them on every connection switch
+  // instead of showing the previous backend's until the feed remounts (#242).
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    todos = [];
+    loading = false;
+    error = null;
+    lastFetch = null;
+  });
+
+  function current(generation: number): boolean {
+    return generation === identityGeneration;
+  }
 
   // Computed: group todos by status
   const groupedTodos = $derived.by((): StatusGroup[] => {
@@ -103,6 +120,7 @@ function createTodosStore() {
   let currentStatusFilter = $state<string | undefined>(undefined);
 
   async function fetch(filterStatus?: string, threadId?: string): Promise<void> {
+    const generation = identityGeneration;
     loading = true;
     error = null;
     currentStatusFilter = filterStatus;
@@ -110,13 +128,15 @@ function createTodosStore() {
 
     try {
       const response = await api.getTodos(filterStatus, currentThreadFilter);
+      if (!current(generation)) return;
       todos = response.items;
       lastFetch = new Date();
     } catch (e) {
+      if (!current(generation)) return;
       error = humanizeErrorText(e, { action: 'load', resource: 'your scheduled tasks' });
       console.error('Failed to fetch TODOs:', e);
     } finally {
-      loading = false;
+      if (current(generation)) loading = false;
     }
   }
 
@@ -127,10 +147,11 @@ function createTodosStore() {
   }
 
   async function create(request: TodoCreateRequest): Promise<TodoItem> {
+    const generation = identityGeneration;
     try {
       const newTodo = await api.createTodo(request);
       // Refresh the list to get the new todo
-      await fetch();
+      if (current(generation)) await fetch();
       return newTodo;
     } catch (e) {
       error = humanizeErrorText(e, { action: 'create', resource: 'the task' });
@@ -140,10 +161,11 @@ function createTodosStore() {
   }
 
   async function update(todoId: string, request: TodoUpdateRequest): Promise<TodoItem> {
+    const generation = identityGeneration;
     try {
       const updatedTodo = await api.updateTodo(todoId, request);
       // Refresh the list to get the updated todo
-      await fetch();
+      if (current(generation)) await fetch();
       return updatedTodo;
     } catch (e) {
       error = humanizeErrorText(e, { action: 'update', resource: 'the task' });
@@ -153,10 +175,11 @@ function createTodosStore() {
   }
 
   async function deleteTodo(todoId: string): Promise<void> {
+    const generation = identityGeneration;
     try {
       await api.deleteTodo(todoId);
       // Remove from local state immediately
-      todos = todos.filter((t) => t.id !== todoId);
+      if (current(generation)) todos = todos.filter((t) => t.id !== todoId);
     } catch (e) {
       error = humanizeErrorText(e, { action: 'delete', resource: 'the task' });
       console.error('Failed to delete TODO:', e);
@@ -165,10 +188,11 @@ function createTodosStore() {
   }
 
   async function complete(todoId: string): Promise<TodoItem> {
+    const generation = identityGeneration;
     try {
       const completedTodo = await api.completeTodo(todoId);
       // Refresh the list
-      await fetch();
+      if (current(generation)) await fetch();
       return completedTodo;
     } catch (e) {
       error = humanizeErrorText(e, { action: 'update', resource: 'the task' });

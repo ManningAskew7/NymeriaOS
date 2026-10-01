@@ -4,6 +4,7 @@
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { healthStore } from '$lib/stores/health.svelte';
+  import { saveConnection, testConnection } from '$lib/stores/backendSwitch.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
@@ -115,6 +116,7 @@
   let apiKey = $state(configStore.apiKey);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
+  let savingConnection = $state(false);
 
   // Server settings
   let serverSettings = $state<ServerSettings | null>(null);
@@ -355,44 +357,43 @@
     }
   });
 
-  function handleSaveConnection() {
-    configStore.apiUrl = apiUrl;
-    configStore.apiKey = apiKey;
-    configStore.setupCompleted = true;
-    healthStore.check();
-    testStatus = 'success';
-    testMessage = 'Connection saved!';
-    setTimeout(() => { testMessage = ''; }, 2000);
+  // A changed URL or token is a backend switch (backendSwitch.svelte.ts, #242):
+  // the thread list, open transcript, identity, every backend-scoped cache and
+  // the event stream move to the new backend. Unchanged values keep the live
+  // session as it is.
+  async function handleSaveConnection() {
+    savingConnection = true;
+    try {
+      const switched = await saveConnection(apiUrl, apiKey);
+      if (!switched) healthStore.check();
+      apiUrl = configStore.apiUrl;
+      apiKey = configStore.apiKey;
+      if (switched) {
+        // The server tabs describe the backend they were loaded from: drop
+        // them so the open-panel effect reloads them from the new one.
+        serverSettings = null;
+        settingsLoadFailed = false;
+      }
+      testStatus = 'success';
+      testMessage = switched ? 'Connected to the new backend.' : 'Connection saved!';
+      setTimeout(() => { testMessage = ''; }, 2000);
+    } catch (e) {
+      testStatus = 'error';
+      testMessage = humanizeErrorText(e, { action: 'save', resource: 'the connection' });
+    } finally {
+      savingConnection = false;
+    }
   }
 
+  // Validates the form values only: never repoints or persists the live
+  // connection (a failed Test used to leave the app on the bad URL).
   async function handleTestConnection() {
-    configStore.apiUrl = apiUrl;
-    configStore.apiKey = apiKey;
     testStatus = 'testing';
     testMessage = '';
     try {
-      const isHealthy = await api.healthCheck();
-      if (!isHealthy) {
-        testStatus = 'error';
-        testMessage = 'Cannot connect to server. Is the backend running?';
-        return;
-      }
-
-      const authResponse = await api.verifyAuth();
-      if (authResponse.status === 401 || authResponse.status === 403) {
-        testStatus = 'error';
-        testMessage = 'Invalid account token. Check that it matches a token issued by the backend.';
-        return;
-      }
-      if (!authResponse.ok) {
-        testStatus = 'error';
-        testMessage = `Auth check failed: ${authResponse.status}`;
-        return;
-      }
-
-      testStatus = 'success';
-      testMessage = 'Connection successful!';
-      await loadServerSettings();
+      const result = await testConnection(apiUrl, apiKey);
+      testStatus = result.ok ? 'success' : 'error';
+      testMessage = result.message;
     } catch (e) {
       testStatus = 'error';
       testMessage = humanizeErrorText(e, { action: 'test', resource: 'the connection' });
@@ -549,10 +550,12 @@
           <p class="hint">Per-user account token (<code>nym_...</code>) or bootstrap token from <code>BOOTSTRAP_TOKEN.txt</code></p>
         </div>
         <div class="setting-actions">
-          <Button variant="secondary" onclick={handleTestConnection}>
+          <Button variant="secondary" onclick={handleTestConnection} disabled={savingConnection}>
             {testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
           </Button>
-          <Button onclick={handleSaveConnection}>Save Connection</Button>
+          <Button onclick={handleSaveConnection} disabled={savingConnection}>
+            {savingConnection ? 'Switching…' : 'Save Connection'}
+          </Button>
         </div>
 
       <!-- Theme Tab -->

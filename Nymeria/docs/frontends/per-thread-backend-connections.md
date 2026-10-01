@@ -26,11 +26,12 @@ The whole client points at one backend through `configStore`:
   (`src/lib/services/api/base.ts`); `resolveUserId()` reads
   `configStore.identity`. Every store and component imports the shared `api`
   instance from `src/lib/services/api.svelte.ts`.
-- Identity is global: one `currentIdentityId`, and localStorage is namespaced by
-  that single id via `scopedKey()` in `config.svelte.ts`. The thread cache key is
-  `nymeria-threads-<user_id>` (`src/lib/stores/threads.svelte.ts`). The backend
-  URL is not part of the key, so two backends that resolve to the same user id
-  share one cached thread list.
+- Identity is global: one identity scope (normalized backend URL + account
+  id, `src/lib/utils/identityScope.ts`), and localStorage is namespaced by that
+  single scope via `scopedKey()` in `config.svelte.ts`. The thread cache key is
+  `nymeria-threads-<user_id>@<backend>` (`src/lib/stores/threads.svelte.ts`), so
+  two backends that resolve to the same user id keep separate cached lists
+  (#242), but only the live connection's scope is ever loaded.
 - Realtime is single-stream: `autonomousStore` opens one SSE connection to one
   `/autonomous/stream?user_id=...` (`src/lib/stores/autonomous.svelte.ts`).
   `notificationStore`, `syncPoll`, and health polling are likewise single-backend.
@@ -64,14 +65,13 @@ must first resolve the thread's `connectionId` and use that client: chat send,
 
 ### 3. Per-connection identity and cache scoping
 
-`config.svelte.ts` holds a single `currentIdentityId` and scopes localStorage by
-it. With multiple backends, each connection has its own identity. The
-`connectionsStore` already caches a per-connection `identity` on each
+`config.svelte.ts` holds a single identity scope (backend + account) and scopes
+localStorage by it. With multiple live backends, each connection has its own
+scope. The `connectionsStore` already caches a per-connection `identity` on each
 `SavedConnection` via `verifyEntry()`, which is a useful starting point. The
-thread cache key must become per connection (for example
-`nymeria-threads-<connectionId>`), and the sidebar merges the per-connection
-lists. This is the same "scope the cache by backend" idea that is optional today
-but becomes mandatory here.
+keys are already backend-qualified since #242 (`scopedStorageKey(base, scope)`
+in `utils/identityScope.ts`); what changes is that several scopes are loaded at
+once and the sidebar merges the per-connection lists.
 
 ### 4. Per-connection realtime
 

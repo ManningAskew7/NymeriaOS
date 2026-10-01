@@ -114,16 +114,45 @@ routes/+page.svelte onMount calls configStore.refreshIdentity()
   |
 GET /me (Bearer apiKey)
   |
-Updates configStore.identity AND module-level `currentIdentityId`
-  (used by scopedKey() to namespace localStorage as `{base_key}-{user_id}`,
-   for example `nymeria-threads-{user_id}`)
+Updates configStore.identity AND the module-level identity scope
+  (normalized backend URL + account id; scopedKey() namespaces localStorage
+   as `{base_key}-{user_id}@{backend}`, for example
+   `nymeria-threads-default@http://localhost:8000`)
   |
-If user_id changed -> migrateLegacyKeys() runs once + identity reload hooks fire
+If the scope changed (other backend OR other account), or the caller forced
+  it (every connection switch passes forceReload) -> older-format keys are
+  carried forward once + identity reload hooks fire
   |
-Per-feature stores (threads, todos, etc.) re-read from their now-scoped keys
+Per-feature stores drop the previous backend's state and re-read their
+  now-scoped keys
   |
 AccountBadge renders the resolved identity reactively
 ```
+
+The scope is the backend AND the account because every slim and Docker
+bootstrap names its owner `default`: keyed on the account id alone, a switch
+between two servers used to keep the first server's caches and share its
+localStorage (#242). The pure scope logic (URL normalization, key format,
+carry-forward) is `utils/identityScope.ts`, byte-identical in both apps.
+Normalization lowercases scheme and host and drops trailing slashes, but never
+resolves hosts, so `localhost` and `127.0.0.1` keep separate caches.
+
+The reload hooks are the reset contract: every store that holds something a
+backend served registers one with `registerIdentityReloadHook`, clears its
+values in it, and guards its async loads and mutations with a generation
+counter so a response in flight across the switch lands nowhere. A `/me` that
+cannot resolve after the backend moved, or on a forced switch, drops the scope
+(keys fall back to the unscoped base names) and still fires the hooks, so the
+new backend starts empty instead of showing the old one's state; a network
+blip on an unchanged connection keeps the scope. A `/me` answer for a
+connection that changed while it was in flight is dropped.
+
+Carry-forward: on the first resolve under a scope, the account-only key
+(`{base_key}-{user_id}`, the format before #242) or else the unscoped base key
+MOVES into the scoped key, only when the scoped key is absent. The first
+backend to resolve that account inherits it; a later first visit to another
+backend starts empty. Desktop profile pictures follow the same scope
+(`nymeria_profile_pic_{user_id}@{backend}`).
 
 `needsSetup` is deliberately stricter than the older first-run flag: a stored
 `setupCompleted=true` value is not enough to mount the main shell if the API URL
@@ -142,8 +171,8 @@ On boot the active entry is auto-verified (`connectionsStore.verifyEntry(id)` ru
 
 When the user clicks a different account:
 1. `connectionsStore.switchTo(id)` first upserts the currently configured credential if it is not already the target. This prevents the common "add another account, then lose the path back to the setup account" failure.
-2. It disconnects SSE/polling, clears chat, sets new apiUrl/apiKey, **awaits `configStore.refreshIdentity()`** so `currentIdentityId` updates to the new user before any scoped-localStorage I/O, then reloads threads. The identity refresh is awaited specifically because `threadsStore.reset()` and `syncFromBackend()` write through `scopedKey()` (`config.svelte.ts`); without the await the stale `currentIdentityId` would route reads/writes to the previous user's `nymeria-*-<old-id>` namespace. The await is wrapped in `.catch(() => {})` so a network/401 failure mid-switch doesn't strand the user.
-3. `connectionsStore.verifyEntry(id)` - refreshes the cached identity for the just-activated entry
+2. It runs `applyConnection`: disconnects SSE/polling, clears chat, sets new apiUrl/apiKey, **awaits `configStore.refreshIdentity({ forceReload: true })`** so the identity scope moves to the new backend + account and every reload hook fires before any scoped-localStorage I/O, then resets threads in memory (landing on no open thread) and reloads them. The refresh is forced because a switch between two backends whose owners are both `default` is otherwise invisible to an id compare (#242), and awaited because `threadsStore.reset()` and `syncFromBackend()` read and write through `scopedKey()` (`config.svelte.ts`). The await is wrapped in `.catch(() => {})` so a network/401 failure mid-switch doesn't strand the user; an unresolved `/me` there drops the old scope, so the new backend still starts empty.
+3. `connectionsStore.verifyEntry(id)` refreshes the cached identity for the just-activated entry. (`handleSwitch()` used to call `refreshIdentity()` a second time in between; the switch already resolved it.)
 
 ### Token issuance flow
 
@@ -241,7 +270,7 @@ mobile exposes Connection settings instead.
 
 ### `AccountSwitcher.svelte` (desktop only)
 
-Reads `connectionsStore.connections` reactively. Per-row state (which row's `⋯` menu is open, which row is being inline-renamed) is local. The `handleSwitch()` flow waits for both `configStore.refreshIdentity()` and `connectionsStore.verifyEntry(id)` to complete before closing - guarantees the badge shows the new account immediately.
+Reads `connectionsStore.connections` reactively. Per-row state (which row's `⋯` menu is open, which row is being inline-renamed) is local. The `handleSwitch()` flow waits for `connectionsStore.switchTo(id)` (which resolves identity) and `connectionsStore.verifyEntry(id)` before closing, so the badge shows the new account immediately. Each row's avatar reads the profile picture for that row's own backend (`Avatar`'s `backendUrl` prop).
 
 ### `AddAccountSheet.svelte` (desktop only)
 
@@ -360,7 +389,7 @@ loose; the backend is the source of truth for the message text).
 | 409 on PATCH role | Last-admin guard. Demoting / disabling the only enabled admin returns 409 with "last admin" or "only enabled admin" in the body. The toast surfaces as `last_admin` kind. | Add another admin first. |
 | Linked platforms section invisible for non-admin self user | Intentional - editable add/remove calls use `/admin/users/{user_id}/platforms`, and the section in `AccountTab.svelte` is wrapped in `{#if isAdmin}`. | Non-admin users can still be checked by the Telegram shared-bot wizard through `GET /me/platforms`; the settings section is hidden because it is an admin editor. |
 | Toast layer doesn't appear | `routes/+page.svelte` mounts `<ErrorToast />` after `</AppShell>` (desktop) / `</MobileShell>` (mobile). If you removed it, none of the auto-toast wiring works. | Also check `errorsStore.queue` in DevTools - if the queue has entries but nothing renders, the component itself is broken. |
-| Per-user data leaks across accounts on switch | `config.svelte.ts::scopedKey` and `migrateLegacyKeys` - first switch migrates legacy unscoped keys to scoped ones. Per-feature stores must register identity-reload hooks via `registerIdentityReloadHook` to re-read on switch. | The `connectionsStore.switchTo` also calls `threadsStore.reset()` + `syncFromBackend()` for an immediate reload; check that path. |
+| Data from the previous backend or account shows after a switch | `config.svelte.ts::refreshIdentity` (scope compare, `forceReload`) and `utils/identityScope.ts` (key format, carry-forward). The store showing stale data is missing a `registerIdentityReloadHook` reset or a generation guard on its async paths. | Desktop `connectionsStore.applyConnection` and mobile `stores/backendSwitch.svelte.ts::switchBackend` force the reload, then `threadsStore.reset()` (in memory only, it persists nothing) + `syncFromBackend()`. |
 | 404 spam on `/users/default/...` after switching accounts | User-scoped API methods in desktop and mobile `services/api/*.ts` should resolve `userId` via `this.resolveUserId(userId)` in `base.ts`. Stores call them with no userId argument; the helper substitutes `configStore.identity?.id`. If you see `/users/default/...` in DevTools, a new method or store is bypassing this - fix at the API layer, not the store. | `unifiedTools`, `defaultTools`, `skills`, and `triggers` reset through `registerIdentityReloadHook`; load paths mark `loaded = true` on error to stop `$effect` hot-loops and use an identity-generation guard so stale in-flight responses cannot repopulate the next account's store. |
 
 ---
@@ -401,6 +430,6 @@ Use your usual frontend testing setup as a starting point. Account-specific manu
 ## Where this fits in the overall code map
 
 - Account UI consumes [`accounts.md`](../agent-systems/accounts.md)'s data model and [`api.md`](../api.md)'s HTTP surface.
-- Identity scoping of localStorage keys (base key plus `-{user_id}`, for example `nymeria-threads-{user_id}`) is set up in `config.svelte.ts::scopedKey` and `registerIdentityReloadHook` - every per-feature store goes through this.
+- Identity scoping of localStorage keys (base key plus `-{user_id}@{backend}`, for example `nymeria-threads-default@http://localhost:8000`) is set up in `config.svelte.ts::scopedKey` over `utils/identityScope.ts`, and `registerIdentityReloadHook` is the reset contract: every backend-scoped store goes through these.
 - The Setup Wizard's identity preview lives in `components/common/SetupWizard.svelte` and reuses `Avatar` + `RoleChip` from `account/`.
 - The `+page.svelte` root mounts `<ErrorToast />` so it sits above every modal - don't put it inside a panel that conditionally renders.

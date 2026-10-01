@@ -11,12 +11,20 @@
  */
 
 import type { AuthPromptEvent } from '$lib/types';
+import { registerIdentityReloadHook } from './config.svelte';
 
 interface AuthPromptState {
   active: AuthPromptEvent | null;
 }
 
 const state = $state<AuthPromptState>({ active: null });
+
+// A credential prompt belongs to the backend whose agent opened it: close
+// it on a connection switch rather than submit a secret for the previous
+// backend's prompt to the new one (#242). Its prompt timeout owns cleanup.
+registerIdentityReloadHook(() => {
+  state.active = null;
+});
 
 export const authPromptStore = {
   get active(): AuthPromptEvent | null {

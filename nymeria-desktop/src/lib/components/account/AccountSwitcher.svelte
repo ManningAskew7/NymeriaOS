@@ -4,7 +4,6 @@
   import { focusOnMount } from '$lib/actions/focus';
   import { tooltipWhenClipped } from '$lib/actions/tooltip';
   import { connectionsStore } from '$lib/stores/connections.svelte';
-  import { configStore } from '$lib/stores/config.svelte';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import Icon from '$lib/components/common/Icon.svelte';
   import Avatar from './Avatar.svelte';
@@ -49,12 +48,10 @@
     }
     busyId = id;
     try {
+      // switchTo resolves the live identity itself (a forced /me inside
+      // applyConnection); only the saved entry's badge needs re-checking.
       await connectionsStore.switchTo(id);
-      // Re-resolve identity for the freshly active entry.
-      await Promise.all([
-        configStore.refreshIdentity(),
-        connectionsStore.verifyEntry(id),
-      ]);
+      await connectionsStore.verifyEntry(id);
       onClose();
     } finally {
       busyId = null;
@@ -161,6 +158,7 @@
             >
               <Avatar
                 identity={entry.identity}
+                backendUrl={entry.apiUrl}
                 size={28}
                 state={entry.identity ? 'connected' : entry.identityError ? 'disabled' : 'unverified'}
               />

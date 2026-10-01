@@ -204,11 +204,11 @@ export function createConnectionsStore() {
    * Apply an arbitrary backend (url + token) as the live connection: tear down
    * the current session, repoint configStore, re-resolve identity, and clear +
    * re-sync threads against the new backend. This is the single source of truth
-   * for switching backends — every UI path that commits a backend change (the
+   * for switching backends: every UI path that commits a backend change (the
    * "Connect" button via switchTo, plus the Backend settings form's Save/edit
-   * handlers) must route through here. The thread cache is scoped only by
-   * user_id, so when two backends share an identity (e.g. both `default`) the
-   * stale cache is overwritten only by this explicit reset + resync.
+   * handlers) must route through here. The identity refresh is FORCED, so the
+   * reload hooks (the reset contract every backend-scoped store registers
+   * with) fire even when both backends name the account `default` (#242).
    */
   async function applyConnection(apiUrl: string, apiKey: string): Promise<void> {
     // 1. Disconnect SSE and polling
@@ -234,11 +234,13 @@ export function createConnectionsStore() {
       saveActiveId(null);
     }
 
-    // 5. Refresh identity FIRST so scoped-localStorage keys resolve to the new
-    //    user's namespace before threads I/O. .catch keeps the switch going on a
-    //    network/401 failure — better to land in the new backend with a stale
-    //    namespace than to abort mid-switch.
-    await configStore.refreshIdentity().catch(() => {});
+    // 5. Refresh identity FIRST, forced, so the scoped-localStorage keys resolve
+    //    to the new backend + account and every backend-scoped store drops the
+    //    previous backend's state before threads I/O. When /me cannot resolve
+    //    (network error, 5xx) the previous scope is dropped and the stores
+    //    still reset: the switch lands on the new backend with empty caches,
+    //    never the old one's. .catch keeps the switch going regardless.
+    await configStore.refreshIdentity({ forceReload: true }).catch(() => {});
 
     // 6. Reset and reload threads from the new backend
     threadsStore.reset();

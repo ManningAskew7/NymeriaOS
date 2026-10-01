@@ -14,12 +14,22 @@
 
 import { api } from '$lib/services/api.svelte';
 import type { UiPromptEvent } from '$lib/types';
+import { registerIdentityReloadHook } from './config.svelte';
 
 interface UiPromptState {
   active: UiPromptEvent | null;
 }
 
 const state = $state<UiPromptState>({ active: null });
+
+// A prompt belongs to the backend whose agent opened it. On a connection
+// switch the modal closes: submitting it would post the previous backend's
+// prompt id to the new one (#242). No cancel is sent, since the old backend
+// is no longer reachable through the api client; its prompt timeout owns
+// the cleanup.
+registerIdentityReloadHook(() => {
+  state.active = null;
+});
 
 export const uiPromptStore = {
   get active(): UiPromptEvent | null {

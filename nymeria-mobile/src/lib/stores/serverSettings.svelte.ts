@@ -26,18 +26,30 @@ export function createServerSettingsStore() {
   // A KNOWN non-admin identity never asks: GET /settings is admin-gated
   // (require_admin_user), so the request could only 403. Derived, not
   // latched, so a role promotion on the same account (the identity reload
-  // hook fires only when the account ID changes) un-settles the store and
-  // the load effects ask again.
+  // hook fires on a scope change or a connection switch, not a role change)
+  // un-settles the store and the load effects ask again.
   function knownNonAdmin(): boolean {
     const role = configStore.identity?.role;
     return !!role && role !== 'admin';
   }
 
-  // Reset on account/connection switch so consumers re-fetch under the new
-  // identity: these are global server settings, so a same-backend account
-  // switch reloads identical values, but a saved-connection switch to a
-  // different backend must not keep showing the previous server's model.
+  // Bumped by the reload hook; a load that started before it lands nowhere.
+  let identityGeneration = 0;
+
+  // Reset on every connection switch and account change. These are the
+  // CONNECTED backend's global settings: a switch to another backend whose
+  // owner shares this account id used to keep showing, and seeding the Model
+  // tab's fast/smart quick-picks from, the previous server's values (#242).
+  // The values are dropped, not just flagged stale, so nothing can read the
+  // old backend's model between the switch and the new load.
   registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    provider = null;
+    providerRoute = null;
+    model = null;
+    fastModelResolved = null;
+    smartModelResolved = null;
+    memoryCharLimit = null;
     loaded = false;
     loading = false;
     latched403 = false;
@@ -60,9 +72,11 @@ export function createServerSettingsStore() {
 
     async load(): Promise<void> {
       if (loading || loaded || latched403 || error !== null || knownNonAdmin()) return;
+      const requestGeneration = identityGeneration;
       loading = true;
       try {
         const settings = await api.getServerSettings();
+        if (requestGeneration !== identityGeneration) return;
         provider = settings.llm_provider;
         providerRoute = settings.llm_provider_route;
         model = settings.llm_model;
@@ -73,6 +87,7 @@ export function createServerSettingsStore() {
         latched403 = false;
         error = null;
       } catch (e) {
+        if (requestGeneration !== identityGeneration) return;
         if ((e as { status?: number } | null)?.status === 403) {
           // Not an admin (the identity was unknown or stale): expected, silent.
           latched403 = true;
@@ -86,7 +101,7 @@ export function createServerSettingsStore() {
         // once: the latch above stops the effects from re-running it.
         errorsStore.push({ kind: 'generic', message });
       } finally {
-        loading = false;
+        if (requestGeneration === identityGeneration) loading = false;
       }
     },
 

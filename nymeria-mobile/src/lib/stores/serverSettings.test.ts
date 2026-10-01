@@ -152,6 +152,82 @@ describe('serverSettingsStore', () => {
     expect(store.provider).toBe('anthropic');
   });
 
+  // #242: the hook fires on every connection switch, including a switch to
+  // another backend whose owner is also `default`. Nothing the previous
+  // backend served may survive it, or the header chip and the Model tab's
+  // fast/smart quick-picks keep reading (and saving) that server's models.
+  it('a connection switch drops every value, not just the loaded flag', async () => {
+    hooks.identity = { role: 'admin' };
+    (api.getServerSettings as Mock).mockResolvedValue(SETTINGS);
+    const store = createServerSettingsStore();
+    await store.load();
+    expect(store.model).toBe('claude-fable-5');
+
+    hooks.reload!();
+    expect(store.loaded).toBe(false);
+    expect(store.settled).toBe(false);
+    expect(store.provider).toBeNull();
+    expect(store.providerRoute).toBeNull();
+    expect(store.model).toBeNull();
+    expect(store.fastModelResolved).toBeNull();
+    expect(store.smartModelResolved).toBeNull();
+    expect(store.memoryCharLimit).toBeNull();
+
+    (api.getServerSettings as Mock).mockResolvedValue({
+      ...SETTINGS,
+      llm_model: 'claude-opus-5',
+      llm_fast_model_resolved: 'claude-sonnet-5',
+    });
+    await store.load();
+    expect(store.model).toBe('claude-opus-5');
+    expect(store.fastModelResolved).toBe('claude-sonnet-5');
+  });
+
+  it('a load in flight across a switch never writes the previous backend values', async () => {
+    hooks.identity = { role: 'admin' };
+    let settleOld: (value: typeof SETTINGS) => void = () => undefined;
+    (api.getServerSettings as Mock).mockImplementationOnce(
+      () => new Promise<typeof SETTINGS>((resolve) => { settleOld = resolve; }),
+    );
+    const store = createServerSettingsStore();
+    const stale = store.load();
+    hooks.reload!();
+
+    let settleNew: (value: typeof SETTINGS) => void = () => undefined;
+    (api.getServerSettings as Mock).mockImplementationOnce(
+      () => new Promise<typeof SETTINGS>((resolve) => { settleNew = resolve; }),
+    );
+    const fresh = store.load();
+    expect(api.getServerSettings).toHaveBeenCalledTimes(2);
+
+    settleOld(SETTINGS);
+    await stale;
+    expect(store.model).toBeNull();
+    expect(store.loaded).toBe(false);
+    expect(store.loading).toBe(true);
+
+    settleNew({ ...SETTINGS, llm_model: 'claude-opus-5' });
+    await fresh;
+    expect(store.model).toBe('claude-opus-5');
+    expect(store.loading).toBe(false);
+  });
+
+  it('a load that fails after the switch neither toasts nor latches the new backend', async () => {
+    hooks.identity = { role: 'admin' };
+    let failOld: (e: Error) => void = () => undefined;
+    (api.getServerSettings as Mock).mockImplementationOnce(
+      () => new Promise((_, reject) => { failOld = reject; }),
+    );
+    const store = createServerSettingsStore();
+    const stale = store.load();
+    hooks.reload!();
+    failOld(statusError(500));
+    await stale;
+    expect(errorsStore.push).not.toHaveBeenCalled();
+    expect(store.error).toBeNull();
+    expect(store.settled).toBe(false);
+  });
+
   it('an admin loads once and does not reload while loaded', async () => {
     hooks.identity = { role: 'admin' };
     (api.getServerSettings as Mock).mockResolvedValue(SETTINGS);

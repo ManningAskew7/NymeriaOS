@@ -47,7 +47,9 @@
     providerSpecFor,
     supportedRoutesForProvider,
   } from '$lib/utils/providerRoutes';
-  import { untrack } from 'svelte';
+  import { connectionOverrideForSave } from '$lib/utils/threadLlmSave';
+  import { registerIdentityReloadHook } from '$lib/stores/config.svelte';
+  import { onMount, untrack } from 'svelte';
 
   interface Props {
     threadId: string;
@@ -508,6 +510,12 @@
     }
   });
 
+  // The form was seeded from the backend this panel opened on, and Save sends
+  // a full snapshot. A connection switch (or account change, or sign-out)
+  // closes it before a Save could write that backend's config, or a fast/
+  // smart quick-pick, onto the new one (#242).
+  onMount(() => registerIdentityReloadHook(() => onClose()));
+
   // Keep the local snapshot tracking the store while the panel is open, so a
   // background refresh (ChatPanel reloads the config on provider_fallback)
   // surfaces the active-fallback Revert row live. Only the snapshot syncs;
@@ -815,12 +823,27 @@
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
         llm.provider = llmProvider || null;
-        llm.base_url = supportsApiMode()
-          ? (llmBaseUrl || null)
-          : null;
-        llm.api_key = supportsApiMode()
-          ? (llmApiKey || null)
-          : null;
+        // Round-trip the connection override exactly unless it was edited: a
+        // stored "" (Anthropic direct) and null (inherit) are different routes,
+        // and flipping one into the other on an unrelated Save is a route
+        // edit that ends an active fallback hold. utils/threadLlmSave.ts.
+        const savedLlm = threadConfig?.llmConfig;
+        const routeUnchanged =
+          llmProvider === (savedLlm?.provider ?? '') &&
+          llmProviderRoute === (savedLlm?.provider_route ?? 'default');
+        const overrideApplies = supportsConnectionOverride();
+        llm.base_url = connectionOverrideForSave({
+          field: llmBaseUrl,
+          saved: savedLlm?.base_url,
+          routeUnchanged,
+          applies: overrideApplies,
+        });
+        llm.api_key = connectionOverrideForSave({
+          field: llmApiKey,
+          saved: savedLlm?.api_key,
+          routeUnchanged,
+          applies: overrideApplies,
+        });
         llm.model = llmModel || null;
         llm.temperature = llmTemperature ? parseFloat(llmTemperature) : null;
         llm.max_tokens = llmMaxTokens ? parseInt(llmMaxTokens, 10) : null;

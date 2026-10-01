@@ -4,8 +4,8 @@ import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 import { generateId } from '$lib/utils/ids';
 import { platformFromThreadId, isPlatformNativeThreadId } from '$lib/utils/threadPlatform';
 
-// localStorage keys are namespaced by the currently-connected user's id.
-// See config.svelte.ts::scopedKey for details.
+// localStorage keys are namespaced by the connected backend + account (the
+// identity scope, #242). See config.svelte.ts::scopedKey for details.
 const STORAGE_KEY_BASE = 'nymeria-threads';
 const CURRENT_THREAD_KEY_BASE = 'nymeria-current-thread';
 const FOLDERS_KEY_BASE = 'nymeria-thread-folders';
@@ -143,10 +143,16 @@ function createThreadsStore() {
   // don't render as authoritative before /me + syncFromBackend complete.
   let initialSyncDone = $state(false);
   let lastSyncError = $state<string | null>(null);
+  // Bumped on every scope reload and reset: a sync that started against the
+  // previous backend must not land its thread list on the new one.
+  let syncGeneration = 0;
 
-  // Reload from localStorage when the connected user changes — new scope,
+  // Reload from localStorage when the scope changes (another backend or
+  // another account) or a connection switch forces a reload: new scope,
   // potentially different data.
   registerIdentityReloadHook(() => {
+    syncGeneration += 1;
+    syncInProgress = false;
     threads = loadThreads();
     currentThreadId = loadCurrentThreadId(threads);
     folders = loadFolders();
@@ -488,26 +494,50 @@ function createThreadsStore() {
     },
 
     /**
+     * In-memory reset for a connection switch (`backendSwitch.svelte.ts`,
+     * mirroring desktop): the switched-to backend's thread list comes from
+     * the resync that follows, and the switch lands on no open thread.
+     * Nothing is persisted; the folders and sort mode the reload hook read
+     * for the new scope stay, and the previous scope's are left intact.
+     */
+    reset() {
+      syncGeneration += 1;
+      threads = [];
+      currentThreadId = null;
+      folders = loadFolders();
+      sortMode = loadSortMode();
+      syncInProgress = false;
+      initialSyncDone = false;
+      lastSyncError = null;
+    },
+
+    /**
      * Sync the local thread list with the backend (server-side metadata).
      *
      * Backend is authoritative for titles and pins. On first sync (migration),
      * local data is pushed to the backend so existing titles/pins are preserved.
-     * Subsequent syncs merge backend data into localStorage.
+     * Subsequent syncs merge backend data into localStorage. A sync that a
+     * scope reload or reset() overtook lands nothing.
      */
     async syncFromBackend() {
       if (syncInProgress) return;
+      const generation = syncGeneration;
       syncInProgress = true;
       lastSyncError = null;
       try {
         const response = await api.listThreadsWithMetadata();
+        if (generation !== syncGeneration) return;
         // Backend is authoritative for the thread list, titles, and pins.
         this._applyBackendThreads(response.threads);
       } catch (e) {
+        if (generation !== syncGeneration) return;
         lastSyncError = e instanceof Error ? e.message : String(e);
         console.warn('[Threads] Backend sync failed:', e);
       } finally {
-        syncInProgress = false;
-        initialSyncDone = true;
+        if (generation === syncGeneration) {
+          syncInProgress = false;
+          initialSyncDone = true;
+        }
       }
     },
 

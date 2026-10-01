@@ -1,5 +1,6 @@
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
+import { registerIdentityReloadHook } from './config.svelte';
 import type {
   MCPDiscoveredTool,
   MCPInstallPreviewRequest,
@@ -16,6 +17,23 @@ function createMCPServersStore() {
   let loading = $state(false);
   let loaded = $state(false);
   let error = $state<string | null>(null);
+  // Bumped by the reload hook: a response from the previous backend lands nowhere.
+  let identityGeneration = 0;
+
+  // MCP servers are keyed by human-chosen ids (`github`), so a stale row
+  // from the previous backend could act on the new backend's like-named
+  // server. Drop the list on every connection switch (#242).
+  registerIdentityReloadHook(() => {
+    identityGeneration += 1;
+    servers = [];
+    loading = false;
+    loaded = false;
+    error = null;
+  });
+
+  function current(generation: number): boolean {
+    return generation === identityGeneration;
+  }
 
   return {
     get servers() { return servers; },
@@ -25,17 +43,20 @@ function createMCPServersStore() {
 
     async load(): Promise<void> {
       if (loading) return;
+      const generation = identityGeneration;
       loading = true;
       error = null;
       try {
         const response = await api.listMCPServers();
+        if (!current(generation)) return;
         servers = response.servers;
         loaded = true;
       } catch (e) {
+        if (!current(generation)) return;
         error = humanizeErrorText(e, { action: 'load', resource: 'your MCP servers' });
         console.error('Failed to load MCP servers:', e);
       } finally {
-        loading = false;
+        if (current(generation)) loading = false;
       }
     },
 
@@ -45,13 +66,16 @@ function createMCPServersStore() {
     },
 
     async create(request: MCPServerCreateRequest, threadId?: string): Promise<{ server: MCPServer; discoveredTools: number; discoveryError?: string }> {
+      const generation = identityGeneration;
       const result = await api.createMCPServer(request, threadId);
-      servers = [...servers, result.server];
+      if (current(generation)) servers = [...servers, result.server];
       return result;
     },
 
     async install(request: MCPInstallRequest): Promise<MCPInstallResponse> {
+      const generation = identityGeneration;
       const result = await api.installMCPServer(request);
+      if (!current(generation)) return result;
       const existing = servers.findIndex(s => s.id === result.server.id);
       if (existing >= 0) {
         servers = servers.map(s => s.id === result.server.id ? result.server : s);
@@ -66,20 +90,23 @@ function createMCPServersStore() {
     },
 
     async retry(serverId: string, request: Pick<MCPInstallRequest, 'confirmed' | 'confirmed_risk_ids' | 'config_values' | 'credential_values' | 'credential_bindings'> = {}): Promise<MCPInstallResponse> {
+      const generation = identityGeneration;
       const result = await api.retryMCPServerInstall(serverId, request);
-      servers = servers.map(s => s.id === serverId ? result.server : s);
+      if (current(generation)) servers = servers.map(s => s.id === serverId ? result.server : s);
       return result;
     },
 
     async update(serverId: string, request: MCPServerUpdateRequest): Promise<{ server: MCPServer; discoveredTools: number; discoveryError?: string }> {
+      const generation = identityGeneration;
       const result = await api.updateMCPServer(serverId, request);
-      servers = servers.map(s => s.id === serverId ? result.server : s);
+      if (current(generation)) servers = servers.map(s => s.id === serverId ? result.server : s);
       return result;
     },
 
     async remove(serverId: string): Promise<void> {
+      const generation = identityGeneration;
       await api.deleteMCPServer(serverId);
-      servers = servers.filter(s => s.id !== serverId);
+      if (current(generation)) servers = servers.filter(s => s.id !== serverId);
     },
 
     async discover(serverId: string): Promise<{ discoveredTools: MCPDiscoveredTool[]; count: number }> {

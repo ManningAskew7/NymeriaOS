@@ -4,6 +4,7 @@
   import { teamedThreadIds, visibleThreadIds } from '$lib/utils/threadSections';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
+  import { identityReloadGeneration } from '$lib/stores/config.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
@@ -333,11 +334,15 @@
 
   async function openThreadSettings(thread: Thread, initialTab: 'behavior' | 'agent') {
     configureInitialTab = initialTab;
+    const generation = identityReloadGeneration();
     try {
       await threadConfigStore.loadConfig(thread.id);
     } catch {
       // Let the settings panel open with its empty fallback state; saving will surface API errors.
     }
+    // A connection switch landed while the config loaded: the thread (and any
+    // config) belong to the previous backend, so never open on the new one.
+    if (generation !== identityReloadGeneration()) return;
     configureThread = thread;
   }
 
