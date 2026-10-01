@@ -27,6 +27,9 @@ spec.loader.exec_module(deploy_sync)
 SHA_OLD = "a" * 40
 SHA_NEW = "b" * 40
 SHA_LOCAL = "c" * 40
+SHA_THIRD = "d" * 40
+FILES_HOST = "f" * 16
+FILES_OTHER = "e" * 16
 
 
 def refused() -> urllib.error.URLError:
@@ -35,6 +38,13 @@ def refused() -> urllib.error.URLError:
 
 
 class FakeWorld:
+    # Wired by the ``world`` fixture.
+    runner: "FakeRunner"
+    http: "FakeHttp"
+    fingerprint: "FakeFingerprint"
+    state_dir: Path
+    config: dict
+
     def __init__(self):
         self.branch: str | None = "main"  # None = detached HEAD
         self.head = SHA_OLD
@@ -49,6 +59,9 @@ class FakeWorld:
         self.pull_ok = True
         self.running_containers: list[str] = []
         self.restart_rc = 0
+        # restart argv[0] -> side effect run when that restart command runs
+        # (a commit or an edit landing while the target boots).
+        self.on_restart: dict[str, object] = {}
 
 
 class FakeRunner:
@@ -93,6 +106,9 @@ class FakeRunner:
         if argv[:2] == ["docker", "restart"]:
             return 0, ""
         if argv[0].startswith("restart-"):
+            hook = w.on_restart.get(argv[0])
+            if callable(hook):
+                hook()
             return w.restart_rc, "" if w.restart_rc == 0 else "boom"
         raise AssertionError(f"unexpected command: {argv}")
 
@@ -115,11 +131,24 @@ class FakeHttp:
         return entry
 
 
+class FakeFingerprint:
+    """The host-checkout digest seam (``checkout_fingerprint``)."""
+
+    def __init__(self, value: str | None):
+        self.value = value
+        self.paths: list[str] = []
+
+    def __call__(self, package_dir):
+        self.paths.append(str(package_dir))
+        return self.value
+
+
 @pytest.fixture
 def world(tmp_path):
     w = FakeWorld()
     w.runner = FakeRunner(w)
     w.http = FakeHttp()
+    w.fingerprint = FakeFingerprint(FILES_HOST)
     w.state_dir = tmp_path / "state"
     w.state_dir.mkdir()
 
@@ -170,6 +199,7 @@ def run_sync(w, dry_run: bool = False):
         runner=w.runner,
         http_get=w.http,
         sleep=lambda seconds: None,
+        fingerprint=w.fingerprint,
     )
 
 
@@ -301,7 +331,15 @@ def test_incoming_dependency_change_skips_the_pull_itself(world):
 def test_down_target_is_restarted_anyway(world):
     world.head = SHA_LOCAL
     world.merge_base = SHA_OLD
-    world.http.routes["http://slim/status/turns"] = refused()
+
+    def turns():
+        # Down until the restart brings it up (the post-restart verify
+        # reads this endpoint too, #423).
+        if ("restart-slim",) in world.runner.commands():
+            return (200, {"active_turns": 0, "interactive_active": 0})
+        return refused()
+
+    world.http.routes["http://slim/status/turns"] = turns
     summary = run_sync(world)
     assert summary["targets"]["slim"]["action"] == "restarted"
     assert marker(world, "slim") == SHA_LOCAL
@@ -819,9 +857,20 @@ def test_idle_is_reprobed_after_the_pull(world):
     # that started during the pull must defer the restart.
     world.origin = SHA_NEW
     world.merge_base = SHA_OLD
-    run_sync(world)
-    # One probe for the pull gate, a second for the restart decision.
-    assert len(world.http.headers_seen["http://slim/status/turns"]) == 2
+    pull = ("git", "-C", "/repo", "pull", "--ff-only")
+
+    def turns():
+        if pull in world.runner.commands():
+            return (200, {"active_turns": 1, "interactive_active": 0})
+        return (200, {"active_turns": 0, "interactive_active": 0})
+
+    world.http.routes["http://slim/status/turns"] = turns
+    summary = run_sync(world)
+    assert pull in world.runner.commands()  # idle at the pull gate
+    assert summary["targets"]["slim"]["action"] == "deferred"
+    assert "busy (turns=1" in summary["targets"]["slim"]["detail"]
+    assert ("restart-slim",) not in world.runner.commands()
+    assert marker(world, "slim") == SHA_OLD
 
 
 def test_pull_failure_is_reported_and_nothing_restarts(world):
@@ -887,3 +936,522 @@ def test_mark_deployed_refuses_an_unresolvable_head(world):
             world.config, world.state_dir, None, runner=world.runner
         )
     assert marker(world, "slim") == SHA_OLD
+
+
+# ---------------------------------------------------------------------------
+# #423: a restart counts only once the target reports the code it was
+# restarted onto (behaviors V5-V15 of the it34 plan). The API reports its
+# booted commit and a digest of its boot-time file fingerprint on
+# /status/turns (admin token); the host digest is the ``fingerprint`` seam
+# (FILES_HOST unless a test changes it). Edges skipped on purpose: a sha256
+# repository (reads as "no identity", filed as a follow-up) and a
+# non-POSIX mount (the per-target verify_files opt-out covers it).
+
+
+def _idle(**identity):
+    """An idle /status/turns payload, plus whatever identity fields given."""
+    return (
+        200,
+        {"active_turns": 0, "interactive_active": 0, "background_jobs": 0,
+         "claude_code_jobs": 0, "busy_threads": [], **identity},
+    )
+
+
+def _phased(world, name, before, *after):
+    """A route answering ``before`` until ``restart-<name>`` ran, then each
+    of ``after`` in turn (the last one repeats)."""
+    queue = list(after)
+
+    def route():
+        if (f"restart-{name}",) not in world.runner.commands():
+            return before
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return route
+
+
+def _local_commit(world):
+    """HEAD is a local commit ahead of every marker: desired = SHA_LOCAL."""
+    world.head = SHA_LOCAL
+    world.merge_base = SHA_OLD
+
+
+def _stamp(world, name):
+    path = world.state_dir / f"{name}.failed"
+    return path.read_text(encoding="utf-8").strip() if path.exists() else None
+
+
+def _run_main(world, tmp_path, capsys, *args):
+    config_file = _write_config(world, tmp_path)
+    rc = deploy_sync.main(
+        ["--config", str(config_file), "--state-dir", str(world.state_dir), *args],
+        runner=world.runner,
+        http_get=world.http,
+        sleep=lambda seconds: None,
+        fingerprint=world.fingerprint,
+    )
+    captured = capsys.readouterr()
+    return rc, captured.out, captured.err
+
+
+@pytest.mark.parametrize(
+    "booted, cause",
+    [
+        (SHA_OLD, "still the previous commit"),  # the restart did not take
+        (SHA_THIRD, "!= desired cccccccccccc (install or unit runs another tree?)"),
+    ],
+)
+def test_a_backend_on_other_code_after_restart_is_failed_and_held(world, booted, cause):
+    """V5: answering /health is not enough; the booted commit on the
+    authenticated /status/turns must be the desired one."""
+    _local_commit(world)
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        _idle(code_version=booted, code_fingerprint=FILES_HOST),
+    )
+
+    summary = run_sync(world)
+
+    slim = summary["targets"]["slim"]
+    assert ("restart-slim",) in world.runner.commands()
+    assert slim["action"] == "failed"
+    assert cause in slim["detail"]
+    assert booted[:12] in slim["detail"] and SHA_LOCAL[:12] in slim["detail"]
+    assert "--mark-deployed" in slim["detail"]  # the remedy rides along
+    assert marker(world, "slim") == SHA_OLD
+    assert _stamp(world, "slim") == SHA_LOCAL
+    # The identity was read with the target's bearer; /health got none.
+    assert all(
+        h == {"Authorization": "Bearer tok-slim"}
+        for h in world.http.headers_seen["http://slim/status/turns"]
+    )
+    assert all(h == {} for h in world.http.headers_seen["http://slim/health"])
+    # No restart storm: the next tick holds the target, loudly.
+    restarts = world.runner.commands().count(("restart-slim",))
+    assert run_sync(world)["targets"]["slim"]["action"] == "held"
+    assert world.runner.commands().count(("restart-slim",)) == restarts
+
+
+def test_booted_files_are_compared_with_the_checkout(world):
+    """V6: Docker reports no commit (its mounts carry no .git), so its file
+    digest decides: a container that lost its bind mount boots the image's
+    baked copy, which answers /health just the same."""
+    _local_commit(world)
+    world.http.routes["http://docker/status/turns"] = _phased(
+        world, "docker",
+        _idle(code_version=None, code_fingerprint=FILES_HOST),
+        _idle(code_version=None, code_fingerprint=FILES_OTHER),
+    )
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_HOST),
+    )
+
+    summary = run_sync(world)
+
+    docker = summary["targets"]["docker"]
+    assert docker["action"] == "failed"
+    assert docker["detail"].startswith(
+        f"booted files {FILES_OTHER} differ from the checkout's {FILES_HOST} "
+        "(stale image, missing bind mount, or an install from another tree?)"
+    )
+    assert marker(world, "docker") == SHA_OLD
+    assert _stamp(world, "docker") == SHA_LOCAL
+    # Both identity fields matched for slim: the line says what was proven.
+    slim = summary["targets"]["slim"]
+    assert slim["action"] == "restarted"
+    assert slim["detail"] == f"{SHA_OLD[:12]} -> {SHA_LOCAL[:12]}, verified commit+files"
+    # The host digest describes the checkout's package by default.
+    assert world.fingerprint.paths
+    assert set(world.fingerprint.paths) == {"/repo/Nymeria/nymeria"}
+
+
+def test_matching_files_verify_a_target_that_reports_no_commit(world):
+    _local_commit(world)
+    world.http.routes["http://docker/status/turns"] = _phased(
+        world, "docker",
+        _idle(code_version=None, code_fingerprint=FILES_OTHER),
+        _idle(code_version=None, code_fingerprint=FILES_HOST),
+    )
+    summary = run_sync(world)
+    docker = summary["targets"]["docker"]
+    assert docker["action"] == "restarted"
+    assert docker["detail"].endswith(", verified files")
+    assert marker(world, "docker") == SHA_LOCAL
+    assert _stamp(world, "docker") is None
+
+
+def test_package_dir_and_verify_files_are_per_target(world):
+    """A target can name the package it imports, and opt out of the file
+    check (a mount that does not preserve stat): an unchecked field is
+    never held against it, and the line says nothing was proven."""
+    _local_commit(world)
+    world.config["targets"][0]["package_dir"] = "/srv/other/nymeria"
+    world.config["targets"][1]["verify_files"] = False
+    world.http.routes["http://docker/status/turns"] = _idle(
+        code_version=None, code_fingerprint=FILES_OTHER
+    )
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_HOST),
+    )
+    summary = run_sync(world)
+    assert world.fingerprint.paths == ["/srv/other/nymeria"]
+    docker = summary["targets"]["docker"]
+    assert docker["action"] == "restarted"
+    assert "unverified" in docker["detail"] and "verify_files off" in docker["detail"]
+    assert summary["targets"]["slim"]["detail"].endswith("verified commit+files")
+
+
+def _move_head(world):
+    world.head = SHA_NEW
+
+
+def _dirty_tree(world):
+    world.status_out = " M Nymeria/nymeria/core/agent.py"
+
+
+def _add_package_file(world):
+    world.fingerprint.value = FILES_OTHER  # an untracked file appeared
+
+
+@pytest.mark.parametrize(
+    "during_restart, booted, cause",
+    [
+        (_move_head, {"code_version": SHA_NEW, "code_fingerprint": FILES_OTHER},
+         f"HEAD moved to {SHA_NEW[:12]}"),
+        (_dirty_tree, {"code_version": SHA_LOCAL, "code_fingerprint": FILES_OTHER},
+         "tracked files were modified"),
+        (_add_package_file, {"code_version": SHA_LOCAL, "code_fingerprint": FILES_OTHER},
+         "files under the package changed"),
+    ],
+    ids=["head-moved", "tree-dirtied", "package-file-added"],
+)
+def test_a_mismatch_the_checkout_explains_is_unverified_and_retried(
+    world, tmp_path, capsys, during_restart, booted, cause
+):
+    """V7: a parallel session committing or editing while the target boots
+    makes it load newer files than the pre-restart digest: a real but
+    self-healing mismatch. No marker, no failure stamp, exit 0; the next
+    clean tick restarts and verifies."""
+    _local_commit(world)
+    world.on_restart["restart-slim"] = lambda: during_restart(world)
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        _idle(**booted),
+    )
+
+    rc, out, err = _run_main(world, tmp_path, capsys)
+
+    assert rc == 0
+    assert "deploy_sync: slim: unverified (" in out
+    assert cause in out
+    assert "slim" not in err
+    assert marker(world, "slim") == SHA_OLD
+    assert _stamp(world, "slim") is None
+
+    # Next tick: the tree is clean again and the target reports exactly
+    # what the checkout holds now.
+    world.on_restart.clear()
+    world.status_out = ""
+    world.http.routes["http://slim/status/turns"] = _idle(
+        code_version=world.head, code_fingerprint=world.fingerprint.value
+    )
+    restarts = world.runner.commands().count(("restart-slim",))
+    summary = run_sync(world)
+    assert summary["targets"]["slim"]["action"] == "restarted"
+    assert summary["targets"]["slim"]["detail"].endswith("verified commit+files")
+    assert world.runner.commands().count(("restart-slim",)) == restarts + 1
+    assert marker(world, "slim") == world.head
+
+
+def test_a_slow_boot_is_polled_through_not_judged_early(world):
+    """V8: refused, then /status/turns 503 (agent not built yet), then the
+    OLD identity (a shutdown straggler), then the desired one, all inside
+    the deadline: restarted, no failure."""
+    _local_commit(world)
+    world.http.routes["http://slim/health"] = _phased(
+        world, "slim", (200, {"status": "ok"}), refused(), (200, {"status": "ok"})
+    )
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        (503, None),
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_OTHER),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_HOST),
+    )
+    summary = run_sync(world)
+    slim = summary["targets"]["slim"]
+    assert slim["action"] == "restarted"
+    assert slim["detail"].endswith("verified commit+files")
+    assert marker(world, "slim") == SHA_LOCAL
+    assert _stamp(world, "slim") is None
+
+
+def test_an_identity_probe_that_never_answers_fails_the_restart(world):
+    """/health answers but /status/turns never does (503 to the deadline):
+    nothing proved the new code is serving, so it is not marked."""
+    _local_commit(world)
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim", _idle(code_version=SHA_OLD), (503, None)
+    )
+    summary = run_sync(world)
+    slim = summary["targets"]["slim"]
+    assert slim["action"] == "failed"
+    assert "identity probe did not (identity probe answered 503)" in slim["detail"]
+    assert marker(world, "slim") == SHA_OLD
+
+
+@pytest.mark.parametrize(
+    "payload, note",
+    [
+        # An API predating #423 (or a non-admin token): no identity keys.
+        ({}, "unverified (old API or non-admin token: no code identity reported)"),
+        # A current API whose boot record was unreadable: keys, both null.
+        ({"code_version": None, "code_fingerprint": None},
+         "unverified (target reports no code identity)"),
+        # Malformed values are no identity, never a mismatch.
+        ({"code_version": "abc", "code_fingerprint": "XYZ"},
+         "unverified (target reports no code identity)"),
+    ],
+    ids=["old-api", "nulls", "malformed"],
+)
+def test_a_target_reporting_no_identity_keeps_todays_check(world, payload, note):
+    """V9: degrade to the reachability check, said so in the line, never a
+    failure."""
+    _local_commit(world)
+    world.http.routes["http://slim/status/turns"] = _idle(**payload)
+    summary = run_sync(world)
+    slim = summary["targets"]["slim"]
+    assert slim["action"] == "restarted"
+    assert slim["detail"] == f"{SHA_OLD[:12]} -> {SHA_LOCAL[:12]}, {note}"
+    assert marker(world, "slim") == SHA_LOCAL
+
+
+def test_a_new_api_target_initializes_from_its_reported_commit(world):
+    """V10: a fresh marker for a target that reports its booted commit
+    starts there, so a stale one restarts on the same tick (like the
+    runner, #335)."""
+    _local_commit(world)
+    (world.state_dir / "slim.commit").unlink()
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_THIRD, code_fingerprint=FILES_OTHER),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_HOST),
+    )
+    summary = run_sync(world)
+    assert ("restart-slim",) in world.runner.commands()
+    assert summary["targets"]["slim"]["action"] == "restarted"
+    assert summary["targets"]["slim"]["detail"].startswith(f"{SHA_THIRD[:12]} -> ")
+    assert marker(world, "slim") == SHA_LOCAL
+    # The init probe authenticated like the idle gate does.
+    assert world.http.headers_seen["http://slim/status/turns"][0] == {
+        "Authorization": "Bearer tok-slim"
+    }
+
+
+@pytest.mark.parametrize(
+    "route, token",
+    [
+        (_idle(code_version=None, code_fingerprint=FILES_OTHER), None),  # files only
+        ((401, None), None),  # cannot authenticate
+        (_idle(code_version=SHA_THIRD), {"file": "/nonexistent/token"}),
+    ],
+    ids=["fingerprint-only", "probe-401", "no-token"],
+)
+def test_an_init_without_a_reported_commit_keeps_the_presumption(world, route, token):
+    """V10: a digest is not a commit, and an init probe that cannot read an
+    identity falls back to "presumed current" rather than wedging."""
+    _local_commit(world)
+    (world.state_dir / "docker.commit").unlink()
+    world.http.routes["http://docker/status/turns"] = route
+    if token is not None:
+        world.config["targets"][1]["token"] = token
+    summary = run_sync(world)
+    assert summary["targets"]["docker"]["action"] == "initialized"
+    assert ("restart-docker",) not in world.runner.commands()
+    assert marker(world, "docker") == SHA_LOCAL
+
+
+def _all_current(world):
+    """Every target (runner included) runs SHA_LOCAL with the host files,
+    and every marker says so."""
+    _add_runner_target(world)
+    world.head = SHA_LOCAL
+    for name in ("slim", "docker", "runner"):
+        (world.state_dir / f"{name}.commit").write_text(SHA_LOCAL + "\n", encoding="utf-8")
+    world.http.routes["http://slim/status/turns"] = _idle(
+        code_version=SHA_LOCAL, code_fingerprint=FILES_HOST
+    )
+    world.http.routes["http://docker/status/turns"] = _idle(
+        code_version=None, code_fingerprint=FILES_HOST
+    )
+    world.http.routes["http://runner/health"] = (
+        200, {"status": "ok", "active_jobs": 0, "code_version": SHA_LOCAL},
+    )
+
+
+def _state_snapshot(world):
+    return {
+        p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+        for p in world.state_dir.iterdir()
+        if p.name != deploy_sync.LOCK_NAME
+    }
+
+
+def test_check_reports_each_target_and_changes_nothing(world, tmp_path, capsys):
+    """V12: read-only. No fetch, pull or restart; no state written; one
+    line per target naming what it reports against the checkout and the
+    marker; exit 0 when everything matches."""
+    _all_current(world)
+    before = _state_snapshot(world)
+
+    rc, out, err = _run_main(world, tmp_path, capsys, "--check")
+
+    assert rc == 0, err
+    lines = out.splitlines()
+    assert lines[0].startswith("deploy_sync: check: slim: verified commit+files [")
+    assert lines[1].startswith("deploy_sync: check: docker: verified files [")
+    assert lines[2].startswith("deploy_sync: check: runner: verified commit [")
+    assert (
+        f"reported commit {SHA_LOCAL[:12]} files {FILES_HOST[:12]}; "
+        f"checkout {SHA_LOCAL[:12]} files {FILES_HOST[:12]}; marker {SHA_LOCAL[:12]}"
+    ) in lines[0]
+    assert "reported commit none" in lines[1]
+    # Only HEAD was read: nothing fetched, pulled, restarted or written.
+    assert world.runner.commands() == [("git", "-C", "/repo", "rev-parse", "HEAD")]
+    assert _state_snapshot(world) == before
+
+
+def test_check_exits_nonzero_on_a_mismatch_or_an_unreachable_target(
+    world, tmp_path, capsys
+):
+    _all_current(world)
+    world.http.routes["http://docker/status/turns"] = _idle(
+        code_version=None, code_fingerprint=FILES_OTHER
+    )
+    (world.state_dir / "docker.commit").write_text(SHA_OLD + "\n", encoding="utf-8")
+    world.http.routes["http://runner/health"] = refused()
+
+    rc, out, err = _run_main(world, tmp_path, capsys, "--check")
+
+    assert rc == 1
+    assert "deploy_sync: check: slim: verified commit+files" in out
+    assert f"deploy_sync: check: docker: MISMATCH: booted files {FILES_OTHER}" in err
+    assert f"marker {SHA_OLD[:12]}" in err
+    assert "deploy_sync: check: runner: could not verify (target down)" in err
+
+
+def test_check_names_the_causes_of_a_long_running_target(world, tmp_path, capsys):
+    """A read-only check meets a checkout that moved or was edited since the
+    target booted far more often than a broken restart, and says so."""
+    _all_current(world)
+    world.http.routes["http://slim/status/turns"] = _idle(
+        code_version=SHA_OLD, code_fingerprint=FILES_HOST
+    )
+    world.http.routes["http://docker/status/turns"] = _idle(
+        code_version=None, code_fingerprint=FILES_OTHER
+    )
+    rc, _, err = _run_main(world, tmp_path, capsys, "--check")
+    assert rc == 1
+    assert (
+        f"slim: MISMATCH: booted code_version {SHA_OLD[:12]} != checkout "
+        f"{SHA_LOCAL[:12]} (not restarted since HEAD moved, or runs another tree?)"
+    ) in err
+    assert (
+        f"docker: MISMATCH: booted files {FILES_OTHER} differ from the checkout's "
+        f"{FILES_HOST} (checkout files changed since it booted, uncommitted edits "
+        "included, or a stale image, missing bind mount, another tree?)"
+    ) in err
+
+
+def test_check_on_a_target_reporting_nothing_says_so_and_passes(
+    world, tmp_path, capsys
+):
+    _all_current(world)
+    world.http.routes["http://docker/status/turns"] = _idle()  # old API
+    rc, out, _ = _run_main(world, tmp_path, capsys, "--check")
+    assert rc == 0
+    assert (
+        "deploy_sync: check: docker: unverified (old API or non-admin token: "
+        "no code identity reported)"
+    ) in out
+
+
+def test_check_never_answers_mid_tick(world, tmp_path, capsys):
+    """--check takes the sync lock: during a tick it would read targets
+    mid-restart, so it refuses (non-zero) instead of guessing."""
+    _all_current(world)
+    with deploy_sync.exclusive_lock(world.state_dir / deploy_sync.LOCK_NAME):
+        rc, _, err = _run_main(world, tmp_path, capsys, "--check")
+    assert rc == 1
+    assert "another run is active" in err
+    assert world.http.headers_seen == {}
+
+
+def test_mark_deployed_marks_all_but_warns_per_target_on_other_code(
+    world, tmp_path, capsys
+):
+    """V13: the ack stays unconditional (it is the post-recovery step), but
+    a recovery that left a target on other code is not blessed silently."""
+    _all_current(world)
+    for name in ("slim", "docker", "runner"):
+        (world.state_dir / f"{name}.commit").write_text(SHA_OLD + "\n", encoding="utf-8")
+        (world.state_dir / f"{name}.failed").write_text(SHA_LOCAL, encoding="utf-8")
+    world.http.routes["http://docker/status/turns"] = _idle(
+        code_version=None, code_fingerprint=FILES_OTHER
+    )
+    world.http.routes["http://runner/health"] = refused()
+
+    rc, out, err = _run_main(world, tmp_path, capsys, "--mark-deployed")
+
+    assert rc == 0
+    for name in ("slim", "docker", "runner"):
+        assert marker(world, name) == SHA_LOCAL
+        assert _stamp(world, name) is None
+        assert f"deploy_sync: {name}: marked deployed at {SHA_LOCAL[:12]}" in out
+    warnings = [line for line in err.splitlines() if "WARNING" in line]
+    assert len(warnings) == 2
+    assert warnings[0].startswith("deploy_sync: WARNING: docker: marked at ")
+    assert f"booted files {FILES_OTHER} differ" in warnings[0]
+    assert warnings[1].startswith("deploy_sync: WARNING: runner: marked at ")
+    assert "could not verify (target down)" in warnings[1]
+
+
+def test_mark_deployed_probes_only_the_targets_it_marks(world, tmp_path, capsys):
+    _all_current(world)
+    world.http.routes["http://docker/status/turns"] = _idle(code_fingerprint=FILES_OTHER)
+    rc, _, err = _run_main(world, tmp_path, capsys, "--mark-deployed", "slim")
+    assert rc == 0
+    assert "WARNING" not in err
+    assert "http://docker/status/turns" not in world.http.headers_seen
+
+
+def test_no_token_value_reaches_any_line_or_detail(world, tmp_path, capsys):
+    """V15: tokens are read at call time and never logged, on every new
+    path: a failed identity probe, a mismatch, --check, --mark-deployed."""
+    _local_commit(world)
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim", _idle(code_version=SHA_OLD), (401, None)
+    )
+    world.http.routes["http://docker/status/turns"] = _phased(
+        world, "docker",
+        _idle(code_fingerprint=FILES_HOST),
+        _idle(code_fingerprint=FILES_OTHER),
+    )
+    texts = []
+    summary = run_sync(world)
+    texts += [t["detail"] for t in summary["targets"].values()]
+    for args in ((), ("--check",), ("--mark-deployed",)):
+        world.http.routes["http://slim/status/turns"] = TimeoutError("timed out")
+        _, out, err = _run_main(world, tmp_path, capsys, *args)
+        texts += [out, err]
+    blob = "\n".join(texts)
+    assert "identity probe answered 401" in blob  # the failure path ran
+    assert "MISMATCH" in blob and "WARNING" in blob
+    assert "tok-slim" not in blob
+    assert "tok-docker" not in blob

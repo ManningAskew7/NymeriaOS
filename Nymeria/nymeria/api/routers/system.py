@@ -184,6 +184,29 @@ def _build_readiness(settings: Any) -> ReadinessResponse:
     return ReadinessResponse(status=status, checks=checks)
 
 
+def _booted_code_identity() -> dict[str, str | None]:
+    """The commit and file-fingerprint digest this process booted from.
+
+    Read from the BOOT record, never a fresh walk: the question deploy-sync
+    asks is what the process loaded, and an edit after boot must not change
+    the answer. Any failure reports both as null rather than raising, since
+    the same response is the deploy-sync idle gate and must keep answering.
+    """
+    try:
+        from ... import _provenance
+
+        record = _provenance.boot_record()
+        digest = (
+            _provenance.fingerprint_digest(record.fingerprint)
+            if record.fingerprint is not None
+            else None
+        )
+        return {"code_version": record.commit, "code_fingerprint": digest}
+    except Exception:  # noqa: BLE001 - provenance must never fail the gate.
+        logger.warning("status/turns: boot record unreadable", exc_info=True)
+        return {"code_version": None, "code_fingerprint": None}
+
+
 def _restart_child_env(settings: Any) -> dict[str, str]:
     """The environment the restarted image starts from: ours, dotenv merged over.
 
@@ -476,7 +499,14 @@ def create_system_router(
             response.status_code = 503
         return readiness
 
-    @router.get("/status/turns", response_model=TurnActivityResponse)
+    # exclude_unset: the two identity fields stay UNSET for non-admin
+    # callers, so their payload keeps exactly its pre-#423 keys. Every other
+    # field is always set explicitly below; a new field must be too.
+    @router.get(
+        "/status/turns",
+        response_model=TurnActivityResponse,
+        response_model_exclude_unset=True,
+    )
     async def status_turns(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
@@ -497,7 +527,12 @@ def create_system_router(
         that will be killed rather than work that will be waited for
         (`core/child_teardown.py`, #303). Any authenticated caller gets
         the counts; ``busy_threads`` detail (thread ids, holder labels) is
-        cross-user metadata and is included for admins only.
+        cross-user metadata and is included for admins only, as are
+        ``code_version`` and ``code_fingerprint``: the commit and file
+        fingerprint digest this process BOOTED from, which deploy-sync
+        compares with the checkout to confirm a restart loaded the code on
+        disk (#423). Both null when the boot record cannot be read; a
+        provenance failure never fails the idle gate.
         """
         # Same defensive shape as thread_overview: a partially initialized
         # agent answers 503 (the sync script then fails safe and defers)
@@ -518,13 +553,15 @@ def create_system_router(
             for record in get_bash_registry().records()
             if getattr(record, "status", "") == "running"
         )
-        detail = busy if getattr(user, "role", "") == "admin" else []
+        is_admin = getattr(user, "role", "") == "admin"
+        detail = busy if is_admin else []
         return TurnActivityResponse(
             active_turns=len(busy),
             interactive_active=get_interactive_turn_gate().active,
             background_jobs=background + pending_embedding_job_count() + active_turn_task_count(),
             claude_code_jobs=active_work_count(),
             busy_threads=[BusyThread(**entry) for entry in detail],
+            **(_booted_code_identity() if is_admin else {}),
         )
 
     @router.get("/scheduler/status")

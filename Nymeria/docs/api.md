@@ -158,6 +158,21 @@ Any authenticated caller gets the counts. `busy_threads` (thread ids,
 holder labels, held duration) is cross-user metadata and is populated only
 for admin callers; other callers receive an empty list.
 
+Admin callers (the service token included) also get the code this process
+BOOTED from, so deployment automation can confirm a restart loaded the code
+it expects rather than merely that something answers:
+
+| Field | Meaning |
+| --- | --- |
+| `code_version` | The git commit the process started from, or `null` when its source tree has no git metadata (a Docker container's bind mount, an installed package). |
+| `code_fingerprint` | A 16-hex digest of the boot-time file fingerprint: file count, summed modification times (ns) and summed sizes over the package (minus `__pycache__`) plus the `run.py` beside it. `null` when unavailable. A bind mount preserves all three, so the host computes the same digest over its checkout. |
+
+Both come from the record taken at startup, never a fresh read: editing a
+file after boot does not change them. When that record cannot be read, both
+are `null` and the counts still answer. Other callers' responses omit both
+keys. The reference deploy automation (`scripts/deploy_sync.py`) compares
+them against the checkout after every restart.
+
 **Response:**
 ```json
 {

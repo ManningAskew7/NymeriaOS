@@ -3,15 +3,19 @@
 Plan behaviors B1-B3b in ``tmp/deploy-sync-plan.md``: auth required,
 active_turns mirrors held thread locks, interactive_active mirrors the
 admission gate, and busy_threads detail (cross-user metadata) is
-admin-only.
+admin-only. #423 (it34 plan V1-V4, coordinator decision K2): admins also
+get the booted ``code_version`` and ``code_fingerprint``, read from the
+boot record; everyone else gets the payload without those keys.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
+from nymeria import _provenance as prov
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.interactive_admission import (
@@ -30,6 +34,21 @@ class FakeAgent:
 
     def sync_agent_tools(self):
         pass
+
+
+SHA_A = "a" * 40
+FP = prov.Fingerprint(files=677, mtime_ns_sum=1_209_666_476_302_492_136_879, size_sum=19_263_492)
+COUNT_KEYS = {
+    "active_turns", "interactive_active", "background_jobs",
+    "claude_code_jobs", "busy_threads",
+}
+
+
+def _boot(**overrides) -> prov.BootRecord:
+    fields = dict(version="0.0.0", started_at=0.0, commit=None, installed=False,
+                  dist_version=None, fingerprint=None)
+    fields.update(overrides)
+    return prov.BootRecord(**fields)
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +74,12 @@ def test_status_turns_requires_auth(tmp_path: Path, api_client_builder):
     assert client.get("/status/turns").status_code == 401
 
 
-def test_idle_instance_reports_zero_everything(tmp_path: Path, api_client_builder):
+def test_idle_instance_reports_zero_everything(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    # The exact payload an admin (deploy-sync's service token) reads: the
+    # counts plus, since #423, the booted code identity.
+    monkeypatch.setattr(prov, "_BOOT", _boot(commit=SHA_A, fingerprint=FP))
     client, _, token = _client(tmp_path, api_client_builder)
     payload = client.get(
         "/status/turns", headers=api_client_builder.auth(token)
@@ -66,6 +90,8 @@ def test_idle_instance_reports_zero_everything(tmp_path: Path, api_client_builde
         "background_jobs": 0,
         "claude_code_jobs": 0,
         "busy_threads": [],
+        "code_version": SHA_A,
+        "code_fingerprint": prov.fingerprint_digest(FP),
     }
 
 
@@ -194,6 +220,112 @@ def test_agent_without_lock_manager_answers_503(tmp_path: Path, api_client_build
     # 503, not 500: the deploy-sync script treats it as unverifiable and
     # defers, and clients can distinguish "not ready" from a crash.
     assert response.status_code == 503
+
+
+# -- #423: the booted code identity, for deploy-sync's restart verify ---------
+
+
+def _get(client, builder, token) -> dict:
+    response = client.get("/status/turns", headers=builder.auth(token))
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_a_container_without_git_reports_its_files_but_no_commit(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """V1: a Docker container's mounts carry no .git, so the commit is null
+    and the file digest is what deploy-sync compares."""
+    monkeypatch.setattr(prov, "_BOOT", _boot(commit=None, fingerprint=FP))
+    client, _, token = _client(tmp_path, api_client_builder)
+    payload = _get(client, api_client_builder, token)
+    assert payload["code_version"] is None
+    assert payload["code_fingerprint"] == prov.fingerprint_digest(FP)
+
+
+def test_a_boot_without_a_fingerprint_reports_a_null_digest(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    monkeypatch.setattr(prov, "_BOOT", _boot(commit=SHA_A, fingerprint=None))
+    client, _, token = _client(tmp_path, api_client_builder)
+    payload = _get(client, api_client_builder, token)
+    assert payload["code_version"] == SHA_A
+    assert payload["code_fingerprint"] is None
+
+
+def test_identity_is_the_boot_record_not_the_files_on_disk_now(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """V2: deploy-sync asks what the process LOADED; an edit after boot
+    (or a later pull) must not change the answer, or a process that never
+    restarted would verify as running the new code."""
+    from tests.test_runtime_provenance import _git, _package
+
+    pkg = _package(tmp_path / "checkout")
+    _git(tmp_path / "checkout", "ref: refs/heads/main", {"refs/heads/main": SHA_A})
+    record = prov.capture(pkg)
+    monkeypatch.setattr(prov, "_BOOT", record)
+    client, _, token = _client(tmp_path, api_client_builder)
+
+    before = _get(client, api_client_builder, token)
+    edited = pkg / "core" / "mod1.py"
+    edited.write_text(edited.read_text() + "# edited after boot\n")
+    st = edited.stat()
+    os.utime(edited, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    after = _get(client, api_client_builder, token)
+
+    assert record.fingerprint is not None
+    assert before["code_version"] == after["code_version"] == SHA_A
+    assert before["code_fingerprint"] == after["code_fingerprint"]
+    assert after["code_fingerprint"] == prov.fingerprint_digest(record.fingerprint)
+    # The tree really did change: a fresh walk would have said so.
+    assert prov.source_fingerprint(pkg) != record.fingerprint
+
+
+@pytest.mark.parametrize("broken", ["boot_record", "fingerprint_digest"])
+def test_an_unreadable_boot_record_never_breaks_the_idle_gate(
+    tmp_path: Path, api_client_builder, monkeypatch, broken
+):
+    """V3: the same response is deploy-sync's idle gate; a provenance
+    failure reports both identity fields null and the counts still answer."""
+    monkeypatch.setattr(prov, "_BOOT", _boot(commit=SHA_A, fingerprint=FP))
+
+    def boom(*_a, **_k):
+        raise RuntimeError("provenance on fire")
+
+    monkeypatch.setattr(prov, broken, boom)
+    client, agent, token = _client(tmp_path, api_client_builder)
+    lock = agent._thread_locks.get_lock("t-busy")
+    lock.acquire()
+    try:
+        payload = _get(client, api_client_builder, token)
+    finally:
+        lock.release()
+    assert payload["active_turns"] == 1
+    assert payload["code_version"] is None
+    assert payload["code_fingerprint"] is None
+
+
+def test_non_admin_payload_is_unchanged_by_the_identity_fields(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """K2: any account can read /status/turns, so the identity (admin and
+    service-token callers only, like busy_threads) is not just nulled for
+    others but absent: their payload keeps its pre-#423 keys exactly."""
+    monkeypatch.setattr(prov, "_BOOT", _boot(commit=SHA_A, fingerprint=FP))
+    client, _, token = _client(tmp_path, api_client_builder, role="user")
+    payload = _get(client, api_client_builder, token)
+    assert set(payload) == COUNT_KEYS
+    assert SHA_A not in str(payload)
+
+
+def test_health_field_set_is_unchanged(tmp_path: Path, api_client_builder, monkeypatch):
+    """/health is public and deliberately coarse; the identity stays off it."""
+    monkeypatch.setattr(prov, "_BOOT", _boot(commit=SHA_A, fingerprint=FP))
+    settings = api_client_builder.settings(tmp_path)
+    client = api_client_builder.client(FakeAgent(tmp_path), settings)
+    payload = client.get("/health").json()
+    assert set(payload) == {"status", "version", "configured"}
 
 
 def test_interactive_slice_mirrors_the_admission_gate(

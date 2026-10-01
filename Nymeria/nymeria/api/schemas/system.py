@@ -59,6 +59,13 @@ class TurnActivityResponse(BaseModel):
     # Populated only for admin callers: thread ids and holder labels are
     # cross-user metadata; the counts alone carry the idle predicate.
     busy_threads: list[BusyThread] = Field(default_factory=list)
+    # Which code this process booted from, for deploy automation (#423):
+    # the boot record's commit (null with no git metadata, as in a Docker
+    # container) and the digest of its boot-time file fingerprint
+    # (``_provenance.fingerprint_digest``). Admin callers only; for anyone
+    # else the route leaves them unset and the response omits both keys.
+    code_version: str | None = None
+    code_fingerprint: str | None = None
 
 
 class ReportRequest(BaseModel):

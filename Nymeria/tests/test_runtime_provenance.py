@@ -3,6 +3,8 @@ whether newer code has landed on disk since (``nymeria/_provenance.py``)."""
 
 from __future__ import annotations
 
+import dataclasses
+import importlib.util
 import os
 import subprocess
 from pathlib import Path
@@ -208,7 +210,7 @@ def test_without_a_fingerprint_a_moved_checkout_still_reads_as_drift(tmp_path):
     pkg = _package(tmp_path)
     _git(tmp_path, "ref: refs/heads/main", {"refs/heads/main": SHA_A})
     record = prov.capture(pkg)
-    record = prov.BootRecord(**{**record.__dict__, "fingerprint": None})
+    record = dataclasses.replace(record, fingerprint=None)
     assert prov.drift(record, pkg) is None
     (tmp_path / ".git" / "refs" / "heads" / "main").write_text(SHA_B + "\n")
     assert prov.drift(record, pkg) == (
@@ -246,6 +248,83 @@ def test_an_upgraded_install_names_the_version_now_on_disk(tmp_path, monkeypatch
     assert record.installed and record.dist_version == "0.2.0b6"
     _touch(pkg / "__init__.py", 1_000_000_000)
     assert prov.drift(record, pkg) == "NymeriaOS 0.2.0b7 is installed; this process runs 0.2.0b6"
+
+
+# -- #423: the host side of deploy-sync's identity check ---------------------
+#
+# ``scripts/deploy_sync.py`` runs from a system python3 and cannot import this
+# package, so it carries a COPY of the walk and digest. These pin the copy to
+# the original: deploy-sync compares the two across processes (and across a
+# bind mount), so any drift between them reads as "booted files differ" on
+# every restart.
+
+_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "deploy_sync.py"
+_spec = importlib.util.spec_from_file_location("deploy_sync_parity", _SCRIPT)
+assert _spec is not None and _spec.loader is not None
+deploy_sync = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(deploy_sync)
+
+
+def _server_digest(pkg: Path):
+    fp = prov.source_fingerprint(pkg)
+    return None if fp is None else prov.fingerprint_digest(fp)
+
+
+def test_the_script_digest_equals_the_server_digest(tmp_path):
+    """V14, including the ``__pycache__`` exclusion (``_package`` writes a
+    .pyc) and the ``run.py`` beside the package."""
+    pkg = _package(tmp_path)
+    (pkg / "core" / "__pycache__").mkdir()
+    (pkg / "core" / "__pycache__" / "mod1.cpython-312.pyc").write_bytes(b"\0" * 7)
+    digest = deploy_sync.checkout_fingerprint(pkg)
+    assert digest is not None
+    assert digest == _server_digest(pkg)
+    # What the script accepts from a target is exactly what the server sends.
+    assert deploy_sync.reported_identity({"code_fingerprint": digest}).files == digest
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda pkg: _touch(pkg / "core" / "mod1.py", 1_000_000_000),
+        lambda pkg: _same_mtime_new_size(pkg / "core" / "mod1.py"),
+        lambda pkg: (pkg / "core" / "new.py").write_text("Y = 1\n"),
+        lambda pkg: _touch(pkg.parent / "run.py", 1_000_000_000),
+    ],
+    ids=["mtime", "size", "added", "entry-point"],
+)
+def test_one_changed_file_moves_both_digests_together(tmp_path, change):
+    pkg = _package(tmp_path)
+    before = deploy_sync.checkout_fingerprint(pkg)
+    change(pkg)
+    after = deploy_sync.checkout_fingerprint(pkg)
+    assert after != before
+    assert after == _server_digest(pkg)
+
+
+def test_bytecode_moves_neither_digest(tmp_path):
+    pkg = _package(tmp_path)
+    before = deploy_sync.checkout_fingerprint(pkg)
+    (pkg / "__pycache__" / "mod9.cpython-312.pyc").write_bytes(b"\0" * 99)
+    assert deploy_sync.checkout_fingerprint(pkg) == before == _server_digest(pkg)
+
+
+def test_a_missing_package_has_no_digest_on_either_side(tmp_path):
+    missing = tmp_path / "Nymeria" / "nymeria"
+    assert deploy_sync.checkout_fingerprint(missing) is None
+    assert _server_digest(missing) is None
+
+
+def test_the_digest_is_short_hex_and_tracks_every_component():
+    base = prov.Fingerprint(files=3, mtime_ns_sum=10, size_sum=20)
+    digest = prov.fingerprint_digest(base)
+    assert len(digest) == 16 and int(digest, 16) >= 0
+    for other in (
+        prov.Fingerprint(files=4, mtime_ns_sum=10, size_sum=20),
+        prov.Fingerprint(files=3, mtime_ns_sum=11, size_sum=20),
+        prov.Fingerprint(files=3, mtime_ns_sum=10, size_sum=21),
+    ):
+        assert prov.fingerprint_digest(other) != digest
 
 
 def test_drift_never_raises(tmp_path, monkeypatch):

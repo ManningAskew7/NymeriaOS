@@ -5,7 +5,8 @@ container import the package at process start and hold those modules for the
 life of the process. A fix can land, pass its tests, and sit unused because
 nothing restarted the process; nothing said so until a fixed bug came back
 (backlog #101 entry 23b). This module answers "what is this process running"
-and "is there newer code on disk" for the startup log line and ``/status``.
+and "is there newer code on disk" for the startup log line and ``/status``,
+and gives deploy automation the booted identity on ``/status/turns`` (#423).
 
 Deliberately light (stdlib only): ``run.py::main()`` captures the record
 before the subcommand imports the rest of the package, so the start time
@@ -37,6 +38,7 @@ commit.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import time
@@ -169,6 +171,20 @@ def source_fingerprint(package_dir: Path = _PACKAGE_DIR) -> Optional[Fingerprint
     except OSError:
         return None
     return Fingerprint(files, mtime_sum, size_sum) if files else None
+
+
+def fingerprint_digest(fingerprint: Fingerprint) -> str:
+    """A short, stable label for a fingerprint, for comparing across hosts.
+
+    ``GET /status/turns`` reports the BOOT fingerprint's digest to admin
+    callers, and ``scripts/deploy_sync.py`` computes the same digest over the
+    host checkout to confirm a restarted process loaded exactly the files on
+    disk (#423; a bind mount preserves stat, so this holds for containers
+    too). The script is stdlib-only and cannot import this package, so it
+    carries a copy of this walk and digest; a parity test pins the two.
+    """
+    raw = f"{fingerprint.files}:{fingerprint.mtime_ns_sum}:{fingerprint.size_sum}"
+    return hashlib.sha256(raw.encode("ascii")).hexdigest()[:16]
 
 
 def installed_dist_version() -> Optional[str]:
