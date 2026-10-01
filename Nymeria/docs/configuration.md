@@ -218,9 +218,8 @@ ends on `/fallback revert` (or the GUI and bot Revert buttons) and when the
 user picks the thread's model or provider (`/model <name> thread`,
 `/provider switch <p> thread`, `/fast`, `/smart`, or a model change in the
 thread settings); reasoning-effort and unrelated thread edits keep it. Only a
-user ends a hold: an agent's model change (or a workflow's, or the CLI's
-one-turn `/fast` model) saves but keeps it. Bare `/model` and `/status` show
-an active hold. After
+user ends a hold: an agent's model change (or a workflow's) saves but keeps
+it. Bare `/model` and `/status` show an active hold. After
 streaming starts, Nymeria does not switch models because that would duplicate
 visible output.
 

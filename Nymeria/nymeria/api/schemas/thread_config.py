@@ -114,8 +114,8 @@ class ThreadConfigUpdateRequest(BaseModel):
     # Keep an active hold through a route change: the config saves, the
     # outage safety net stays until a user ends it. Sent by every non-user
     # command actor's route commands (in-process in practice; over HTTP only
-    # by API clients that choose to) and by the CLI's one-turn temporary
-    # model. clear_active_fallback wins when both are set.
+    # by API clients that choose to). clear_active_fallback wins when both
+    # are set.
     keep_active_fallback: bool = False
     clear_system_prompt: bool = False
     clear_notification_profile: bool = False

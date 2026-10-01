@@ -148,6 +148,16 @@ def _active_fallback_is_expired(active: ActiveLLMFallback) -> bool:
     return ensure_aware_utc(active.expires_at) <= utc_now()
 
 
+def live_active_fallback(tc: Any) -> ActiveLLMFallback | None:
+    """``tc``'s fallback hold when it is live (unexpired, or permanent),
+    else None. Eviction is lazy, so an expired record can still sit on a
+    config; a writer that reports a hold must not claim that one."""
+    active = getattr(tc, "active_llm_fallback", None)
+    if active is None or _active_fallback_is_expired(active):
+        return None
+    return active
+
+
 # Dedup set for the one-shot clamp warning. Keyed on (provider, model,
 # requested effort) so a saved over-ask logs once, not once per chat turn.
 # Mirrors the _DOWNGRADED_ROUTE_WARNED pattern in config/llm_providers.py.

@@ -783,23 +783,28 @@ async def _threads_configure_verb(ctx: VerbContext, verb: str, args: dict) -> An
         updated.append("kit")
 
     result: dict[str, Any] = {"thread_id": tc.thread_id, "updated": updated}
-    hold = _live_fallback_hold(tc) if "model" in updated else None
-    if hold is not None:
-        # The model saved but the hold still wins resolution (F3): say so,
-        # so the workflow does not report a model the next turn won't run.
-        result["fallback_hold"] = (
-            f"{hold.provider}/{hold.model} stays active; the new model runs "
-            "once it ends (the user can revert with /fallback revert)"
-        )
+    if "model" in updated:
+        note = _kept_hold_note(agent, tc)
+        if note:
+            result["fallback_hold"] = note
     return result
 
 
-def _live_fallback_hold(tc: Any) -> Any:
-    """The thread's unexpired fallback hold, or None (eviction is lazy, so
-    a stale record is filtered here, as every display path does)."""
-    from ..agent_llm_config import _active_fallback_is_expired
+def _kept_hold_note(agent: Any, tc: Any) -> str:
+    """The result note for a model write that met a live fallback hold, or
+    "" without one. The model saved but the hold still wins resolution
+    (F3), so say so and name the model that runs once it ends: the
+    CONFIGURED model, which is not necessarily new (a re-assert of the
+    current one gets the same, true note)."""
+    from ..agent_llm_config import configured_provider_model, live_active_fallback
 
-    hold = getattr(tc, "active_llm_fallback", None)
-    if hold is None or _active_fallback_is_expired(hold):
-        return None
-    return hold
+    hold = live_active_fallback(tc)
+    if hold is None:
+        return ""
+    provider, model = configured_provider_model(
+        getattr(tc, "llm_config", None), getattr(agent, "settings", None)
+    )
+    return (
+        f"{hold.provider}/{hold.model} stays active; {provider}/{model} runs "
+        "once it ends (the user can revert with /fallback revert)"
+    )

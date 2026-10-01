@@ -1068,11 +1068,45 @@ async def test_threads_configure_model_change_saves_but_keeps_a_live_hold(monkey
         "thread_id": "t-9",
         "updated": ["model"],
         "fallback_hold": (
-            "anthropic/claude-haiku-4-5-20251001 stays active; the new model "
+            "anthropic/claude-haiku-4-5-20251001 stays active; openai/gpt-x "
             "runs once it ends (the user can revert with /fallback revert)"
         ),
     }
     assert agent._saved
+
+
+async def test_threads_configure_reasserting_the_model_under_a_hold_names_it(monkeypatch):
+    """A workflow that re-asserts the model the thread is already configured
+    for is no route change: the hold stays (no end note), and the result
+    still says the hold wins, naming the configured model rather than
+    calling it new."""
+    from nymeria.core.thread_config import ThreadLLMConfig
+
+    hold = _configure_hold()
+    tc = _configure_tc(
+        llm_config=ThreadLLMConfig(provider="openai", model="gpt-x"),
+        active_llm_fallback=hold,
+        pending_fallback_note=None,
+    )
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(), "threads.configure", {"id_or_title": "t-9", "model": "openai:gpt-x"}
+    )
+    assert (tc.llm_config.provider, tc.llm_config.model) == ("openai", "gpt-x")
+    assert tc.active_llm_fallback is hold
+    assert tc.pending_fallback_note is None
+    assert result == {
+        "thread_id": "t-9",
+        "updated": ["model"],
+        "fallback_hold": (
+            "anthropic/claude-haiku-4-5-20251001 stays active; openai/gpt-x "
+            "runs once it ends (the user can revert with /fallback revert)"
+        ),
+    }
 
 
 async def test_threads_configure_an_expired_hold_is_not_reported(monkeypatch):

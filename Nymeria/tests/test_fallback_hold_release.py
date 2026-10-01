@@ -13,11 +13,11 @@ write, so a GUI Save of unrelated settings silently ended it.
 One rule now governs every door (``release_fallback_for_config_write``):
 an explicit revert or a user's route command ends the hold; an actual route
 change ends it unless a non-user made it (the agent, any other command
-actor, the workflow verb, the CLI's one-turn model: F3, the hold is the
-outage safety net and only a user ends it); effort and other non-route
-edits keep it. The end note names the model the thread runs afterwards,
-with a "changed" reason for a model change (F5), or "expired" when the
-hold it ends had already expired unevicted.
+actor, the workflow verb: F3, the hold is the outage safety net and only a
+user ends it); effort and other non-route edits keep it. The end note names
+the model the thread runs afterwards, with a "changed" reason for a model
+change (F5), or "expired" when the hold it ends had already expired
+unevicted.
 
 Every command test runs on BOTH command client shapes: the real in-process
 client, and ``CommandHttpClient`` over the real routes (ASGI). Settings and
@@ -55,11 +55,6 @@ from nymeria.api.schemas.thread_config import ThreadConfigUpdateRequest
 from nymeria.core.command_service import _IN_PROCESS_THREAD_CONFIG_FIELDS
 from nymeria.core.thread_config import ActiveLLMFallback, ThreadConfig, ThreadLLMConfig
 from nymeria.core.time_utils import utc_now
-from nymeria.triggers.cli.commands import CommandContext as CliCommandContext
-from nymeria.triggers.cli.temporary_model import (
-    apply_temporary_model,
-    restore_temporary_model,
-)
 from nymeria.vendor.react_agent import nodes as nodes_module
 from test_api_thread_config_router import FakeAgent
 from test_command_service import FakeCommandApi
@@ -893,89 +888,3 @@ def test_the_in_process_field_whitelist_is_a_subset_of_the_patch_schema():
     default), which is the asymmetry #236 removed."""
     unknown = _IN_PROCESS_THREAD_CONFIG_FIELDS - set(ThreadConfigUpdateRequest.model_fields)
     assert unknown == set()
-
-
-# -- the CLI's one-turn temporary model (review C-LOW) -----------------------------
-
-
-class _CliDoorClient:
-    """The three client methods the CLI's temporary-model protocol calls,
-    with the thread-config ones going through a real door."""
-
-    def __init__(self, door: Any) -> None:
-        self.door = door
-
-    async def get_thread_config(self, thread_id: str, user_id: str | None = None):
-        return await self.door.get_thread_config(thread_id, user_id=user_id)
-
-    async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
-        return {"llm_provider": GLOBAL_PROVIDER, "llm_model": GLOBAL_MODEL}
-
-    async def update_thread_config(
-        self, thread_id: str, *, user_id: str | None = None, **kwargs: Any
-    ):
-        return await self.door.update_thread_config(thread_id, user_id=user_id, **kwargs)
-
-
-def _cli_round(harness: _Harness, shape: str, body: Any) -> Any:
-    async def with_context(door):
-        ctx = CliCommandContext(
-            client=_CliDoorClient(door), thread_id=THREAD, user_id="owner"
-        )
-        return await body(ctx)
-
-    return run(harness._with_door(shape, with_context))
-
-
-def _hold_identity(tc: ThreadConfig) -> tuple[Any, ...] | None:
-    hold = tc.active_llm_fallback
-    return None if hold is None else (hold.provider, hold.model, hold.expires_at)
-
-
-@pytest.mark.parametrize("shape", SHAPES)
-def test_the_cli_temporary_model_keeps_a_live_hold_and_restores_cleanly(harness, shape):
-    """A one-turn model is not a route choice: under a hold the fast turn
-    still runs the fallback (the hold wins), and the restore leaves the
-    thread exactly as it was, hold and note slot included."""
-    harness.seed(llm_config=ThreadLLMConfig(model=NEW_MODEL), active_llm_fallback=_hold())
-    held = _hold_identity(harness.saved())
-
-    async def body(ctx):
-        restore = await apply_temporary_model(ctx, "gpt-test-mini")
-        during = harness.saved()
-        await restore_temporary_model(ctx, restore)
-        return during
-
-    during = _cli_round(harness, shape, body)
-
-    assert during.llm_config.model == "gpt-test-mini"  # type: ignore[union-attr]
-    assert _hold_identity(during) == held
-    assert during.pending_fallback_note is None
-    after = harness.saved()
-    assert after.llm_config.model == NEW_MODEL  # type: ignore[union-attr]
-    assert _hold_identity(after) == held
-    assert after.pending_fallback_note is None
-    assert harness.resolved_model() == (HELD_PROVIDER, HELD_MODEL)
-
-
-@pytest.mark.parametrize("shape", SHAPES)
-def test_a_hold_the_temporary_turn_trips_ends_on_the_restore(harness, shape):
-    """No hold when the temporary model applied, so its writes carry no flag;
-    a hold the fast turn itself trips held in for the TEMPORARY model, and
-    the restore's route change ends it, naming the restored model."""
-    harness.seed(llm_config=ThreadLLMConfig(model=NEW_MODEL))
-
-    async def body(ctx):
-        restore = await apply_temporary_model(ctx, "gpt-test-mini")
-        tripped = harness.saved()
-        tripped.active_llm_fallback = _hold(source_model="gpt-test-mini")
-        assert harness.agent.thread_config_manager.save_config(tripped)
-        await restore_temporary_model(ctx, restore)
-
-    _cli_round(harness, shape, body)
-
-    after = harness.saved()
-    assert after.llm_config.model == NEW_MODEL  # type: ignore[union-attr]
-    assert after.active_llm_fallback is None
-    note = _end_note(after)
-    assert (note["reason"], note["to_model"]) == ("changed", NEW_MODEL)
