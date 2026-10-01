@@ -152,7 +152,7 @@ describe('scheduled tasks and the activity feed', () => {
   });
 });
 
-describe('default-tool toggles save the whole list, so only a list loaded from this backend (#457)', () => {
+describe('default-tool toggles save the whole list, so only a list loaded from this backend (#447)', () => {
   const list = (names: string[]) => ({ available_tools: [], default_tools: names, callable_thread_count: 0 });
 
   it('after a switch reset the store a toggle sends nothing; once B`s list loads it edits B`s list', async () => {
