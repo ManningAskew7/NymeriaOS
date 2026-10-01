@@ -1812,6 +1812,131 @@ def test_after_the_start_a_kept_dropped_key_is_named_and_a_cleared_one_never(
         )
         assert "/settings clear LLM_BASE_URL and /settings clear OPENAI_API_KEY" in after_start
     assert "USER_TIMEZONE" not in after_start
+    # The pre-start check reached the stack, so the start asks nothing again.
+    assert "in the stack that just started" not in after_start
+    assert [cmd for cmd in fake.calls if "restart" in cmd] == []
+
+
+def _started_from_down(monkeypatch, tmp_path, *, stack="slim", app_file=_APP_GATEWAY_FILE):
+    """W15: an installed stack, stopped before this reconfigure; health waits
+    are recorded (and pass)."""
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, stack=stack, app_file=app_file)
+    fake.down = True
+    health: list[str] = []
+    monkeypatch.setattr(
+        finalize_mod, "wait_for_health", lambda **kw: health.append(kw["url"]) or True
+    )
+    return root, fake, health
+
+
+def _restarts(fake: _FakeStack) -> list[list[str]]:
+    return [cmd for cmd in fake.calls if "restart" in cmd]
+
+
+@pytest.mark.parametrize(
+    "stack,restart",
+    [
+        ("slim", ["docker", "compose", "-f", "docker-compose.single.yml", "restart", "nymeria-single"]),
+        ("full", ["docker", "compose", "--env-file", ".env.docker", "restart", "api", "worker"]),
+    ],
+)
+def test_a_stack_the_wizard_started_is_checked_after_the_start(
+    monkeypatch, tmp_path, stack, restart
+):
+    # W15 (DP2): the pre-start check found the stack down; the wizard starts
+    # it, then the check runs against THIS run's config: it asks, removes,
+    # restarts what loads the file (api, plus the worker on the full stack)
+    # and waits for health again. The app's LLM_PROVIDER already equals the
+    # new value, so it is neither asked about nor removed.
+    app_file = _APP_GATEWAY_FILE + "LLM_PROVIDER=anthropic\n"
+    root, fake, health = _started_from_down(monkeypatch, tmp_path, stack=stack, app_file=app_file)
+    console = _interactive(monkeypatch, "y", "y")
+
+    assert setup_main([*_docker(stack), "--root", str(root), *_ANTHROPIC, "--start"]) == 0
+
+    assert console.prompts == [
+        "Remove the app-saved route settings (LLM_BASE_URL) so this choice takes effect? [Y/n]",
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]",
+    ]
+    assert fake.text() == "# keep-me\nUSER_TIMEZONE=UTC\nLLM_PROVIDER=anthropic\n"
+    # Ordered: start, the one removal, then the restart; health waited twice.
+    applies = fake.execs(app_shadow.APPLY_PROGRAM)
+    assert len(applies) == 1
+    up = next(i for i, cmd in enumerate(fake.calls) if "up" in cmd)
+    assert up < fake.calls.index(applies[0]) < fake.calls.index(restart)
+    assert _restarts(fake) == [restart]
+    assert len(health) == 2
+    out = console.text
+    assert "Setup could not check the settings saved in the app" in out
+    assert "That copy loads last, so it overrides this setup in the stack that just started." in out
+    assert "Removed the app's copy of LLM_BASE_URL, OPENAI_API_KEY." in out
+    command = " ".join(restart)
+    assert f"The running stack loaded them at boot, so setup restarts it: {command}" in out
+    # The closing note does not name what the catch-up already handled.
+    tail = out[out.index("so setup restarts it:"):]
+    assert "LLM_BASE_URL" not in tail and "OPENAI_API_KEY" not in tail
+
+
+@pytest.mark.parametrize("how", ["headless", "declined"])
+def test_a_started_stack_that_keeps_the_app_copies_is_never_restarted(
+    monkeypatch, tmp_path, capsys, how
+):
+    # W15, warn-only side: the headless default warns about the stack that
+    # just started; declining keeps both copies. Either way nothing is
+    # removed, no restart, one health wait, and the keys are named once.
+    root, fake, health = _started_from_down(monkeypatch, tmp_path)
+    console = _interactive(monkeypatch, "n", "n") if how == "declined" else None
+    # Headless from a real terminal still never asks.
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_ANTHROPIC, "--start"]) == 0
+
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    assert fake.text() == _APP_GATEWAY_FILE
+    assert _restarts(fake) == []
+    assert len(health) == 1
+    out = console.text if console is not None else _flat(capsys.readouterr().out)
+    if how == "headless":
+        assert "Settings saved in the app override this setup in the stack that just started" in out
+        assert "in the app, or re-run setup with --clear-app-overrides" in out
+        assert "in the app after the start" not in out
+    else:
+        assert len(console.prompts) == 2
+        assert (
+            "Kept the app's copy of LLM_BASE_URL: it overrides this setup in the "
+            "stack that just started." in out
+        )
+    assert "brings it back" not in out[out.index("Nymeria is up."):]
+
+
+def test_a_failed_restart_names_the_command_to_run(monkeypatch, tmp_path, capsys):
+    # W15 with --clear-app-overrides: the removal ran, the restart did not.
+    root, fake, health = _started_from_down(monkeypatch, tmp_path)
+    stack_run = subprocess.run
+
+    def failing_restart(cmd, *args, **kwargs):
+        if "restart" in cmd:
+            fake.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+        return stack_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", failing_restart)
+    capsys.readouterr()
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_ANTHROPIC, "--start", "--clear-app-overrides",
+    ]) == 0
+
+    assert fake.text() == "# keep-me\nUSER_TIMEZONE=UTC\n"
+    assert len(_restarts(fake)) == 1
+    assert len(health) == 1
+    out = _flat(capsys.readouterr().out)
+    assert (
+        "Could not restart automatically. Run `docker compose -f "
+        "docker-compose.single.yml restart nymeria-single` yourself so the removal "
+        "takes effect." in out
+    )
 
 
 def test_the_flag_on_a_native_install_is_ignored_with_one_note(monkeypatch, tmp_path, capsys):

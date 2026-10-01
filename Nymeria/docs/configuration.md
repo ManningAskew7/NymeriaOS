@@ -76,8 +76,12 @@ that slot is already set. Headless runs only warn, naming each
 copies without asking, or `--no-clear-app-overrides` to never remove them
 (the interactive wizard then warns only). When the stack is not running, or
 its image predates the check, the wizard names this run's keys and the
-command to run once it is up. After a wizard-run start, the closing note also
-names any key this run removed that the app's copy still brings back.
+command to run once it is up; if the wizard then starts that stack itself, it
+asks the same questions once the stack is healthy (judged against the new
+config, so a saved copy equal to the new value is not asked about) and
+restarts the api (and on the full stack the worker) after removing anything.
+After a wizard-run start, the closing note also names any key this run removed
+that the app's copy still brings back.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 

@@ -3192,7 +3192,9 @@ def run_next_action(
             else None
         )
         if state.hosting is HostingOption.DOCKER:
-            status = _start_now_docker(console, state=state, root=root)
+            status = _start_now_docker(
+                console, state=state, root=root, non_interactive=non_interactive
+            )
             chat_apps()
             return status
         if state.hosting is HostingOption.LOCAL:
@@ -3215,7 +3217,9 @@ def run_next_action(
     return 0
 
 
-def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> int:
+def _start_now_docker(
+    console: Console, *, state: WizardState, root: Path, non_interactive: bool = False
+) -> int:
     spec = _docker_stack_spec(state)
     # One `up -d` brings up the whole stack: the full stack's `depends_on` health
     # gates order Postgres + Redis before the api, the api self-mints the internal
@@ -3283,8 +3287,28 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
         _print_docker_server_browser_steps(console, state, root=root)
         return 0
     console.print("[green]Nymeria is up.[/green]")
-    report = app_settings_shadow.probe(_app_settings_channel(spec, root))
-    overridden, brought_back = _post_start_shadows(report, state.app_settings_run)
+    channel = _app_settings_channel(spec, root)
+    report = app_settings_shadow.probe(channel)
+    run = state.app_settings_run
+    raised: frozenset[str] = frozenset()
+    if run is not None:
+        # #435 DP2: the pre-start check could not reach the stack (stopped,
+        # or an older image) and this start just brought it up on the new
+        # config, so ask now, precisely, and restart what loads the file.
+        from .tool_keys import gateway_direct_slot
+
+        raised, changed = app_settings_shadow.check_after_start(
+            console,
+            channel,
+            report,
+            run,
+            mode=state.clear_app_overrides,
+            interactive=app_settings_shadow.is_interactive(non_interactive),
+            gateway_slot=lambda slot: gateway_direct_slot(state, slot),
+        )
+        if changed:
+            _restart_for_app_settings(console, spec=spec, root=root)
+    overridden, brought_back = _post_start_shadows(report, run, exclude=raised)
     _print_docker_settings_overrides(console, overridden, brought_back=brought_back)
     verify_public_url_now(state, console)
     smoke_token = None
@@ -3873,17 +3897,21 @@ def _app_settings_channel(spec: _DockerStackSpec, root: Path) -> ComposeChannel:
 
 
 def _post_start_shadows(
-    report: app_settings_shadow.FileReport, run: app_settings_shadow.ShadowRun | None
+    report: app_settings_shadow.FileReport,
+    run: app_settings_shadow.ShadowRun | None,
+    *,
+    exclude: frozenset[str] = frozenset(),
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(overridden, brought_back)`` names for the post-start note (DP6).
 
     Judged by the recreated container, so against THIS run's config. A key
-    this run cleared from the app's file is never named. ``brought_back``:
-    keys this run removed from `.env.docker` that the app's file still sets
+    this run cleared from the app's file is never named, nor one the
+    post-start catch-up just raised (``exclude``). ``brought_back``: keys
+    this run removed from `.env.docker` that the app's file still sets
     (#434's report can only call those "saved only in the app"; the wizard
     knows it just dropped them). An older image reports names only.
     """
-    cleared = run.cleared if run is not None else set()
+    cleared = (run.cleared if run is not None else set()) | exclude
     dropped = run.diff.dropped if run is not None else frozenset()
     if report.status == "unsupported":
         return tuple(k for k in report.legacy_overrides if k not in cleared), ()
@@ -3894,6 +3922,45 @@ def _post_start_shadows(
         if e.key in dropped and e.kind == "app_only" and e.key not in cleared
     )
     return overridden, brought_back
+
+
+def _restart_for_app_settings(
+    console: Console, *, spec: _DockerStackSpec, root: Path
+) -> None:
+    """Restart the services that load `/data/settings.env` and wait for health.
+
+    The api (and on the full stack the worker, whose environment anchor loads
+    the same file) read it once at boot, so the post-start catch-up's removal
+    needs a restart, not a recreate: the environment is already this run's.
+    The mcp container and the bots never load it.
+    """
+    services = [spec.service] + (["worker"] if spec.service == DOCKER_FULL_SERVICE else [])
+    manual = _compose_command_str(spec, "restart", *services)
+    _print_command(console, manual)
+    try:
+        # env-gate: full-copy - the same `_compose_env` and reason as the
+        # `up -d` this follows: compose resolves the project from `${...}` in
+        # the process environment on the no-`--env-file` path.
+        result = subprocess.run(
+            _compose_argv(spec, "restart", *services),
+            cwd=str(root),
+            env=_compose_env(spec),
+        )
+    except (OSError, ValueError):
+        result = None
+    if result is None or result.returncode != 0:
+        console.print(
+            f"[yellow]Could not restart automatically. Run `{escape(manual)}` "
+            "yourself so the removal takes effect.[/yellow]"
+        )
+        return
+    if not wait_for_health(
+        console=console, url=spec.health_url, timeout=spec.health_timeout
+    ):
+        console.print(
+            "[yellow]Restarted, but the health check has not passed yet; check "
+            f"`{_compose_command_str(spec, 'logs', '-f')}`.[/yellow]"
+        )
 
 
 def _print_docker_settings_overrides(

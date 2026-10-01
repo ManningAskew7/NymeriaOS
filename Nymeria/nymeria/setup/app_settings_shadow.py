@@ -440,7 +440,8 @@ class ShadowRun:
     """This run's record, read by the post-start note (and catch-up)."""
 
     diff: ConfigDiff
-    # The pre-start check got a report from the running container.
+    # The pre-start check got a report from the running container, or had
+    # nothing to check. False sends a wizard-run start to check again (DP2).
     checked: bool = False
     # Keys gone from the app's file because of this run (cleared, moved, or
     # already gone when the removal ran): never named as a shadow afterwards.
@@ -524,26 +525,37 @@ def _ask(console: Console, prompt: str) -> bool:
     return not answer.startswith("n")
 
 
-def _kept_warning(console: Console, candidates: Sequence[Candidate]) -> None:
+def _when(started: bool) -> str:
+    """Where the app's copy wins: the stack about to be recreated, or the one
+    the wizard just started (the post-start catch-up)."""
+    return "in the stack that just started" if started else "once the stack is recreated"
+
+
+def _kept_warning(
+    console: Console, candidates: Sequence[Candidate], *, started: bool = False
+) -> None:
     keys = [c.key for c in candidates]
     hints = "".join(_clear_hint(c) for c in candidates if c.group == "credential")
     console.print(
         f"[yellow]Kept the app's copy of {_names(keys)}: it overrides this setup "
-        "once the stack is recreated. To use this setup's value later, an admin "
-        f"runs {_clear_commands(keys)} in the app.{escape(hints)}[/yellow]"
+        f"{_when(started)}. To use this setup's value later, an admin runs "
+        f"{_clear_commands(keys)} in the app.{escape(hints)}[/yellow]"
     )
 
 
-def _warn_only(console: Console, candidates: Sequence[Candidate]) -> None:
+def _warn_only(
+    console: Console, candidates: Sequence[Candidate], *, started: bool = False
+) -> None:
     keys = [c.key for c in candidates]
     hints = "".join(_clear_hint(c) for c in candidates if c.group == "credential")
     console.print(
-        "\n[yellow]Settings saved in the app override this setup once the stack "
-        f"is recreated: the app's copy ({APP_SETTINGS_PATH} on the data volume) "
-        f"loads last and sets {_names(c.label() for c in candidates)}. To use "
-        f"this setup's values, an admin runs {_clear_commands(keys)} in the app "
-        "after the start, or re-run setup with --clear-app-overrides to remove "
-        f"them now.{escape(hints)}[/yellow]"
+        f"\n[yellow]Settings saved in the app override this setup {_when(started)}: "
+        f"the app's copy ({APP_SETTINGS_PATH} on the data volume) loads last and "
+        f"sets {_names(c.label() for c in candidates)}. To use this setup's "
+        f"values, an admin runs {_clear_commands(keys)} in the app"
+        + ("" if started else " after the start")
+        + ", or re-run setup with --clear-app-overrides to remove them now."
+        + f"{escape(hints)}[/yellow]"
     )
 
 
@@ -555,15 +567,16 @@ def _report_outcomes(
     run: ShadowRun,
     *,
     applies_when: str,
-) -> None:
+) -> list[str]:
+    """Print each key's outcome; return the keys whose copy left the file."""
     keys = [c.key for c in attempted]
     if statuses is None:
         console.print(
             "[yellow]Could not remove the app's copies: the container did not "
-            f"answer. After the start, an admin runs {_clear_commands(keys)} in "
-            "the app.[/yellow]"
+            f"answer. An admin runs {_clear_commands(keys)} in the app once the "
+            "stack is up.[/yellow]"
         )
-        return
+        return []
     removed = [k for k in keys if statuses.get(k) in ("cleared", "pinned_line_removed")]
     moved = [c for c in attempted if statuses.get(c.key) == "relocated"]
     gone = [k for k in keys if statuses.get(k) == "not_saved"]
@@ -606,6 +619,7 @@ def _report_outcomes(
             )
     if removed or moved:
         console.print(applies_when)
+    return [*removed, *(c.key for c in moved)]
 
 
 def resolve_candidates(
@@ -617,17 +631,21 @@ def resolve_candidates(
     mode: bool | None,
     interactive: bool,
     applies_when: str,
-) -> None:
+    started: bool = False,
+) -> list[str]:
     """Ask (or follow the flag), then remove the accepted copies in one exec.
 
     ``mode``: True clears every candidate without asking, False never clears
     (warn only), None asks when ``interactive`` and warns otherwise.
+    ``started``: the stack is already running this run's config (the
+    post-start catch-up), which only changes the copy. Returns the keys whose
+    copy left the app's file.
     """
     if not candidates:
-        return
+        return []
     if mode is False or (mode is None and not interactive):
-        _warn_only(console, candidates)
-        return
+        _warn_only(console, candidates, started=started)
+        return []
     accepted: list[Candidate] = []
     if mode is True:
         accepted = list(candidates)
@@ -635,8 +653,9 @@ def resolve_candidates(
         console.print(
             "\n[bold]Settings saved in the app[/bold]\nThe app keeps its own copy "
             f"of some settings this setup changed ({APP_SETTINGS_PATH} on the data "
-            "volume). That copy loads last, so once the stack is recreated it "
-            "would override this setup."
+            "volume). That copy loads last, so it "
+            + ("overrides this setup in the stack that just started." if started
+               else "would override this setup once the stack is recreated.")
         )
         route = [c for c in candidates if c.group == "route"]
         if route:
@@ -648,7 +667,7 @@ def resolve_candidates(
             ):
                 accepted.extend(route)
             else:
-                _kept_warning(console, route)
+                _kept_warning(console, route, started=started)
         for candidate in (c for c in candidates if c.group == "credential"):
             notes = []
             if candidate.dropped:
@@ -663,12 +682,12 @@ def resolve_candidates(
             ):
                 accepted.append(candidate)
             else:
-                _kept_warning(console, [candidate])
+                _kept_warning(console, [candidate], started=started)
     if not accepted:
-        return
+        return []
     moves = {c.key: c.relocate_to for c in accepted if c.relocate_to}
     statuses = apply(channel, [c.key for c in accepted], moves)
-    _report_outcomes(
+    return _report_outcomes(
         console, channel, accepted, statuses, run, applies_when=applies_when
     )
 
@@ -704,6 +723,7 @@ def check_before_start(
     credential key; then one probe, the questions, and one apply."""
     run = ShadowRun(diff)
     if not diff.candidate_names():
+        run.checked = True  # nothing this run changed can be shadowed
         return run
     report = probe(channel)
     if report.status != "report":
@@ -728,6 +748,43 @@ def check_before_start(
     return run
 
 
+def check_after_start(
+    console: Console,
+    channel: ComposeChannel,
+    report: FileReport,
+    run: ShadowRun,
+    *,
+    mode: bool | None,
+    interactive: bool,
+    gateway_slot: Callable[[str], str | None],
+) -> tuple[frozenset[str], list[str]]:
+    """DP2: the catch-up when the pre-start check could not reach the stack and
+    the wizard then started it (Docker Desktop stopped between uses, say).
+
+    ``report`` is the post-start probe, judged against THIS run's config, so
+    the selection is precise: a copy equal to the new value is not asked
+    about. Same questions and removal as before the start; the caller then
+    restarts the services that load the file. Returns the keys it raised
+    (asked or warned about, so the closing note does not repeat them) and the
+    keys whose copy left the file (empty: no restart needed).
+    """
+    if run.checked or report.status != "report":
+        return frozenset(), []
+    run.checked = True
+    candidates = select_candidates(report, run.diff, precise=True, gateway_slot=gateway_slot)
+    changed = resolve_candidates(
+        console,
+        channel,
+        candidates,
+        run,
+        mode=mode,
+        interactive=interactive,
+        applies_when="The running stack loaded them at boot, so setup restarts it:",
+        started=True,
+    )
+    return frozenset(c.key for c in candidates), changed
+
+
 def is_interactive(non_interactive: bool) -> bool:
     """A prompt needs a terminal a human answers (the local-rag rule)."""
     return not non_interactive and sys.stdin.isatty()
@@ -745,6 +802,7 @@ __all__ = [
     "ROUTE_MODEL_KEYS",
     "ShadowRun",
     "apply",
+    "check_after_start",
     "check_before_start",
     "config_diff",
     "is_interactive",
