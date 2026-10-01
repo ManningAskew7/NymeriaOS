@@ -157,6 +157,11 @@ function createThreadsStore() {
     currentThreadId = loadCurrentThreadId(threads);
     folders = loadFolders();
     sortMode = loadSortMode();
+    // Task spinners and badge counts are the previous backend's: a same-id
+    // thread on the new one (Telegram DMs, spawned threads) must not inherit
+    // them, and nothing from the new backend would ever clear them.
+    threadTaskCounts = {};
+    activeThreadTasks = new Set();
     // Re-arm the gate so the new user's first sync controls the sidebar.
     initialSyncDone = false;
     lastSyncError = null;
@@ -494,16 +499,34 @@ function createThreadsStore() {
     },
 
     /**
+     * The thread this scope last had open, as persisted (null when none, or
+     * when it was a platform-native thread, which is never persisted). A
+     * connection switch reopens it after the resync when the backend still
+     * has it.
+     */
+    savedCurrentThreadId(): string | null {
+      if (typeof localStorage === 'undefined') return null;
+      try {
+        return localStorage.getItem(CURRENT_THREAD_KEY());
+      } catch {
+        return null;
+      }
+    },
+
+    /**
      * In-memory reset for a connection switch (`backendSwitch.svelte.ts`,
      * mirroring desktop): the switched-to backend's thread list comes from
-     * the resync that follows, and the switch lands on no open thread.
-     * Nothing is persisted; the folders and sort mode the reload hook read
-     * for the new scope stay, and the previous scope's are left intact.
+     * the resync that follows, and no thread is open until the switch
+     * reopens `savedCurrentThreadId()`. Nothing is persisted; the folders,
+     * sort mode and open thread saved for the new scope stay, and the
+     * previous scope's are left intact.
      */
     reset() {
       syncGeneration += 1;
       threads = [];
       currentThreadId = null;
+      threadTaskCounts = {};
+      activeThreadTasks = new Set();
       folders = loadFolders();
       sortMode = loadSortMode();
       syncInProgress = false;

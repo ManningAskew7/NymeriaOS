@@ -88,7 +88,7 @@ The default `apiUrl` still differs by platform, but this is no longer the only d
 
 **When changing**: replicate configuration logic carefully, while preserving platform-specific defaults and any mobile setup behavior tied to first-run connection flow.
 
-User-scoped API helpers and stores must stay in sync across both apps. The API service resolves optional `userId` arguments from `configStore.identity?.id`. The identity scope is the normalized backend URL plus the account id (`utils/identityScope.ts`, EXACT_MATCH), and the reload hooks fire on every scope change and on every connection switch (`refreshIdentity({ forceReload: true })`), because every backend names its owner `default` (#242). Every store holding something a backend served registers `registerIdentityReloadHook`, clears its values there, and guards its async loads and mutations with an identity generation so stale responses from the previous backend or account cannot repopulate state after a switch. The hook tests are split the same way as the stores: `stores/backendScopedStores.test.ts` (EXACT_MATCH stores) and `stores/backendScopedStores.platform.test.ts` (per-app stores).
+User-scoped API helpers and stores must stay in sync across both apps. The API service resolves optional `userId` arguments from `configStore.identity?.id`. The identity scope is the normalized backend URL plus the account id (`utils/identityScope.ts`, EXACT_MATCH), and the reload hooks fire on every scope change and twice on every connection switch: synchronously BEFORE the repoint (`configStore.beginConnectionSwitch(url)`, so nothing the old backend served is readable while the new one's `/me` is in flight) and again once it resolves (`refreshIdentity({ forceReload: true })`), because every backend names its owner `default` (#242). Every store holding something a backend served registers `registerIdentityReloadHook`, clears its values there, and guards its async loads and mutations with an identity generation so stale responses from the previous backend or account cannot repopulate state after a switch; a component's own copy (the settings panels' GET /settings snapshot) uses `stores/backendScopedValue.svelte.ts` for the same contract. The hook tests are split the same way as the stores: `stores/backendScopedStores.test.ts` (EXACT_MATCH stores) and `stores/backendScopedStores.platform.test.ts` (per-app stores).
 
 #### `services/api.svelte.ts` and `services/api/`
 
@@ -108,6 +108,8 @@ Both apps now use the same modular API service layout:
 | `components/chat/InputHintTips.svelte` | KNOWN_DRIFT | Tip presentation: desktop has hover-pause, clip tooltip, and the elbow connector; mobile is a plain line above the composer. |
 | `utils/toolSearch.ts` | EXACT_MATCH | Local fuzzy scorer used by tool panels for fast typeahead before backend search is needed. |
 | `utils/transitions.ts` | EXACT_MATCH | Shared dropdown and collapsible slide timing constants. |
+| `utils/identityScope.ts` | EXACT_MATCH | The client storage scope (#242): backend URL normalization, the `{base}-{accountId}@{backend}` key format (provisional `{base}-@{backend}` while a switch waits for `/me`), scope compare, and the once-only carry-forward that drops stale older-format keys. The config stores own the live scope. |
+| `stores/backendScopedValue.svelte.ts` | EXACT_MATCH | A component-held copy of backend-served data (both settings panels' GET /settings snapshot, which their Save sends back whole): dropped on every identity reload hook, generation-guarded loads. |
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
 | `components/notifications/index.ts` | KNOWN_DRIFT | Desktop exports notification profile/destination editors and the full panel; mobile only exports its notification center/item subset. |
 
@@ -260,7 +262,7 @@ CLIProxy process management should remain out of mobile scope.
 | **Touch targets** | Standard sizes | Min-height 44-48px |
 | **Range sliders** | Default | Custom 24px thumbs |
 | **Safe areas** | None | `env(safe-area-inset-*)` padding |
-| **On save connection** | Switching is the AccountSwitcher's job (`connections.svelte.ts::applyConnection`) | A changed URL or token runs the full switch (`stores/backendSwitch.svelte.ts`: tear down, repoint, forced identity, thread resync, reconnect, Preferences backup); unchanged values only set `setupCompleted`. Test probes the form values and never writes the live config |
+| **On save connection** | Switching is the AccountSwitcher's job (`connections.svelte.ts::applyConnection`) | A changed URL or token runs the full switch (`stores/backendSwitch.svelte.ts`: tear down, reset before the repoint, repoint, forced identity, thread resync and reopen, reconnect, Preferences backup) and the message says how it landed (connected, token refused, or no answer); unchanged values only set `setupCompleted`; a blank field is refused untouched. Test probes the form values and never writes the live config |
 | **Active class** | `.selected` | `.active` |
 | **Lines** | ~2065 | ~1272 |
 
@@ -431,6 +433,9 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `components/layout/ChatPanel.svelte` | Chat header + container + input | Replaces `MainPanel.svelte` |
 | `utils/lifecycle.ts` | Capacitor app lifecycle (back button, foreground/background, Preferences backup/restore) | Capacitor-specific |
 | `utils/haptics.ts` | Haptic feedback wrapper (`hapticImpact`, `hapticNotification`) | Capacitor-specific |
+| `stores/backendSwitch.svelte.ts` | Settings > Connection Save and Test (#242) | Desktop's counterpart is `connections.svelte.ts::applyConnection` |
+| `stores/headerStoreLoads.svelte.ts` | Keeps the chat header's stores loaded, again after a switch resets them | Desktop carries the same effect inline in `MainPanel.svelte`; tested in the vitest `runes` project (`*.svelte.test.ts`, mobile only), whose client transform lets `$effect` run |
+| `utils/threadLlmSave.ts` | Thread Settings Save round-trips the stored `base_url`/`api_key` when untouched | Desktop's Thread Settings passes the saved `base_url` to `llmRouteConfigFrom` |
 
 ### Component Directory Reorganization
 

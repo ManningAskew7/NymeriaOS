@@ -178,9 +178,10 @@ describe('refreshIdentity: an unresolved /me', () => {
     expect(result).toBeNull();
     expect(hooks).toEqual(['fired']);
     expect(configStore.identity).toBeNull();
-    expect(currentIdentityScope()).toBeNull();
-    // Unresolved: back on the unscoped keys, never the previous backend's.
-    expect(scopedKey('nymeria-threads')).toBe('nymeria-threads');
+    // Unresolved: parked on B's provisional keys, never the previous
+    // backend's, and never the unscoped ones the next backend would adopt.
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: '' });
+    expect(scopedKey('nymeria-threads')).toBe(`nymeria-threads-@${B}`);
     // The token survives: this is not a sign-out.
     expect(configStore.apiKey).toBe('nym_token');
   });
@@ -194,7 +195,7 @@ describe('refreshIdentity: an unresolved /me', () => {
     await configStore.refreshIdentity({ forceReload: true });
 
     expect(hooks).toEqual(['fired']);
-    expect(currentIdentityScope()).toBeNull();
+    expect(currentIdentityScope()).toEqual({ backend: A, accountId: '' });
   });
 
   it('a network blip on the unchanged connection keeps the scope and fires nothing', async () => {
@@ -224,6 +225,61 @@ describe('refreshIdentity: an unresolved /me', () => {
     expect(hooks).toEqual([]);
     expect(configStore.identity?.id).toBe('default');
     expect(currentIdentityScope()?.backend).toBe(A);
+  });
+});
+
+describe('beginConnectionSwitch: the reset before the repoint (review S-MED-1, S-LOW-4)', () => {
+  it('fires every hook once, synchronously, and parks the scope on the target backend with no identity', async () => {
+    seedConfig(A, 'default');
+    const { configStore, hooks, currentIdentityScope, scopedKey, identityReloadGeneration } = await loadStore();
+    const before = identityReloadGeneration();
+
+    configStore.beginConnectionSwitch(`${B}/`);
+
+    expect(hooks).toEqual(['fired']);
+    expect(identityReloadGeneration()).toBe(before + 1);
+    expect(configStore.identity).toBeNull();
+    // The repoint is the caller's next step; nothing has asked anyone yet.
+    expect(configStore.apiUrl).toBe(A);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: '' });
+    expect(scopedKey('nymeria-threads')).toBe(`nymeria-threads-@${B}`);
+  });
+
+  it('the forced /me then fires the hooks again under the resolved scope and carries what was written meanwhile', async () => {
+    seedConfig(A, 'default');
+    const { configStore, hooks, currentIdentityScope, scopedKey } = await loadStore();
+    configStore.beginConnectionSwitch(B);
+    configStore.apiUrl = B;
+    storage.setItem(scopedKey('nymeria-thread-sort-mode'), 'alphabetical');
+
+    fetchMock.mockResolvedValueOnce(meOk('default'));
+    await configStore.refreshIdentity({ forceReload: true });
+
+    expect(hooks).toEqual(['fired', 'fired']);
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: 'default' });
+    expect(storage.getItem(scopedKey('nymeria-thread-sort-mode'))).toBe('alphabetical');
+    expect(storage.getItem(`nymeria-thread-sort-mode-@${B}`)).toBeNull();
+  });
+
+  it('writes made while B`s /me failed stay B`s: a backend that resolves later inherits none of them', async () => {
+    seedConfig(A, 'default');
+    const { configStore, currentIdentityScope, scopedKey } = await loadStore();
+    configStore.beginConnectionSwitch(B);
+    configStore.apiUrl = B;
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await configStore.refreshIdentity({ forceReload: true });
+    storage.setItem(scopedKey('nymeria-thread-folders'), '[{"id":"b","name":"Made on B"}]');
+
+    const C = 'http://localhost:8099';
+    configStore.beginConnectionSwitch(C);
+    configStore.apiUrl = C;
+    fetchMock.mockResolvedValueOnce(meOk('default'));
+    await configStore.refreshIdentity({ forceReload: true });
+
+    expect(currentIdentityScope()).toEqual({ backend: C, accountId: 'default' });
+    expect(storage.getItem(scopedKey('nymeria-thread-folders'))).toBeNull();
+    expect(storage.getItem(`nymeria-thread-folders-@${B}`)).toBe('[{"id":"b","name":"Made on B"}]');
   });
 });
 

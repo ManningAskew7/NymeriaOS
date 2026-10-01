@@ -5,6 +5,10 @@ import { threadsStore } from '$lib/stores/threads.svelte';
 import { autonomousStore } from '$lib/stores/autonomous.svelte';
 import { notificationStore } from '$lib/stores/notifications.svelte';
 import { stopSyncPoll } from '$lib/stores/syncPoll.svelte';
+import { switchToThread } from '$lib/stores/navigation.svelte';
+import { uiPromptStore } from '$lib/stores/uiPrompt.svelte';
+import { authPromptStore } from '$lib/stores/authPrompt.svelte';
+import { browserLoginStore } from '$lib/stores/browserLogin.svelte';
 import { secureGet, secureSet } from '$lib/services/secureStorage';
 
 const CONNECTIONS_KEY = 'nymeria-saved-connections';
@@ -202,13 +206,15 @@ export function createConnectionsStore() {
 
   /**
    * Apply an arbitrary backend (url + token) as the live connection: tear down
-   * the current session, repoint configStore, re-resolve identity, and clear +
-   * re-sync threads against the new backend. This is the single source of truth
-   * for switching backends: every UI path that commits a backend change (the
-   * "Connect" button via switchTo, plus the Backend settings form's Save/edit
-   * handlers) must route through here. The identity refresh is FORCED, so the
-   * reload hooks (the reset contract every backend-scoped store registers
-   * with) fire even when both backends name the account `default` (#242).
+   * the current session, drop every backend-scoped store's state, repoint
+   * configStore, re-resolve identity, and resync threads against the new
+   * backend. This is the single source of truth for switching backends: every
+   * UI path that commits a backend change (the "Connect" button via switchTo,
+   * plus the Backend settings form's Save/edit handlers) must route through
+   * here. The reset runs synchronously BEFORE the repoint and again, forced,
+   * once /me resolves, so the reload hooks (the reset contract every
+   * backend-scoped store registers with) fire even when both backends name
+   * the account `default` (#242).
    */
   async function applyConnection(apiUrl: string, apiKey: string): Promise<void> {
     // 1. Disconnect SSE and polling
@@ -216,14 +222,25 @@ export function createConnectionsStore() {
     stopSyncPoll();
     notificationStore.stopPolling();
 
-    // 2. Clear current chat state
+    // 2. Clear current chat state, and cancel any open prompt modal on the
+    //    backend whose agent opened it (config still names it) so that agent
+    //    wakes now rather than at its timeout.
     chatStore.clearMessages();
+    uiPromptStore.cancelActive();
+    authPromptStore.cancelActive();
+    browserLoginStore.cancelActive();
 
-    // 3. Update config (triggers reactive updates in the api service)
+    // 3. Drop every backend-scoped store's state BEFORE the api client
+    //    targets the new backend: nothing the old one served is readable, or
+    //    postable to the new one, during the /me round trip. Storage parks on
+    //    the new backend's provisional scope until /me names the account.
+    configStore.beginConnectionSwitch(apiUrl);
+
+    // 4. Update config (every api call reads it per request from here on)
     configStore.apiUrl = apiUrl;
     configStore.apiKey = apiKey;
 
-    // 4. Reconcile the active saved connection: pin a matching saved entry if
+    // 5. Reconcile the active saved connection: pin a matching saved entry if
     //    one exists, otherwise no saved entry owns this backend.
     const matchIndex = findCredentialIndex(apiUrl, apiKey);
     if (matchIndex >= 0) {
@@ -234,19 +251,27 @@ export function createConnectionsStore() {
       saveActiveId(null);
     }
 
-    // 5. Refresh identity FIRST, forced, so the scoped-localStorage keys resolve
-    //    to the new backend + account and every backend-scoped store drops the
-    //    previous backend's state before threads I/O. When /me cannot resolve
-    //    (network error, 5xx) the previous scope is dropped and the stores
-    //    still reset: the switch lands on the new backend with empty caches,
-    //    never the old one's. .catch keeps the switch going regardless.
+    // 6. Refresh identity, forced, so the scoped-localStorage keys resolve to
+    //    the new backend + account and the stores reset again under it. When
+    //    /me cannot resolve (network error, 5xx) the switch stays parked on
+    //    the new backend with empty caches, never the old one's. .catch keeps
+    //    the switch going regardless.
     await configStore.refreshIdentity({ forceReload: true }).catch(() => {});
 
-    // 6. Reset and reload threads from the new backend
+    // 7. Reset and reload threads from the new backend, then reopen the
+    //    thread this backend + account last had open, if it still exists.
+    const reopen = threadsStore.savedCurrentThreadId();
     threadsStore.reset();
     await threadsStore.syncFromBackend();
+    if (
+      reopen &&
+      threadsStore.currentThreadId === null &&
+      threadsStore.threads.some((t) => t.id === reopen)
+    ) {
+      void switchToThread(reopen);
+    }
 
-    // 7. Reconnect services
+    // 8. Reconnect services
     autonomousStore.connect();
     notificationStore.startPolling();
   }

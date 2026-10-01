@@ -13,7 +13,7 @@
  *   profilePics.clear(identity.id);                 // revert to default
  */
 
-import { identityScope, moveKeyIfAbsent, scopeLabel } from '$lib/utils/identityScope';
+import { carryForwardKeys, identityScope, isProvisionalScope, scopeLabel } from '$lib/utils/identityScope';
 import { configStore, currentIdentityScope, registerIdentityReloadHook } from './config.svelte';
 
 const STORAGE_PREFIX = 'nymeria_profile_pic_';
@@ -38,11 +38,12 @@ function loadAll(): Record<string, string> {
 
 // A picture saved before pictures were backend-scoped is keyed by the bare
 // account id: it moves to the first backend that resolves that account,
-// the same once-only carry-forward the scoped localStorage keys get.
+// the same once-only carry-forward the scoped localStorage keys get (a
+// switch still waiting for /me has no account to carry it to).
 function carryForwardCurrentScope(): void {
   const scope = currentIdentityScope();
-  if (!scope || typeof localStorage === 'undefined') return;
-  moveKeyIfAbsent(localStorage, [STORAGE_PREFIX + scope.accountId], STORAGE_PREFIX + scopeLabel(scope));
+  if (!scope || isProvisionalScope(scope) || typeof localStorage === 'undefined') return;
+  carryForwardKeys(localStorage, [STORAGE_PREFIX + scope.accountId], STORAGE_PREFIX + scopeLabel(scope));
 }
 
 function createStore() {

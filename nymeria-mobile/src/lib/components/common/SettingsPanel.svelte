@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { healthStore } from '$lib/stores/health.svelte';
-  import { saveConnection, testConnection } from '$lib/stores/backendSwitch.svelte';
+  import { saveConnection, saveOutcomeMessage, testConnection } from '$lib/stores/backendSwitch.svelte';
+  import { createBackendScopedValue } from '$lib/stores/backendScopedValue.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
@@ -118,11 +119,19 @@
   let testMessage = $state('');
   let savingConnection = $state(false);
 
-  // Server settings
-  let serverSettings = $state<ServerSettings | null>(null);
-  let loadingSettings = $state(false);
+  // Server settings: the GET /settings snapshot the server tabs' forms are
+  // seeded from, and that their Save sends back whole. It belongs to the
+  // backend it came from: every identity reload hook (any connection switch)
+  // drops it, and the open effect reseeds from the new backend (#242).
+  const serverSettingsSource = createBackendScopedValue<{
+    settings: ServerSettings;
+    catalog: LLMProviderSpec[];
+  }>('server settings');
+  onMount(() => serverSettingsSource.attach());
+  let serverSettings = $derived(serverSettingsSource.value?.settings ?? null);
+  let loadingSettings = $derived(serverSettingsSource.loading);
   // Latched by a failed load so the open effect stops re-driving it (#381).
-  let settingsLoadFailed = $state(false);
+  let settingsLoadFailed = $derived(serverSettingsSource.failed);
   let savingSettings = $state(false);
 
   // LLM settings
@@ -244,76 +253,77 @@
     return provider !== 'google' && provider !== 'ollama';
   }
 
-  // Load server settings
+  // Seed every server tab's form from a GET /settings snapshot.
+  function seedServerForms(settings: ServerSettings, catalog: LLMProviderSpec[]) {
+    providerCatalog = catalog;
+    llmProvider = settings.llm_provider;
+    llmProviderRoute = settings.llm_provider_route;
+    llmModel = settings.llm_model;
+    llmFastModel = settings.llm_fast_model ?? '';
+    llmSmartModel = settings.llm_smart_model ?? '';
+    llmBackgroundModel = settings.llm_background_model ?? '';
+    llmBackgroundBaseUrl = settings.llm_background_base_url ?? '';
+    llmFallbackModels = (settings.llm_fallback_models ?? []).join(', ');
+    llmFallbackHoldSeconds = settings.llm_fallback_hold_seconds ?? 7200;
+    llmTemperature = settings.llm_temperature;
+    llmMaxTokens = settings.llm_max_tokens;
+    llmTopP = settings.llm_top_p;
+    llmTopK = settings.llm_top_k;
+    llmFrequencyPenalty = settings.llm_frequency_penalty;
+    llmPresencePenalty = settings.llm_presence_penalty;
+    llmReasoningEffort = settings.llm_reasoning_effort;
+    llmExtendedThinking = settings.llm_extended_thinking;
+    llmUseModelDefaults = settings.llm_use_model_defaults;
+    llmBaseUrl = settings.llm_base_url || '';
+    llmContextLength = settings.llm_context_length;
+    llmOllamaNumCtx = settings.llm_ollama_num_ctx;
+    openaiApiMode = settings.openai_api_mode ?? 'responses';
+    contextManagement = settings.context_management;
+    compactThreshold = settings.compact_threshold ?? 0.8;
+    compactThresholdMode = settings.compact_threshold_mode ?? 'percentage';
+    compactThresholdTokens = settings.compact_threshold_tokens ?? 100000;
+    slidingWindowCycles = settings.sliding_window_cycles;
+    logLevel = settings.log_level;
+    watchdogEnabled = settings.watchdog_enabled;
+    watchdogIntervalMinutes = settings.watchdog_interval_minutes;
+    todoStalenessMinutes = settings.todo_staleness_minutes;
+    // Voice
+    ttsProvider = settings.tts_provider ?? 'none';
+    ttsBaseUrl = settings.tts_base_url ?? '';
+    ttsModel = settings.tts_model ?? '';
+    ttsVoice = settings.tts_voice ?? '';
+    ttsOutputFormat = settings.tts_output_format ?? 'mp3';
+    ttsSpeed = settings.tts_speed ?? 1.0;
+    sttProvider = settings.stt_provider ?? 'none';
+    sttBaseUrl = settings.stt_base_url ?? '';
+    sttModel = settings.stt_model ?? '';
+    sttLanguage = settings.stt_language ?? '';
+    voiceDefaultThreadId = settings.voice_default_thread_id ?? '';
+    embeddingProvider = settings.embedding_provider ?? 'openai';
+    embeddingModel = settings.embedding_model ?? 'text-embedding-3-small';
+    embeddingDimensions = settings.embedding_dimensions;
+    ragEmbedToolResults = settings.rag_embed_tool_results ?? true;
+    ragRerankProvider = settings.rag_rerank_provider ?? 'llm';
+    ragRerankModel = settings.rag_rerank_model ?? '';
+    if (settings.llm_provider === 'openrouter') {
+      modelsStore.loadModels();
+    }
+  }
+
+  // Load server settings. A load that a connection switch overtook seeds
+  // nothing (`serverSettingsSource`).
   async function loadServerSettings() {
     if (!configStore.isConfigured) return;
-    loadingSettings = true;
-    settingsLoadFailed = false;
-    try {
-      const [settings, catalog] = await Promise.all([
-        api.getServerSettings(),
-        api.getLLMProviderCatalog(),
-      ]);
-      serverSettings = settings;
-      providerCatalog = catalog;
-      llmProvider = serverSettings.llm_provider;
-      llmProviderRoute = serverSettings.llm_provider_route;
-      llmModel = serverSettings.llm_model;
-      llmFastModel = serverSettings.llm_fast_model ?? '';
-      llmSmartModel = serverSettings.llm_smart_model ?? '';
-      llmBackgroundModel = serverSettings.llm_background_model ?? '';
-      llmBackgroundBaseUrl = serverSettings.llm_background_base_url ?? '';
-      llmFallbackModels = (serverSettings.llm_fallback_models ?? []).join(', ');
-      llmFallbackHoldSeconds = serverSettings.llm_fallback_hold_seconds ?? 7200;
-      llmTemperature = serverSettings.llm_temperature;
-      llmMaxTokens = serverSettings.llm_max_tokens;
-      llmTopP = serverSettings.llm_top_p;
-      llmTopK = serverSettings.llm_top_k;
-      llmFrequencyPenalty = serverSettings.llm_frequency_penalty;
-      llmPresencePenalty = serverSettings.llm_presence_penalty;
-      llmReasoningEffort = serverSettings.llm_reasoning_effort;
-      llmExtendedThinking = serverSettings.llm_extended_thinking;
-      llmUseModelDefaults = serverSettings.llm_use_model_defaults;
-      llmBaseUrl = serverSettings.llm_base_url || '';
-      llmContextLength = serverSettings.llm_context_length;
-      llmOllamaNumCtx = serverSettings.llm_ollama_num_ctx;
-      openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
-      contextManagement = serverSettings.context_management;
-      compactThreshold = serverSettings.compact_threshold ?? 0.8;
-      compactThresholdMode = serverSettings.compact_threshold_mode ?? 'percentage';
-      compactThresholdTokens = serverSettings.compact_threshold_tokens ?? 100000;
-      slidingWindowCycles = serverSettings.sliding_window_cycles;
-      logLevel = serverSettings.log_level;
-      watchdogEnabled = serverSettings.watchdog_enabled;
-      watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
-      todoStalenessMinutes = serverSettings.todo_staleness_minutes;
-      // Voice
-      ttsProvider = serverSettings.tts_provider ?? 'none';
-      ttsBaseUrl = serverSettings.tts_base_url ?? '';
-      ttsModel = serverSettings.tts_model ?? '';
-      ttsVoice = serverSettings.tts_voice ?? '';
-      ttsOutputFormat = serverSettings.tts_output_format ?? 'mp3';
-      ttsSpeed = serverSettings.tts_speed ?? 1.0;
-      sttProvider = serverSettings.stt_provider ?? 'none';
-      sttBaseUrl = serverSettings.stt_base_url ?? '';
-      sttModel = serverSettings.stt_model ?? '';
-      sttLanguage = serverSettings.stt_language ?? '';
-      voiceDefaultThreadId = serverSettings.voice_default_thread_id ?? '';
-      embeddingProvider = serverSettings.embedding_provider ?? 'openai';
-      embeddingModel = serverSettings.embedding_model ?? 'text-embedding-3-small';
-      embeddingDimensions = serverSettings.embedding_dimensions;
-      ragEmbedToolResults = serverSettings.rag_embed_tool_results ?? true;
-      ragRerankProvider = serverSettings.rag_rerank_provider ?? 'llm';
-      ragRerankModel = serverSettings.rag_rerank_model ?? '';
-      if (serverSettings.llm_provider === 'openrouter') {
-        modelsStore.loadModels();
-      }
-    } catch (e) {
-      console.error('Failed to load settings:', e);
-      settingsLoadFailed = true;
-    } finally {
-      loadingSettings = false;
-    }
+    await serverSettingsSource.load(
+      async () => {
+        const [settings, catalog] = await Promise.all([
+          api.getServerSettings(),
+          api.getLLMProviderCatalog(),
+        ]);
+        return { settings, catalog };
+      },
+      ({ settings, catalog }) => seedServerForms(settings, catalog)
+    );
   }
 
   $effect(() => {
@@ -359,24 +369,23 @@
 
   // A changed URL or token is a backend switch (backendSwitch.svelte.ts, #242):
   // the thread list, open transcript, identity, every backend-scoped cache and
-  // the event stream move to the new backend. Unchanged values keep the live
-  // session as it is.
+  // the event stream move to the new backend, and the server tabs reseed from
+  // it (their snapshot drops on the switch's reload hooks). Unchanged values
+  // keep the live session as it is; a blank field is refused untouched. The
+  // message says how the switch landed: "connected" only when /me answered.
   async function handleSaveConnection() {
     savingConnection = true;
     try {
-      const switched = await saveConnection(apiUrl, apiKey);
-      if (!switched) healthStore.check();
-      apiUrl = configStore.apiUrl;
-      apiKey = configStore.apiKey;
-      if (switched) {
-        // The server tabs describe the backend they were loaded from: drop
-        // them so the open-panel effect reloads them from the new one.
-        serverSettings = null;
-        settingsLoadFailed = false;
+      const outcome = await saveConnection(apiUrl, apiKey);
+      if (outcome === 'unchanged') healthStore.check();
+      if (outcome !== 'incomplete') {
+        apiUrl = configStore.apiUrl;
+        apiKey = configStore.apiKey;
       }
-      testStatus = 'success';
-      testMessage = switched ? 'Connected to the new backend.' : 'Connection saved!';
-      setTimeout(() => { testMessage = ''; }, 2000);
+      const { ok, message } = saveOutcomeMessage(outcome);
+      testStatus = ok ? 'success' : 'error';
+      testMessage = message;
+      if (ok) setTimeout(() => { testMessage = ''; }, 2000);
     } catch (e) {
       testStatus = 'error';
       testMessage = humanizeErrorText(e, { action: 'save', resource: 'the connection' });
@@ -401,6 +410,13 @@
   }
 
   async function handleSaveServerSettings() {
+    // The form is sent whole, so it must have been seeded from THIS backend:
+    // after a switch whose reload failed it still holds the previous one's.
+    if (!serverSettings) {
+      testStatus = 'error';
+      testMessage = 'Settings have not loaded from this backend yet. Reopen Settings to retry.';
+      return;
+    }
     savingSettings = true;
     testMessage = '';
     try {

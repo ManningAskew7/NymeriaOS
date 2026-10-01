@@ -11,6 +11,7 @@ import {
   carryForwardScopedKey,
   identityScope,
   normalizeBackendUrl,
+  provisionalScope,
   sameIdentityScope,
   scopedStorageKey,
   type IdentityScope
@@ -76,10 +77,13 @@ async function detectBackendOrigin(): Promise<string | null> {
 // GET /me has resolved (`utils/identityScope.ts` owns the format, #242). The
 // scope is the BACKEND plus the account, not the account alone: every slim
 // and Docker bootstrap names its owner `default`, so an id-only key made two
-// backends share one namespace. Before /me resolves, the unscoped legacy
-// keys (`nymeria-threads`, etc.) are used. The first resolve of a scope
-// carries older-format data into it, once, as a move (the account-only key,
-// else the unscoped one).
+// backends share one namespace. A connection switch parks on the target
+// backend's provisional scope (`<base>-@<backend_url>`) until /me names the
+// account; with no identity at all (first run, signed out) the unscoped
+// legacy keys (`nymeria-threads`, etc.) are used. The first resolve of a
+// scope carries older-format data into it, once, as a move (the provisional
+// key, else the account-only key, else the unscoped one), and drops the
+// leftovers once the scope holds data.
 //
 // Keys that should NEVER be namespaced live in NON_SCOPED_KEYS: the config
 // store itself (loads before identity exists) and saved-connections (picking
@@ -116,7 +120,10 @@ export function scopedKey(base: string): string {
   return scopedStorageKey(base, currentScope);
 }
 
-/** The backend + account the scoped stores belong to; null before /me resolves. */
+/**
+ * The backend + account the scoped stores belong to: null with no identity,
+ * provisional (`accountId: ''`) while a switch waits for /me.
+ */
 export function currentIdentityScope(): IdentityScope | null {
   return currentScope;
 }
@@ -344,19 +351,43 @@ function createConfigStore() {
   }
 
   /**
+   * Leave the current scope for `url`'s provisional one (backend known,
+   * account not yet) and fire the reload hooks, so every store drops what
+   * the previous scope served. Writes made before /me answers stay on this
+   * backend's own keys, never on the unscoped ones another backend would
+   * adopt.
+   */
+  function parkOnBackend(url: string, label: string): void {
+    identity = null;
+    currentScope = url.trim() ? provisionalScope(url) : null;
+    saveCurrentConfig();
+    notifyIdentityReloadHooks(label);
+  }
+
+  /**
    * /me did not resolve. A blip on the connection the scope already belongs
    * to keeps it (a focus refresh during a network hiccup must not wipe the
    * app). After the backend moved, or on a forced switch, the previous scope
-   * must not stay live: drop it and reset, so the new backend starts from
+   * must not stay live: park on the new backend and reset, so it starts from
    * empty caches instead of showing (and writing back) the old one's.
    */
   function settleUnresolvedIdentity(url: string, forceReload: boolean): void {
     const backendMoved = currentScope !== null && currentScope.backend !== normalizeBackendUrl(url);
     if (!forceReload && !backendMoved) return;
-    identity = null;
-    currentScope = null;
-    saveCurrentConfig();
-    notifyIdentityReloadHooks('unresolved identity');
+    parkOnBackend(url, 'unresolved identity');
+  }
+
+  /**
+   * Step 0 of every connection switch (`connections.svelte.ts::applyConnection`),
+   * called BEFORE the config is repointed: every backend-scoped store and
+   * open form drops the previous backend's state synchronously, so nothing
+   * it served is readable, or can be posted to the new backend, during the
+   * /me round trip (the api client reads the config per request). The forced
+   * refreshIdentity that follows fires the hooks again once the account
+   * resolves; the hooks are idempotent.
+   */
+  function beginConnectionSwitch(nextApiUrl: string): void {
+    parkOnBackend(nextApiUrl, 'connection switch');
   }
 
   /**
@@ -616,6 +647,7 @@ function createConfigStore() {
       return identity;
     },
     refreshIdentity,
+    beginConnectionSwitch,
     clearIdentity,
     signOut,
     updateIdentityDisplayName,

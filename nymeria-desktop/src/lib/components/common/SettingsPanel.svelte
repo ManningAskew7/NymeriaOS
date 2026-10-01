@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { fly } from 'svelte/transition';
   import { TAB_FADE } from '$lib/utils/transitions';
   import { countChangedFields } from '$lib/utils/settingsDirty';
@@ -34,6 +34,7 @@
   } from '$lib/utils/reasoningEffort';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { createBackendScopedValue } from '$lib/stores/backendScopedValue.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import InlineLoader from './InlineLoader.svelte';
@@ -90,7 +91,17 @@
   }
 
   // Server settings
-  let serverSettings = $state<ServerSettings | null>(null);
+  // The GET /settings snapshot the server tabs' forms are seeded from, and
+  // that a tab's Save sends back whole. It belongs to the backend it came
+  // from: every identity reload hook (any connection switch, including an
+  // edit of the active saved entry) drops it, and the load effect below
+  // reseeds from the new backend (#242).
+  const serverSettingsSource = createBackendScopedValue<{
+    settings: ServerSettings;
+    catalog: LLMProviderSpec[];
+  }>('server settings');
+  onMount(() => serverSettingsSource.attach());
+  let serverSettings = $derived(serverSettingsSource.value?.settings ?? null);
   let displayProvider = $state<DisplayProvider>('anthropic_proxy');
   let llmProvider = $state<LLMProvider>('anthropic');
   let llmProviderRoute = $state<ProviderRoute | null>(null);
@@ -612,12 +623,12 @@
   // async store calls). Mirrors the Test Connection button's disabled+label
   // idiom in the same actions row.
   let connectionSaving = $state(false);
-  let loadingSettings = $state(false);
+  let loadingSettings = $derived(serverSettingsSource.loading);
   // Latched by a failed load so the mount effect below stops re-driving it
   // (#381: with `serverSettings` null and `loadingSettings` flipping back
   // to false, a failing fetch re-ran as fast as the backend answered).
-  // Cleared by the next explicit load (save, provider switch).
-  let settingsLoadFailed = $state(false);
+  // Cleared by the next explicit load (save, provider switch) or a switch.
+  let settingsLoadFailed = $derived(serverSettingsSource.failed);
   let savingSettings = $state(false);
   let showProviderSetupWizard = $state(false);
 
@@ -895,99 +906,100 @@
     };
   });
 
-  // Load server settings when connected
+  // Seed every server tab's form from a GET /settings snapshot.
+  function seedServerForms(settings: ServerSettings, catalog: LLMProviderSpec[]) {
+    providerCatalog = catalog;
+    llmProvider = settings.llm_provider;
+    displayProvider = toDisplayProvider(settings.llm_provider, settings.llm_base_url || '');
+    llmProviderRoute = settings.llm_provider_route;
+    llmModel = settings.llm_model;
+    llmFastModel = settings.llm_fast_model ?? '';
+    llmSmartModel = settings.llm_smart_model ?? '';
+    llmBackgroundModel = settings.llm_background_model ?? '';
+    llmBackgroundBaseUrl = settings.llm_background_base_url ?? '';
+    llmFallbackModels = (settings.llm_fallback_models ?? []).join(', ');
+    llmFallbackHoldSeconds = settings.llm_fallback_hold_seconds ?? 7200;
+    llmFallbackSwitchMode = settings.llm_fallback_switch_mode ?? 'auto';
+    llmFallbackPromptTimeoutSeconds = settings.llm_fallback_prompt_timeout_seconds ?? 180;
+    llmRefusalSwapMode = settings.llm_refusal_swap_mode ?? 'ask';
+    llmTemperature = settings.llm_temperature;
+    llmMaxTokens = settings.llm_max_tokens;
+    llmTopP = settings.llm_top_p;
+    llmTopK = settings.llm_top_k;
+    llmFrequencyPenalty = settings.llm_frequency_penalty;
+    llmPresencePenalty = settings.llm_presence_penalty;
+    llmReasoningEffort = settings.llm_reasoning_effort;
+    llmExtendedThinking = settings.llm_extended_thinking;
+    dynamicToolBinding = settings.dynamic_tool_binding;
+    sequentialToolExecution = settings.sequential_tool_execution;
+    llmUseModelDefaults = settings.llm_use_model_defaults;
+    llmBaseUrl = settings.llm_base_url || '';
+    llmContextLength = settings.llm_context_length;
+    llmOllamaNumCtx = settings.llm_ollama_num_ctx;
+    openaiApiMode = settings.openai_api_mode ?? 'responses';
+    contextManagement = settings.context_management;
+    compactThreshold = settings.compact_threshold ?? 0.8;
+    compactThresholdMode = settings.compact_threshold_mode ?? 'percentage';
+    compactThresholdTokens = settings.compact_threshold_tokens ?? 100000;
+    compactProactiveEnabled = settings.compact_proactive_enabled ?? false;
+    compactProactiveIdleSeconds = settings.compact_proactive_idle_seconds ?? 210;
+    compactProactiveMinPct = settings.compact_proactive_min_pct ?? 85;
+    // Load model metadata for OpenRouter enrichment
+    if (settings.llm_provider === 'openrouter') {
+      modelsStore.loadModels();
+    }
+    slidingWindowCycles = settings.sliding_window_cycles;
+    memoryCharLimit = settings.memory_char_limit ?? 8000;
+    logLevel = settings.log_level;
+    watchdogEnabled = settings.watchdog_enabled;
+    watchdogIntervalMinutes = settings.watchdog_interval_minutes;
+    todoStalenessMinutes = settings.todo_staleness_minutes;
+    // Dreaming defaults
+    dreamDefaultMinIntervalHours = settings.dream_default_min_interval_hours ?? 6;
+    dreamDefaultMinIdleMinutes = settings.dream_default_min_idle_minutes ?? 30;
+    dreamDefaultMinTurnsSinceLast = settings.dream_default_min_turns_since_last ?? 10;
+    dreamDefaultModel = settings.dream_default_model ?? '';
+    // Voice
+    ttsProvider = settings.tts_provider ?? 'none';
+    ttsBaseUrl = settings.tts_base_url ?? '';
+    ttsModel = settings.tts_model ?? '';
+    ttsVoice = settings.tts_voice ?? '';
+    ttsOutputFormat = settings.tts_output_format ?? 'mp3';
+    ttsSpeed = settings.tts_speed ?? 1.0;
+    sttProvider = settings.stt_provider ?? 'none';
+    sttBaseUrl = settings.stt_base_url ?? '';
+    sttModel = settings.stt_model ?? '';
+    sttLanguage = settings.stt_language ?? '';
+    voiceDefaultThreadId = settings.voice_default_thread_id ?? '';
+    // RAG / semantic memory
+    embeddingProvider = settings.embedding_provider ?? 'openai';
+    embeddingModel = settings.embedding_model ?? 'text-embedding-3-small';
+    embeddingDimensions = settings.embedding_dimensions;
+    ragEmbedToolResults = settings.rag_embed_tool_results ?? true;
+    ragRerankProvider = settings.rag_rerank_provider ?? 'llm';
+    ragRerankModel = settings.rag_rerank_model ?? '';
+  }
+
+  // Load server settings when connected. A load that a connection switch
+  // overtook seeds nothing (`serverSettingsSource`).
   async function loadServerSettings() {
     if (!configStore.isConfigured) return;
-
-    loadingSettings = true;
-    settingsLoadFailed = false;
-    try {
-      const [settings, catalog] = await Promise.all([
-        api.getServerSettings(),
-        api.getLLMProviderCatalog(),
-      ]);
-      serverSettings = settings;
-      providerCatalog = catalog;
-      llmProvider = serverSettings.llm_provider;
-      displayProvider = toDisplayProvider(serverSettings.llm_provider, serverSettings.llm_base_url || '');
-      llmProviderRoute = serverSettings.llm_provider_route;
-      llmModel = serverSettings.llm_model;
-      llmFastModel = serverSettings.llm_fast_model ?? '';
-      llmSmartModel = serverSettings.llm_smart_model ?? '';
-      llmBackgroundModel = serverSettings.llm_background_model ?? '';
-      llmBackgroundBaseUrl = serverSettings.llm_background_base_url ?? '';
-      llmFallbackModels = (serverSettings.llm_fallback_models ?? []).join(', ');
-      llmFallbackHoldSeconds = serverSettings.llm_fallback_hold_seconds ?? 7200;
-      llmFallbackSwitchMode = serverSettings.llm_fallback_switch_mode ?? 'auto';
-      llmFallbackPromptTimeoutSeconds = serverSettings.llm_fallback_prompt_timeout_seconds ?? 180;
-      llmRefusalSwapMode = serverSettings.llm_refusal_swap_mode ?? 'ask';
-      llmTemperature = serverSettings.llm_temperature;
-      llmMaxTokens = serverSettings.llm_max_tokens;
-      llmTopP = serverSettings.llm_top_p;
-      llmTopK = serverSettings.llm_top_k;
-      llmFrequencyPenalty = serverSettings.llm_frequency_penalty;
-      llmPresencePenalty = serverSettings.llm_presence_penalty;
-      llmReasoningEffort = serverSettings.llm_reasoning_effort;
-      llmExtendedThinking = serverSettings.llm_extended_thinking;
-      dynamicToolBinding = serverSettings.dynamic_tool_binding;
-      sequentialToolExecution = serverSettings.sequential_tool_execution;
-      llmUseModelDefaults = serverSettings.llm_use_model_defaults;
-      llmBaseUrl = serverSettings.llm_base_url || '';
-      llmContextLength = serverSettings.llm_context_length;
-      llmOllamaNumCtx = serverSettings.llm_ollama_num_ctx;
-      openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
-      contextManagement = serverSettings.context_management;
-      compactThreshold = serverSettings.compact_threshold ?? 0.8;
-      compactThresholdMode = serverSettings.compact_threshold_mode ?? 'percentage';
-      compactThresholdTokens = serverSettings.compact_threshold_tokens ?? 100000;
-      compactProactiveEnabled = serverSettings.compact_proactive_enabled ?? false;
-      compactProactiveIdleSeconds = serverSettings.compact_proactive_idle_seconds ?? 210;
-      compactProactiveMinPct = serverSettings.compact_proactive_min_pct ?? 85;
-      // Load model metadata for OpenRouter enrichment
-      if (serverSettings.llm_provider === 'openrouter') {
-        modelsStore.loadModels();
-      }
-      slidingWindowCycles = serverSettings.sliding_window_cycles;
-      memoryCharLimit = serverSettings.memory_char_limit ?? 8000;
-      logLevel = serverSettings.log_level;
-      watchdogEnabled = serverSettings.watchdog_enabled;
-      watchdogIntervalMinutes = serverSettings.watchdog_interval_minutes;
-      todoStalenessMinutes = serverSettings.todo_staleness_minutes;
-      // Dreaming defaults
-      dreamDefaultMinIntervalHours = serverSettings.dream_default_min_interval_hours ?? 6;
-      dreamDefaultMinIdleMinutes = serverSettings.dream_default_min_idle_minutes ?? 30;
-      dreamDefaultMinTurnsSinceLast = serverSettings.dream_default_min_turns_since_last ?? 10;
-      dreamDefaultModel = serverSettings.dream_default_model ?? '';
-      // Voice
-      ttsProvider = serverSettings.tts_provider ?? 'none';
-      ttsBaseUrl = serverSettings.tts_base_url ?? '';
-      ttsModel = serverSettings.tts_model ?? '';
-      ttsVoice = serverSettings.tts_voice ?? '';
-      ttsOutputFormat = serverSettings.tts_output_format ?? 'mp3';
-      ttsSpeed = serverSettings.tts_speed ?? 1.0;
-      sttProvider = serverSettings.stt_provider ?? 'none';
-      sttBaseUrl = serverSettings.stt_base_url ?? '';
-      sttModel = serverSettings.stt_model ?? '';
-      sttLanguage = serverSettings.stt_language ?? '';
-      voiceDefaultThreadId = serverSettings.voice_default_thread_id ?? '';
-      // RAG / semantic memory
-      embeddingProvider = serverSettings.embedding_provider ?? 'openai';
-      embeddingModel = serverSettings.embedding_model ?? 'text-embedding-3-small';
-      embeddingDimensions = serverSettings.embedding_dimensions;
-      ragEmbedToolResults = serverSettings.rag_embed_tool_results ?? true;
-      ragRerankProvider = serverSettings.rag_rerank_provider ?? 'llm';
-      ragRerankModel = serverSettings.rag_rerank_model ?? '';
-      // Snapshot dirty-tracking baselines after the reactive effects (route
-      // coercion, managed base-URL fill) have settled, so a load never leaves
-      // phantom unsaved-change badges.
-      await tick();
-      snapshotServerBaselines();
-    } catch (e) {
-      console.error('Failed to load server settings:', e);
-      settingsLoadFailed = true;
-    } finally {
-      loadingSettings = false;
-    }
+    const landed = await serverSettingsSource.load(
+      async () => {
+        const [settings, catalog] = await Promise.all([
+          api.getServerSettings(),
+          api.getLLMProviderCatalog(),
+        ]);
+        return { settings, catalog };
+      },
+      ({ settings, catalog }) => seedServerForms(settings, catalog)
+    );
+    if (!landed) return;
+    // Snapshot dirty-tracking baselines after the reactive effects (route
+    // coercion, managed base-URL fill) have settled, so a load never leaves
+    // phantom unsaved-change badges.
+    await tick();
+    snapshotServerBaselines();
   }
 
   // Load settings on mount if configured: once per open, never a retry loop.
@@ -1053,12 +1065,12 @@
       // Saving the form is a backend commit: route through applyConnection so the
       // sidebar is cleared and re-synced against the new backend (a bare config
       // write left the previous backend's cached threads in place).
+      // Its reload hooks drop the server-settings snapshot; the load effect
+      // reseeds the server tabs from the new backend.
       await connectionsStore.applyConnection(apiUrl, apiKey);
-      // Reflect the applied connection back into the form + server settings.
+      // Reflect the applied connection back into the form.
       apiUrl = configStore.apiUrl;
       apiKey = configStore.apiKey;
-      serverSettings = null;
-      await loadServerSettings();
       testStatus = 'idle';
       testMessage = 'Connection settings saved!';
       setTimeout(() => {
@@ -1124,13 +1136,12 @@
   }
 
   async function handleConnectTo(id: string) {
+    // The switch's reload hooks drop the server-settings snapshot; the load
+    // effect reseeds the server tabs from the new backend.
     await connectionsStore.switchTo(id);
     // Sync local fields to new connection values
     apiUrl = configStore.apiUrl;
     apiKey = configStore.apiKey;
-    // Reload server settings after switch
-    serverSettings = null;
-    await loadServerSettings();
   }
 
   async function handleTestConnection() {
@@ -1255,6 +1266,14 @@
   }
 
   async function saveServerTab(tab: SettingsTab): Promise<boolean> {
+    // The tab is sent whole, so it must have been seeded from THIS backend:
+    // after a switch whose reload failed, the form still holds the previous
+    // backend's values (#242).
+    if (!serverSettings) {
+      testStatus = 'error';
+      testMessage = 'Settings have not loaded from this backend yet. Reopen Settings to retry.';
+      return false;
+    }
     const update = serverUpdateFor(tab);
     if (!update) return false;
     savingSettings = true;

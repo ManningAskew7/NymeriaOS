@@ -41,8 +41,11 @@ const env = vi.hoisted(() => {
   );
   (globalThis as { localStorage?: unknown }).localStorage = storage;
   // GET /me per backend URL: an account id, or 'down' for a network error.
+  // `gate.hold`, when set, keeps every /me in flight until it resolves.
   const me: Record<string, string> = {};
+  const gate = { hold: null as Promise<void> | null };
   (globalThis as { fetch?: unknown }).fetch = async (url: string) => {
+    if (gate.hold) await gate.hold;
     const base = Object.keys(me).find((b) => url.startsWith(`${b}/`));
     const answer = base ? me[base] : 'down';
     if (answer === 'down') throw new TypeError('Failed to fetch');
@@ -51,7 +54,7 @@ const env = vi.hoisted(() => {
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
   };
-  return { storage, me, A };
+  return { storage, me, gate, A };
 });
 
 vi.mock('$lib/services/secureStorage', () => ({
@@ -65,23 +68,45 @@ vi.mock('$lib/services/api.svelte', () => ({
     listThreadsWithMetadata: vi.fn(),
     listThreadTeams: vi.fn(),
     getThreadConfig: vi.fn(),
+    getThreadHistory: vi.fn(),
+    getThreadContextStats: vi.fn(),
+    getThreadStatus: vi.fn(),
+    submitUiPromptResult: vi.fn(),
+    cancelCredentialPrompt: vi.fn(),
+    endBrowserLoginSession: vi.fn(),
+  },
+  hasActiveStreamForThread: () => false,
+}));
+vi.mock('$lib/stores/chat.svelte', () => ({
+  chatStore: {
+    messages: [],
+    clearMessages: vi.fn(),
+    prepareForThreadSwitch: vi.fn(),
+    setLoadingHistory: vi.fn(),
+    setMessages: vi.fn(),
+    setContextStats: vi.fn(),
+    setActiveModel: vi.fn(),
   },
 }));
-vi.mock('$lib/stores/chat.svelte', () => ({ chatStore: { clearMessages: vi.fn() } }));
 vi.mock('$lib/stores/autonomous.svelte', () => ({
   autonomousStore: { disconnect: vi.fn(), connect: vi.fn() },
 }));
 vi.mock('$lib/stores/notifications.svelte', () => ({
   notificationStore: { stopPolling: vi.fn(), startPolling: vi.fn() },
 }));
-vi.mock('$lib/stores/syncPoll.svelte', () => ({ stopSyncPoll: vi.fn() }));
+vi.mock('$lib/stores/syncPoll.svelte', () => ({ stopSyncPoll: vi.fn(), startSyncPoll: vi.fn() }));
 
 import { createConnectionsStore } from './connections.svelte';
 import { configStore, currentIdentityScope, scopedKey } from './config.svelte';
 import { serverSettingsStore } from './serverSettings.svelte';
 import { threadsStore } from './threads.svelte';
 import { threadConfigStore } from './threadConfig.svelte';
+import { uiPromptStore } from './uiPrompt.svelte';
+import { authPromptStore } from './authPrompt.svelte';
+import { browserLoginStore } from './browserLogin.svelte';
 import { api } from '$lib/services/api.svelte';
+import type { AuthPromptEvent, UiPromptEvent } from '$lib/types';
+import type { BrowserLoginSessionStatus } from '$lib/services/api/browser-login';
 
 const A = env.A;
 const B = 'http://localhost:8098';
@@ -132,7 +157,11 @@ beforeEach(async () => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
   (api.listThreadsWithMetadata as Mock).mockResolvedValue({ threads: [threadRow(THREAD, 'Shared id')] });
   (api.listThreadTeams as Mock).mockResolvedValue([]);
+  (api.getThreadHistory as Mock).mockResolvedValue({ messages: [] });
+  (api.getThreadContextStats as Mock).mockResolvedValue(null);
+  (api.getThreadStatus as Mock).mockResolvedValue({});
   await settleOnA();
+  vi.clearAllMocks();
 });
 
 describe('applyConnection A to B, both owners `default`', () => {
@@ -162,38 +191,193 @@ describe('applyConnection A to B, both owners `default`', () => {
     expect(threadConfigStore.getConfig(THREAD)).toBeUndefined();
   });
 
-  it('when B`s /me fails with a network error the switch lands empty and unscoped, never on A`s values', async () => {
+  it('when B`s /me fails with a network error the switch lands empty, parked on B`s own keys, never on A`s values', async () => {
     env.me[B] = 'down';
     await connections.applyConnection(B, 'nym_b');
 
     expect(configStore.apiUrl).toBe(B);
     expect(configStore.identity).toBeNull();
-    expect(currentIdentityScope()).toBeNull();
-    expect(scopedKey('nymeria-thread-folders')).toBe('nymeria-thread-folders');
+    // Provisional: backend known, account not yet (review S-LOW-4). Writes in
+    // this state stay B's; they used to land on the unscoped keys, which the
+    // next backend to resolve adopted.
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: '' });
+    expect(scopedKey('nymeria-thread-folders')).toBe(`nymeria-thread-folders-@${B}`);
     expect(serverSettingsStore.model).toBeNull();
     expect(serverSettingsStore.loaded).toBe(false);
     expect(threadConfigStore.getConfig(THREAD)).toBeUndefined();
   });
 });
 
+describe('the reset runs BEFORE the config names B (review S-MED-1)', () => {
+  it('while B`s /me is in flight nothing A served is readable, so no click can post it to B', async () => {
+    threadsStore.ensureThread('a-only', 'Only on A');
+    threadsStore.selectThread(THREAD);
+    let release: () => void = () => undefined;
+    env.gate.hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const switching = connections.applyConnection(B, 'nym_b');
+    try {
+      // The api client already targets B and /me has not answered.
+      expect(configStore.apiUrl).toBe(B);
+      expect(configStore.identity).toBeNull();
+      expect(serverSettingsStore.model).toBeNull();
+      expect(serverSettingsStore.fastModelResolved).toBeNull();
+      expect(threadConfigStore.getConfig(THREAD)).toBeUndefined();
+      expect(threadsStore.currentThreadId).toBeNull();
+      expect(threadsStore.threads.some((t) => t.id === 'a-only')).toBe(false);
+    } finally {
+      env.gate.hold = null;
+      release();
+      await switching;
+    }
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: 'default' });
+  });
+});
+
+describe('thread task state is per backend (review S-MED-3)', () => {
+  it('a task spinner and count from A do not survive on B`s row with the same thread id', async () => {
+    threadsStore.setThreadActive(THREAD, true);
+    threadsStore.setThreadTaskCounts({ [THREAD]: 3 });
+
+    await connections.applyConnection(B, 'nym_b');
+
+    expect(threadsStore.threads.map((t) => t.id)).toContain(THREAD);
+    expect(threadsStore.isThreadActive(THREAD)).toBe(false);
+    expect(threadsStore.getThreadTaskCount(THREAD)).toBe(0);
+  });
+
+  it('the reload hook alone clears it too (an account change on the same backend)', async () => {
+    threadsStore.setThreadActive(THREAD, true);
+    threadsStore.setThreadTaskCounts({ [THREAD]: 3 });
+    env.me[A] = 'alice';
+
+    await configStore.refreshIdentity();
+
+    expect(configStore.identity?.id).toBe('alice');
+    expect(threadsStore.isThreadActive(THREAD)).toBe(false);
+    expect(threadsStore.getThreadTaskCount(THREAD)).toBe(0);
+  });
+
+  it('reset() clears it on its own', () => {
+    threadsStore.setThreadActive(THREAD, true);
+    threadsStore.setThreadTaskCounts({ [THREAD]: 3 });
+    threadsStore.reset();
+    expect(threadsStore.isThreadActive(THREAD)).toBe(false);
+    expect(threadsStore.getThreadTaskCount(THREAD)).toBe(0);
+  });
+});
+
 describe('local-only thread folders are per backend', () => {
   it('a folder made on A is absent on B and back again on A', async () => {
-    threadsStore.createFolder('Work on A');
-    expect(threadsStore.folders.map((f) => f.name)).toEqual(['Work on A']);
+    try {
+      threadsStore.createFolder('Work on A');
+      expect(threadsStore.folders.map((f) => f.name)).toEqual(['Work on A']);
+
+      await connections.applyConnection(B, 'nym_b');
+      expect(threadsStore.folders).toEqual([]);
+      threadsStore.createFolder('Home on B');
+
+      await connections.applyConnection(A, 'nym_a');
+      expect(threadsStore.folders.map((f) => f.name)).toEqual(['Work on A']);
+
+      await connections.applyConnection(B, 'nym_b');
+      expect(threadsStore.folders.map((f) => f.name)).toEqual(['Home on B']);
+    } finally {
+      // The stores are module-shared: a failure above must not leak folders
+      // into the next test's baseline on either backend.
+      env.me[B] = 'default';
+      await connections.applyConnection(B, 'nym_b');
+      for (const f of threadsStore.folders) threadsStore.deleteFolder(f.id);
+      await connections.applyConnection(A, 'nym_a');
+      for (const f of threadsStore.folders) threadsStore.deleteFolder(f.id);
+    }
+  });
+});
+
+describe('open prompt modals are cancelled on the backend that opened them (review C-LOW-2)', () => {
+  /** Each cancel as `what@url/token`, the url and token read when the call is made (as the api client does). */
+  function recordCancels(): string[] {
+    const seen: string[] = [];
+    const where = () => `@${configStore.apiUrl}/${configStore.apiKey}`;
+    (api.submitUiPromptResult as Mock).mockImplementation(async (id: string, req: { status: string }) => {
+      seen.push(`ui:${id}:${req.status}${where()}`);
+      return { delivered: true };
+    });
+    (api.cancelCredentialPrompt as Mock).mockImplementation(async (id: string) => {
+      seen.push(`credential:${id}${where()}`);
+    });
+    (api.endBrowserLoginSession as Mock).mockImplementation(async (id: string, reason: string) => {
+      seen.push(`login:${id}:${reason}${where()}`);
+      return {};
+    });
+    return seen;
+  }
+
+  it('each open modal is cancelled on A with A`s token, before the repoint, and closed; nothing reaches B', async () => {
+    const seen = recordCancels();
+    uiPromptStore.open({ prompt_id: 'ui-1', thread_id: 't', title: '', html: '<p/>', timeout_seconds: 60, expires_at: null } as UiPromptEvent);
+    authPromptStore.open({ prompt_id: 'cred-1' } as unknown as AuthPromptEvent);
+    browserLoginStore.open({ session_id: 'bl-1', state: 'active', seconds_remaining: 600 } as BrowserLoginSessionStatus, 'agent');
 
     await connections.applyConnection(B, 'nym_b');
-    expect(threadsStore.folders).toEqual([]);
-    threadsStore.createFolder('Home on B');
 
-    await connections.applyConnection(A, 'nym_a');
-    expect(threadsStore.folders.map((f) => f.name)).toEqual(['Work on A']);
+    expect(seen).toEqual([
+      `ui:ui-1:cancelled@${A}/nym_a`,
+      `credential:cred-1@${A}/nym_a`,
+      `login:bl-1:cancelled@${A}/nym_a`,
+    ]);
+    expect(uiPromptStore.active).toBeNull();
+    expect(authPromptStore.active).toBeNull();
+    expect(browserLoginStore.active).toBeNull();
+  });
+
+  it('a credential prompt that already resolved and a login that already ended close without a cancel', async () => {
+    const seen = recordCancels();
+    authPromptStore.open({ prompt_id: 'cred-2', mode: 'oauth' } as unknown as AuthPromptEvent);
+    authPromptStore.resolveById('cred-2', { ok: true, status: 'connected' });
+    browserLoginStore.open({ session_id: 'bl-2', state: 'active', seconds_remaining: 600 } as BrowserLoginSessionStatus, 'agent');
+    browserLoginStore.endById('bl-2', 'completed');
 
     await connections.applyConnection(B, 'nym_b');
-    expect(threadsStore.folders.map((f) => f.name)).toEqual(['Home on B']);
 
-    // Cleanup for the next test: A's folders do not leak into its baseline.
-    for (const f of threadsStore.folders) threadsStore.deleteFolder(f.id);
+    expect(seen).toEqual([]);
+    expect(authPromptStore.active).toBeNull();
+    expect(browserLoginStore.active).toBeNull();
+  });
+});
+
+describe('a switch reopens the backend`s last open thread when it still exists there (review C-LOW-1)', () => {
+  const onA = { threads: [threadRow('desk-a', 'Desk on A')] };
+  const onB = { threads: [threadRow('desk-b', 'Desk on B')] };
+
+  it('back on A, A`s open thread reopens with its history; a first visit to B opens nothing', async () => {
+    (api.listThreadsWithMetadata as Mock).mockResolvedValue(onA);
     await connections.applyConnection(A, 'nym_a');
-    for (const f of threadsStore.folders) threadsStore.deleteFolder(f.id);
+    threadsStore.selectThread('desk-a');
+
+    (api.listThreadsWithMetadata as Mock).mockResolvedValue(onB);
+    await connections.applyConnection(B, 'nym_b');
+    expect(threadsStore.currentThreadId).toBeNull();
+    expect(api.getThreadHistory).not.toHaveBeenCalled();
+
+    (api.listThreadsWithMetadata as Mock).mockResolvedValue(onA);
+    await connections.applyConnection(A, 'nym_a');
+    expect(threadsStore.currentThreadId).toBe('desk-a');
+    expect(api.getThreadHistory).toHaveBeenCalledWith('desk-a');
+  });
+
+  it('a thread the backend no longer has is not reopened', async () => {
+    (api.listThreadsWithMetadata as Mock).mockResolvedValue(onA);
+    await connections.applyConnection(A, 'nym_a');
+    threadsStore.selectThread('desk-a');
+    (api.listThreadsWithMetadata as Mock).mockResolvedValue(onB);
+    await connections.applyConnection(B, 'nym_b');
+
+    (api.getThreadHistory as Mock).mockClear();
+    (api.listThreadsWithMetadata as Mock).mockResolvedValue({ threads: [threadRow('desk-a2', 'Another')] });
+    await connections.applyConnection(A, 'nym_a');
+    expect(threadsStore.currentThreadId).toBeNull();
+    expect(api.getThreadHistory).not.toHaveBeenCalled();
   });
 });

@@ -53,6 +53,10 @@ EXACT_MATCH: set[str] = {
     # themselves EXACT_MATCH; the per-app stores' half is
     # backendScopedStores.platform.test.ts (KNOWN_DRIFT).
     "lib/stores/backendScopedStores.test.ts",
+    # #242 review: a component's copy of backend-served form data (the
+    # settings panels' GET /settings snapshot), dropped on every switch.
+    "lib/stores/backendScopedValue.svelte.ts",
+    "lib/stores/backendScopedValue.test.ts",
     "lib/stores/chatAppBindings.svelte.ts",
     "lib/stores/commands.svelte.ts",
     "lib/stores/commands.test.ts",

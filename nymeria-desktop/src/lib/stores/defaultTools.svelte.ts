@@ -11,6 +11,11 @@ function createDefaultToolsStore() {
   let loaded = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  // The default list is THIS backend's (loaded, or as last saved), so one
+  // entry of it can be edited and the whole list saved back. False after a
+  // switch reset the store and after a failed load (which still latches
+  // `loaded`, to stop the panel effects looping).
+  let listReady = $state(false);
   let identityGeneration = 0;
 
   // Reset on account switch / sign-out so the next consumer re-fetches
@@ -24,6 +29,7 @@ function createDefaultToolsStore() {
     loaded = false;
     saving = false;
     error = null;
+    listReady = false;
   });
 
   return {
@@ -34,6 +40,7 @@ function createDefaultToolsStore() {
     get loaded() { return loaded; },
     get saving() { return saving; },
     get error() { return error; },
+    get listReady() { return listReady; },
 
     get totalEnabledCount(): number {
       return defaultToolNames.length + callableThreadCount;
@@ -62,9 +69,11 @@ function createDefaultToolsStore() {
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
         loaded = true;
+        listReady = true;
       } catch (e) {
         if (requestGeneration !== identityGeneration) return;
         error = humanizeErrorText(e, { action: 'load', resource: 'your default tools' });
+        listReady = false;
         // Mark loaded so panel `$effect` doesn't loop on a 404/auth error.
         loaded = true;
       } finally {
@@ -85,43 +94,69 @@ function createDefaultToolsStore() {
       await this.load(userId);
     },
 
+    // A save or reset that a connection switch overtook lands nothing here:
+    // its list belongs to the backend it was sent to.
     async save(toolNames: string[], userId?: string): Promise<boolean> {
+      const requestGeneration = identityGeneration;
       saving = true;
       error = null;
       try {
         await api.setDefaultTools(toolNames, userId);
         const response = await api.getDefaultTools(userId);
+        if (requestGeneration !== identityGeneration) return false;
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
         loaded = true;
+        listReady = true;
         return true;
       } catch (e) {
+        if (requestGeneration !== identityGeneration) return false;
         error = humanizeErrorText(e, { action: 'save', resource: 'your default tools' });
         return false;
       } finally {
-        saving = false;
+        if (requestGeneration === identityGeneration) saving = false;
       }
     },
 
     async reset(userId?: string): Promise<boolean> {
+      const requestGeneration = identityGeneration;
       saving = true;
       error = null;
       try {
         await api.resetDefaultTools(userId);
         // Reload to get the full ALL_TOOLS list
         const response = await api.getDefaultTools(userId);
+        if (requestGeneration !== identityGeneration) return false;
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
         loaded = true;
+        listReady = true;
         return true;
       } catch (e) {
+        if (requestGeneration !== identityGeneration) return false;
         error = humanizeErrorText(e, { action: 'reset', resource: 'your default tools' });
         return false;
       } finally {
-        saving = false;
+        if (requestGeneration === identityGeneration) saving = false;
       }
+    },
+
+    /**
+     * Add or remove one tool from the default set, which is saved whole.
+     * Refuses (no request, false) unless the list it builds on is this
+     * backend's and no save is in flight: right after a connection switch
+     * reset the store, or after a failed load, the list is empty, and one
+     * toggle would PUT a one-item list over the backend's whole default set
+     * (#242 review).
+     */
+    async toggleDefaultTool(toolName: string, userId?: string): Promise<boolean> {
+      if (!listReady || loading || saving) return false;
+      const next = defaultToolNames.includes(toolName)
+        ? defaultToolNames.filter((name) => name !== toolName)
+        : [...defaultToolNames, toolName];
+      return this.save(next, userId);
     },
 
     clearError() { error = null; },

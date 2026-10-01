@@ -9,14 +9,25 @@ vi.mock('$lib/stores/config.svelte', () => ({
     apiKey: '',
     identity: null,
     refreshIdentity: vi.fn().mockResolvedValue(null),
+    beginConnectionSwitch: vi.fn(),
   },
 }));
 vi.mock('$lib/stores/chat.svelte', () => ({
   chatStore: { clearMessages: vi.fn() },
 }));
 vi.mock('$lib/stores/threads.svelte', () => ({
-  threadsStore: { reset: vi.fn(), syncFromBackend: vi.fn().mockResolvedValue(undefined) },
+  threadsStore: {
+    reset: vi.fn(),
+    syncFromBackend: vi.fn().mockResolvedValue(undefined),
+    savedCurrentThreadId: vi.fn().mockReturnValue(null),
+    currentThreadId: null,
+    threads: [],
+  },
 }));
+vi.mock('$lib/stores/navigation.svelte', () => ({ switchToThread: vi.fn() }));
+vi.mock('$lib/stores/uiPrompt.svelte', () => ({ uiPromptStore: { cancelActive: vi.fn() } }));
+vi.mock('$lib/stores/authPrompt.svelte', () => ({ authPromptStore: { cancelActive: vi.fn() } }));
+vi.mock('$lib/stores/browserLogin.svelte', () => ({ browserLoginStore: { cancelActive: vi.fn() } }));
 vi.mock('$lib/stores/autonomous.svelte', () => ({
   autonomousStore: { disconnect: vi.fn(), connect: vi.fn() },
 }));
@@ -43,9 +54,15 @@ beforeEach(() => {
 });
 
 describe('connectionsStore.applyConnection', () => {
-  it('writes config, then resets threads, then resyncs — in that order', async () => {
+  it('drops every scoped store before the config write, then resets threads, then resyncs, in that order', async () => {
     const store = createConnectionsStore();
+    configStore.apiUrl = 'https://old.example.com';
 
+    let urlAtBegin: string | null = null;
+    (configStore.beginConnectionSwitch as Mock).mockImplementation(() => {
+      // The reload hooks run while the api client still targets the OLD backend.
+      urlAtBegin = configStore.apiUrl;
+    });
     let urlAtReset: string | null = null;
     (threadsStore.reset as Mock).mockImplementation(() => {
       // Config must already point at the new backend when threads are cleared.
@@ -56,6 +73,8 @@ describe('connectionsStore.applyConnection', () => {
 
     expect(configStore.apiUrl).toBe(WORK_URL);
     expect(configStore.apiKey).toBe(WORK_KEY);
+    expect(urlAtBegin).toBe('https://old.example.com');
+    expect(configStore.beginConnectionSwitch).toHaveBeenCalledWith(WORK_URL);
     expect(urlAtReset).toBe(WORK_URL);
     expect(threadsStore.reset).toHaveBeenCalledTimes(1);
     expect(threadsStore.syncFromBackend).toHaveBeenCalledTimes(1);

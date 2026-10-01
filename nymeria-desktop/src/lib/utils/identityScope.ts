@@ -53,6 +53,21 @@ export function identityScope(apiUrl: string, accountId: string): IdentityScope 
   return { backend: normalizeBackendUrl(apiUrl), accountId };
 }
 
+/**
+ * The scope a connection switch parks on until GET /me names the account:
+ * the backend alone (account id ''). Storage written in that window stays
+ * partitioned per backend instead of landing on the unscoped base keys,
+ * which whichever backend resolved next used to adopt, and the first account
+ * that resolves on the same backend carries it forward.
+ */
+export function provisionalScope(apiUrl: string): IdentityScope {
+  return identityScope(apiUrl, '');
+}
+
+export function isProvisionalScope(scope: IdentityScope): boolean {
+  return scope.accountId === '';
+}
+
 export function sameIdentityScope(a: IdentityScope | null, b: IdentityScope | null): boolean {
   if (a === null || b === null) return a === b;
   return a.backend === b.backend && a.accountId === b.accountId;
@@ -69,43 +84,58 @@ export function scopedStorageKey(base: string, scope: IdentityScope | null): str
 }
 
 /**
- * Move the first present `sources` key to `target`, only when `target` is
- * still absent. A MOVE, not a copy, so data carried into one scope is never
- * inherited a second time by another. Returns the key moved, or null.
+ * Settle older-format `sources` into `target`, once. While `target` is absent
+ * the first present source MOVES into it (a move, not a copy, so data carried
+ * into one scope is never inherited a second time by another). Once `target`
+ * holds data, every source still present is stale and is dropped: left
+ * behind, it would be adopted by the next scope that resolves without a key
+ * of its own. A failed write (quota) leaves every key where it was. `sources`
+ * must not include `target`. Returns the key moved, or null.
  */
-export function moveKeyIfAbsent(
+export function carryForwardKeys(
   storage: ScopeStorage,
   sources: readonly string[],
   target: string
 ): string | null {
-  if (storage.getItem(target) !== null) return null;
-  for (const source of sources) {
-    if (source === target) continue;
-    const value = storage.getItem(source);
-    if (value === null) continue;
-    try {
-      storage.setItem(target, value);
-      storage.removeItem(source);
-      return source;
-    } catch (e) {
-      console.error(`Failed to carry ${source} forward to ${target}:`, e);
-      return null;
+  let moved: string | null = null;
+  if (storage.getItem(target) === null) {
+    for (const source of sources) {
+      const value = storage.getItem(source);
+      if (value === null) continue;
+      try {
+        storage.setItem(target, value);
+      } catch (e) {
+        console.error(`Failed to carry ${source} forward to ${target}:`, e);
+        return null;
+      }
+      moved = source;
+      break;
     }
+    if (moved === null) return null;
   }
-  return null;
+  for (const source of sources) storage.removeItem(source);
+  return moved;
 }
 
 /**
  * Carry one key family's older-format data into `scope`'s key, once: the
- * account-only key (`${base}-${accountId}`, the format before #242), else the
- * unscoped base (before identity scoping). Whichever backend resolves first
- * under the new format inherits it; a later first visit to another backend
- * with the same account id starts empty.
+ * same backend's provisional key (written while a switch waited for /me),
+ * else the account-only key (`${base}-${accountId}`, the format before
+ * #242), else the unscoped base (before identity scoping). Whichever backend
+ * resolves first under the new format inherits the account-only and unscoped
+ * data; a later first visit to another backend with the same account id
+ * starts empty. A provisional scope is a waiting room, never a target.
  */
 export function carryForwardScopedKey(
   storage: ScopeStorage,
   base: string,
   scope: IdentityScope
 ): string | null {
-  return moveKeyIfAbsent(storage, [`${base}-${scope.accountId}`, base], scopedStorageKey(base, scope));
+  if (isProvisionalScope(scope)) return null;
+  const waiting = scopedStorageKey(base, { backend: scope.backend, accountId: '' });
+  return carryForwardKeys(
+    storage,
+    [waiting, `${base}-${scope.accountId}`, base],
+    scopedStorageKey(base, scope)
+  );
 }

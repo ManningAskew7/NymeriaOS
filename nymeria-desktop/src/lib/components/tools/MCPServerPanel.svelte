@@ -121,13 +121,9 @@
       onToggleTool(mcpName);
       return;
     }
-    // Standalone fallback: save directly.
-    const current = [...defaultToolsStore.defaultToolNames];
-    if (current.includes(mcpName)) {
-      await defaultToolsStore.save(current.filter(n => n !== mcpName));
-    } else {
-      await defaultToolsStore.save([...current, mcpName]);
-    }
+    // Standalone fallback: save directly. The store refuses while the list
+    // it would save back whole is not this backend's.
+    await defaultToolsStore.toggleDefaultTool(mcpName);
   }
 
   async function handleAdd(data: MCPServerCreateRequest) {

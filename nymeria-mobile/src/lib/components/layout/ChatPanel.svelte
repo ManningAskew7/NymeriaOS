@@ -18,6 +18,7 @@
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { keepHeaderStoresLoaded } from '$lib/stores/headerStoreLoads.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText, isConnectivityError } from '$lib/services/api/humanizeError';
   import { isTodoTool } from '$lib/utils/todoTools';
@@ -27,17 +28,9 @@
   let currentTitle = $derived(threadsStore.currentThread?.title ?? 'New Thread');
   let showThreadSettings = $state(false);
 
-  // Load global stores for header badges
-  $effect(() => {
-    if (configStore.isConfigured) {
-      untrack(() => {
-        if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
-        if (!serverSettingsStore.settled && !serverSettingsStore.loading) serverSettingsStore.load();
-        if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
-        if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) skillsStore.loadGlobal();
-      });
-    }
-  });
+  // Load global stores for header badges, again after a connection switch
+  // resets them (#242).
+  keepHeaderStoresLoaded();
 
   // Load thread config when thread changes
   $effect(() => {

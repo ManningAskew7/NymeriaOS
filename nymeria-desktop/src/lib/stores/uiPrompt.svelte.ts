@@ -22,14 +22,25 @@ interface UiPromptState {
 
 const state = $state<UiPromptState>({ active: null });
 
-// A prompt belongs to the backend whose agent opened it. On a connection
-// switch the modal closes: submitting it would post the previous backend's
-// prompt id to the new one (#242). No cancel is sent, since the old backend
-// is no longer reachable through the api client; its prompt timeout owns
-// the cleanup.
+// A prompt belongs to the backend whose agent opened it. On any identity
+// change the modal closes: submitting it would post the previous backend's
+// prompt id to the new one (#242). A connection switch cancels it on the old
+// backend first (`cancelActive`, while the config still names that backend);
+// the hook itself only closes, since by then the api client may already
+// target another backend.
 registerIdentityReloadHook(() => {
   state.active = null;
 });
+
+// Resolve a prompt as `cancelled` on the backend the api client names now
+// (the url and token are read when the call is made). Best-effort; on
+// failure the backend timeout owns cleanup, and a prompt another client
+// already answered makes it a harmless delivered=false no-op.
+function cancelOnBackend(prompt: UiPromptEvent): void {
+  void api
+    .submitUiPromptResult(prompt.prompt_id, { status: 'cancelled', values: null })
+    .catch(() => {});
+}
 
 export const uiPromptStore = {
   get active(): UiPromptEvent | null {
@@ -40,14 +51,23 @@ export const uiPromptStore = {
     const displaced = state.active;
     if (displaced && displaced.prompt_id !== event.prompt_id) {
       // Latest wins, but the displaced prompt's agent must not sit blocked
-      // until its timeout: resolve it as cancelled. Best-effort; on failure
-      // the backend timeout still owns cleanup. If another client answered
-      // it first, the POST is a harmless delivered=false no-op.
-      void api
-        .submitUiPromptResult(displaced.prompt_id, { status: 'cancelled', values: null })
-        .catch(() => {});
+      // until its timeout: resolve it as cancelled.
+      cancelOnBackend(displaced);
     }
     state.active = event;
+  },
+
+  /**
+   * A connection switch is about to repoint the api client: resolve the open
+   * prompt as cancelled on the backend whose agent opened it, so that agent
+   * wakes now instead of at its timeout, and close the modal. Called by
+   * `applyConnection` before the repoint.
+   */
+  cancelActive(): void {
+    const active = state.active;
+    if (!active) return;
+    state.active = null;
+    cancelOnBackend(active);
   },
 
   /** Clear the active prompt iff it matches `promptId` (no-op otherwise).

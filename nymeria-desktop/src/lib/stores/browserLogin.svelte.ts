@@ -42,13 +42,20 @@ interface BrowserLoginState {
 
 const state = $state<BrowserLoginState>({ active: null });
 
-// A login session lives on the backend that started it. On a connection
-// switch the viewer closes instead of streaming from, or forwarding input
-// to, a session id the new backend never issued (#242). The session's TTL
-// on the old backend owns its cleanup.
+// A login session lives on the backend that started it. On any identity
+// change the viewer closes instead of streaming from, or forwarding input
+// to, a session id the new backend never issued (#242). A connection switch
+// ends it on the old backend first (`cancelActive`); the hook itself only
+// closes.
 registerIdentityReloadHook(() => {
   state.active = null;
 });
+
+// End a session as `cancelled` on the backend the api client names now.
+// Best-effort; the backend TTL owns cleanup if this never lands.
+function endOnBackend(sessionId: string): void {
+  void api.endBrowserLoginSession(sessionId, 'cancelled').catch(() => {});
+}
 
 export const browserLoginStore = {
   get active(): ActiveBrowserLogin | null {
@@ -60,11 +67,8 @@ export const browserLoginStore = {
     if (displaced && displaced.session.session_id !== session.session_id) {
       if (!displaced.ended) {
         // Latest wins, but the displaced session must not stay live behind
-        // a viewer nobody can see: end it. Best-effort; the backend TTL
-        // owns cleanup if this never lands.
-        void api
-          .endBrowserLoginSession(displaced.session.session_id, 'cancelled')
-          .catch(() => {});
+        // a viewer nobody can see: end it.
+        endOnBackend(displaced.session.session_id);
       }
     } else if (displaced && displaced.session.session_id === session.session_id) {
       // A re-announce of the session already showing (recovery racing the
@@ -87,6 +91,19 @@ export const browserLoginStore = {
     if (active && active.session.session_id === sessionId && !active.ended) {
       active.ended = reason || 'cancelled';
     }
+  },
+
+  /**
+   * A connection switch is about to repoint the api client: end a live
+   * session on the backend that started it, so its tab is not held behind a
+   * viewer nobody can see, and close the viewer. Called by `applyConnection`
+   * before the repoint.
+   */
+  cancelActive(): void {
+    const active = state.active;
+    if (!active) return;
+    state.active = null;
+    if (!active.ended) endOnBackend(active.session.session_id);
   },
 
   /** Drop the session iff the id matches: the viewer closed. */

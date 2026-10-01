@@ -18,6 +18,8 @@ vi.mock('./config.svelte', () => ({
 vi.mock('$lib/services/api.svelte', () => ({
   api: {
     getCustomTools: vi.fn(),
+    getDefaultTools: vi.fn(),
+    setDefaultTools: vi.fn(),
     listMCPServers: vi.fn(),
     getNotifications: vi.fn(),
     getTodos: vi.fn(),
@@ -29,6 +31,7 @@ vi.mock('$lib/services/api/humanizeError', () => ({
 }));
 
 import { toolsStore } from './tools.svelte';
+import { defaultToolsStore } from './defaultTools.svelte';
 import { mcpServersStore } from './mcpServers.svelte';
 import { notificationStore } from './notifications.svelte';
 import { todosStore } from './todos.svelte';
@@ -146,5 +149,77 @@ describe('scheduled tasks and the activity feed', () => {
     expect(todosStore.todos).toEqual([]);
     expect(activityStore.entries).toEqual([]);
     expect(todosStore.loading).toBe(false);
+  });
+});
+
+describe('default-tool toggles save the whole list, so only a list loaded from this backend (#457)', () => {
+  const list = (names: string[]) => ({ available_tools: [], default_tools: names, callable_thread_count: 0 });
+
+  it('after a switch reset the store a toggle sends nothing; once B`s list loads it edits B`s list', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(list(['a_1', 'a_2']));
+    await defaultToolsStore.load();
+    switchBackend();
+
+    expect(defaultToolsStore.listReady).toBe(false);
+    expect(await defaultToolsStore.toggleDefaultTool('mcp__gh__issues')).toBe(false);
+    expect(api.setDefaultTools).not.toHaveBeenCalled();
+
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(list(['b_1']));
+    await defaultToolsStore.load();
+    expect(await defaultToolsStore.toggleDefaultTool('mcp__gh__issues')).toBe(true);
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['b_1', 'mcp__gh__issues'], undefined);
+    expect(await defaultToolsStore.toggleDefaultTool('b_1')).toBe(true);
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['mcp__gh__issues'], undefined);
+  });
+
+  it('a failed load latches `loaded` (no effect loop) but never unlocks the toggle', async () => {
+    (api.getDefaultTools as Mock).mockRejectedValueOnce(new Error('503'));
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.loaded).toBe(true);
+    expect(defaultToolsStore.listReady).toBe(false);
+    expect(await defaultToolsStore.toggleDefaultTool('mcp__gh__issues')).toBe(false);
+    expect(api.setDefaultTools).not.toHaveBeenCalled();
+  });
+
+  it('a reload that fails after a good load locks the toggle again (the held list may be out of date)', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(list(['a_1']));
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.listReady).toBe(true);
+
+    defaultToolsStore.resetLoaded();
+    (api.getDefaultTools as Mock).mockRejectedValueOnce(new Error('503'));
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.listReady).toBe(false);
+    expect(await defaultToolsStore.toggleDefaultTool('mcp__gh__issues')).toBe(false);
+    expect(api.setDefaultTools).not.toHaveBeenCalled();
+  });
+
+  it('a failed save leaves the loaded list editable', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(list(['a_1']));
+    await defaultToolsStore.load();
+    (api.setDefaultTools as Mock).mockRejectedValueOnce(new Error('500'));
+    expect(await defaultToolsStore.toggleDefaultTool('mcp__gh__issues')).toBe(false);
+    expect(defaultToolsStore.error).not.toBeNull();
+
+    (api.setDefaultTools as Mock).mockResolvedValueOnce(undefined);
+    expect(await defaultToolsStore.toggleDefaultTool('mcp__gh__issues')).toBe(true);
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['a_1', 'mcp__gh__issues'], undefined);
+  });
+
+  it('a second toggle waits out the first; a save in flight across the switch lands nothing', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(list(['a_1']));
+    await defaultToolsStore.load();
+    const stale = deferred<void>();
+    (api.setDefaultTools as Mock).mockReturnValueOnce(stale.promise);
+    const inFlight = defaultToolsStore.toggleDefaultTool('mcp__x__one');
+    expect(await defaultToolsStore.toggleDefaultTool('mcp__x__two')).toBe(false);
+
+    switchBackend();
+    stale.resolve();
+    expect(await inFlight).toBe(false);
+    expect(defaultToolsStore.defaultToolNames).toEqual([]);
+    expect(defaultToolsStore.listReady).toBe(false);
+    expect(defaultToolsStore.saving).toBe(false);
+    expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
   });
 });

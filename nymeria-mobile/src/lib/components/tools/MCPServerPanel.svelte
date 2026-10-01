@@ -82,14 +82,11 @@
     return server.transport === 'http' ? 'HTTP endpoint' : 'Local stdio server';
   }
 
+  // The default-tool list is saved whole: the store refuses a toggle while
+  // that list is not this backend's (after a switch reset it, or a failed
+  // load), and the toggles stay disabled meanwhile.
   async function toggleGlobalTool(serverId: string, toolName: string) {
-    const mcpName = getMcpToolName(serverId, toolName);
-    const current = [...defaultToolsStore.defaultToolNames];
-    if (current.includes(mcpName)) {
-      await defaultToolsStore.save(current.filter(n => n !== mcpName));
-    } else {
-      await defaultToolsStore.save([...current, mcpName]);
-    }
+    await defaultToolsStore.toggleDefaultTool(getMcpToolName(serverId, toolName));
   }
 
   async function handleAdd(data: MCPServerCreateRequest) {
@@ -334,7 +331,12 @@
                         {/if}
                       </div>
                       <label class="toggle-label">
-                        <input type="checkbox" checked={isEnabled} onchange={() => toggleGlobalTool(server.id, tool.name)} />
+                        <input
+                          type="checkbox"
+                          checked={isEnabled}
+                          disabled={!defaultToolsStore.listReady || defaultToolsStore.saving}
+                          onchange={() => toggleGlobalTool(server.id, tool.name)}
+                        />
                         <span class="toggle-track"><span class="toggle-thumb"></span></span>
                       </label>
                     </div>

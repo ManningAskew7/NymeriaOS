@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  carryForwardKeys,
   carryForwardScopedKey,
   identityScope,
-  moveKeyIfAbsent,
+  isProvisionalScope,
   normalizeBackendUrl,
+  provisionalScope,
   sameIdentityScope,
   scopedStorageKey,
   type ScopeStorage,
@@ -72,6 +74,17 @@ describe('scope identity and keys', () => {
     expect(scopedStorageKey('nymeria-threads', null)).toBe('nymeria-threads');
   });
 
+  it('a provisional scope (backend known, account not yet) is its own key per backend', () => {
+    const waitingOnA = provisionalScope('http://LOCALHOST:8097/');
+    expect(waitingOnA).toEqual({ backend: A, accountId: '' });
+    expect(isProvisionalScope(waitingOnA)).toBe(true);
+    expect(isProvisionalScope(identityScope(A, 'default'))).toBe(false);
+    const key = scopedStorageKey('nymeria-threads', waitingOnA);
+    expect(key).not.toBe('nymeria-threads');
+    expect(key).not.toBe(scopedStorageKey('nymeria-threads', identityScope(A, 'default')));
+    expect(key).not.toBe(scopedStorageKey('nymeria-threads', provisionalScope(B)));
+  });
+
   it('the scoped key never equals the account-only key it replaces', () => {
     const key = scopedStorageKey('nymeria-thread-folders', identityScope(A, 'default'));
     expect(key).not.toBe('nymeria-thread-folders-default');
@@ -95,15 +108,21 @@ describe('carryForwardScopedKey', () => {
     expect(storage.getItem(scopedStorageKey(BASE, onB))).toBeNull();
   });
 
-  it('never clobbers an existing scoped key, and leaves the old key where it was', () => {
+  it('never clobbers an existing scoped key, and drops the stale older-format keys beside it', () => {
+    // Left behind (a downgrade then upgrade, the dogfood shape), `-default`
+    // would be adopted by the next new backend that resolves `default`.
     const onA = identityScope(A, 'default');
     const storage = memoryStorage({
       [scopedStorageKey(BASE, onA)]: '["mine"]',
       [`${BASE}-default`]: '["old"]',
+      [BASE]: '["unscoped"]',
     });
     expect(carryForwardScopedKey(storage, BASE, onA)).toBeNull();
     expect(storage.getItem(scopedStorageKey(BASE, onA))).toBe('["mine"]');
-    expect(storage.getItem(`${BASE}-default`)).toBe('["old"]');
+    expect(storage.getItem(`${BASE}-default`)).toBeNull();
+    expect(storage.getItem(BASE)).toBeNull();
+    expect(carryForwardScopedKey(storage, BASE, identityScope(B, 'default'))).toBeNull();
+    expect(storage.getItem(scopedStorageKey(BASE, identityScope(B, 'default')))).toBeNull();
   });
 
   it('prefers the account-only key over the unscoped base, and falls back to the base', () => {
@@ -111,7 +130,8 @@ describe('carryForwardScopedKey', () => {
     const both = memoryStorage({ [`${BASE}-default`]: 'account', [BASE]: 'unscoped' });
     carryForwardScopedKey(both, BASE, onA);
     expect(both.getItem(scopedStorageKey(BASE, onA))).toBe('account');
-    expect(both.getItem(BASE)).toBe('unscoped');
+    // The unscoped leftover is stale once the scope holds data.
+    expect(both.getItem(BASE)).toBeNull();
 
     const baseOnly = memoryStorage({ [BASE]: 'unscoped' });
     expect(carryForwardScopedKey(baseOnly, BASE, onA)).toBe(BASE);
@@ -125,6 +145,33 @@ describe('carryForwardScopedKey', () => {
     expect(storage.getItem(`${BASE}-default`)).toBe('["work"]');
   });
 
+  it('what a switch wrote while /me was unresolved carries to the account that then resolves on that backend', () => {
+    const waiting = scopedStorageKey(BASE, provisionalScope(B));
+    const storage = memoryStorage({
+      [waiting]: '["made while B was answering"]',
+      [`${BASE}-default`]: '["pre-#242"]',
+    });
+    expect(carryForwardScopedKey(storage, BASE, identityScope(A, 'default'))).toBe(`${BASE}-default`);
+    expect(storage.getItem(waiting)).toBe('["made while B was answering"]');
+
+    expect(carryForwardScopedKey(storage, BASE, identityScope(B, 'default'))).toBe(waiting);
+    expect(storage.getItem(scopedStorageKey(BASE, identityScope(B, 'default')))).toBe(
+      '["made while B was answering"]'
+    );
+    expect(storage.getItem(waiting)).toBeNull();
+  });
+
+  it('a provisional scope is never a target: nothing moves into it and nothing is dropped', () => {
+    const waiting = provisionalScope(A);
+    const storage = memoryStorage({
+      [scopedStorageKey(BASE, waiting)]: 'waiting',
+      [BASE]: 'unscoped',
+    });
+    expect(carryForwardScopedKey(storage, BASE, waiting)).toBeNull();
+    expect(storage.getItem(scopedStorageKey(BASE, waiting))).toBe('waiting');
+    expect(storage.getItem(BASE)).toBe('unscoped');
+  });
+
   it('an empty string is data, not absence', () => {
     const onA = identityScope(A, 'default');
     const storage = memoryStorage({ [`${BASE}-default`]: '' });
@@ -133,22 +180,32 @@ describe('carryForwardScopedKey', () => {
   });
 });
 
-describe('moveKeyIfAbsent', () => {
-  it('keeps the source when the write throws (quota), and reports nothing moved', () => {
-    const storage = memoryStorage({ old: 'v' });
+describe('carryForwardKeys', () => {
+  it('keeps every key where it was when the write throws (quota), and reports nothing moved', () => {
+    const storage = memoryStorage({ old: 'v', older: 'w' });
     const throwing: ScopeStorage = {
       ...storage,
       setItem: () => {
         throw new Error('QuotaExceededError');
       },
     };
-    expect(moveKeyIfAbsent(throwing, ['old'], 'new')).toBeNull();
+    expect(carryForwardKeys(throwing, ['old', 'older'], 'new')).toBeNull();
     expect(storage.getItem('old')).toBe('v');
+    expect(storage.getItem('older')).toBe('w');
+    expect(storage.getItem('new')).toBeNull();
   });
 
-  it('never moves a key onto itself', () => {
-    const storage = memoryStorage({ same: 'v' });
-    expect(moveKeyIfAbsent(storage, ['same'], 'same')).toBeNull();
-    expect(storage.getItem('same')).toBe('v');
+  it('with no source present and no target, it touches nothing', () => {
+    const storage = memoryStorage({ unrelated: 'u' });
+    expect(carryForwardKeys(storage, ['old'], 'new')).toBeNull();
+    expect([...storage.data.keys()]).toEqual(['unrelated']);
+  });
+
+  it('moves the first present source and drops the later ones', () => {
+    const storage = memoryStorage({ second: '2', third: '3' });
+    expect(carryForwardKeys(storage, ['first', 'second', 'third'], 'target')).toBe('second');
+    expect(storage.getItem('target')).toBe('2');
+    expect(storage.getItem('second')).toBeNull();
+    expect(storage.getItem('third')).toBeNull();
   });
 });

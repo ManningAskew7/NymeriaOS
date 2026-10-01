@@ -13,14 +13,16 @@ function isNotFoundError(error: unknown): boolean {
 
 /**
  * Shared thread-switch pipeline for mobile.
- * Navigates to the chat panel after switching.
+ * Navigates to the chat panel after switching, unless `navigate` is false
+ * (a connection switch reopening the backend's last thread from Settings).
  */
 export async function switchToThread(
   threadId: string,
-  options?: { ensureTitle?: string }
+  options?: { ensureTitle?: string; navigate?: boolean }
 ): Promise<SwitchResult> {
+  const navigate = options?.navigate !== false;
   if (threadId === threadsStore.currentThreadId) {
-    uiStore.goToChat();
+    if (navigate) uiStore.goToChat();
     return { success: true };
   }
 
@@ -32,7 +34,7 @@ export async function switchToThread(
   chatStore.setLoadingHistory(true);
 
   // Navigate to chat panel immediately
-  uiStore.goToChat();
+  if (navigate) uiStore.goToChat();
 
   try {
     const [history, stats, status] = await Promise.all([

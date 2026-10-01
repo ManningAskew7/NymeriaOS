@@ -10,6 +10,7 @@
  * defensive guard).
  */
 
+import { api } from '$lib/services/api.svelte';
 import type { AuthPromptEvent } from '$lib/types';
 import { registerIdentityReloadHook } from './config.svelte';
 
@@ -20,8 +21,9 @@ interface AuthPromptState {
 const state = $state<AuthPromptState>({ active: null });
 
 // A credential prompt belongs to the backend whose agent opened it: close
-// it on a connection switch rather than submit a secret for the previous
-// backend's prompt to the new one (#242). Its prompt timeout owns cleanup.
+// it on any identity change rather than submit a secret for the previous
+// backend's prompt to the new one (#242). A connection switch cancels it on
+// the old backend first (`cancelActive`); the hook itself only closes.
 registerIdentityReloadHook(() => {
   state.active = null;
 });
@@ -63,6 +65,21 @@ export const authPromptStore = {
         resolved_credential_id: result.credentialId ?? null,
       };
     }
+  },
+
+  /**
+   * A connection switch is about to repoint the api client: cancel the open
+   * prompt on the backend whose agent asked (best-effort; its timeout owns
+   * cleanup otherwise) and close the modal. An OAuth prompt that already
+   * resolved has nothing left to cancel. Called by `applyConnection` before
+   * the repoint.
+   */
+  cancelActive(): void {
+    const active = state.active;
+    if (!active) return;
+    state.active = null;
+    if (active.resolution_status != null) return;
+    void api.cancelCredentialPrompt(active.prompt_id, null);
   },
 
   /** Unconditional clear — used by the modal when the user dismisses. */
