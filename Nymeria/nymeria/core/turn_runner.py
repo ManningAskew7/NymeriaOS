@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .interactive_admission import TurnSlot
+from .notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 from .pending_prompt_queue import FANOUT_MAILBOX_MAXSIZE, PENDING_QUEUE_META_EVENT_TYPES
 from .thread_lock_manager import get_thread_epoch, thread_admission_guard
 from .turn_stream_buffer import (
@@ -458,7 +459,8 @@ async def run_turn(agent: Any, spec: TurnSpec, sink: TurnSink | None = None,
                 if not result.fanout_observed and spec.create_autonomous_notification:
                     spec.create_autonomous_notification(
                         user_id=spec.user_id, thread_id=spec.thread_id, task_id=spec.autonomous_task_id,
-                        summary=(content or "Autonomous task completed")[:200], settings=spec.settings,
+                        summary=(content or "Autonomous task completed")[:NOTIFICATION_SUMMARY_MAX_CHARS],
+                        settings=spec.settings,
                         thread_config_manager=agent.thread_config_manager,
                     )
                 publish("task_completed", {

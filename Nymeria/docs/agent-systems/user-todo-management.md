@@ -263,15 +263,6 @@ When a scheduled TODO succeeds:
 3. Reset status to `pending`
 4. Re-sync to TodoScheduleDB
 
-A non-recurring agent TODO only has its schedule cleared: its status is the
-agent's to set. The autonomous run rules on every wake-up tell the agent to
-close it with `nym_todo` (or reschedule or delete it), and name those calls
-run bookkeeping that a task saying "do not call any tools" does not forbid
-(#419). The ticker never closes an agent TODO itself, so a run that ends
-without closing it leaves the TODO `in_progress`, and the watchdog nudges it
-once it has been untouched for `TODO_STALENESS_MINUTES`. Only workflow TODOs,
-which have no agent turn, are closed by the ticker.
-
 A guard gates all four steps: **a schedule write made during the TODO's own
 fire turn wins over the post-run automation**. The ticker never touches
 `scheduled_for` while a run is in flight, so at finalize time any difference
@@ -330,6 +321,15 @@ returns the series to its origin cadence, which is also what keeps a #154
 resume from re-anchoring the whole series on the resume time. Completing a
 #154-paused TODO never re-arms it on any path: resume stays an explicit
 reschedule.
+
+A non-recurring agent TODO only has its schedule cleared: its status is the
+agent's to set. The autonomous run rules on every wake-up tell the agent to
+close it with `nym_todo` (or reschedule or delete it), and name those calls
+run bookkeeping that a task saying "do not call any tools" does not forbid
+(#419). The ticker never closes an agent TODO itself, so a run that ends
+without closing it leaves the TODO `in_progress`, and the watchdog nudges it
+once it has been untouched for `TODO_STALENESS_MINUTES`. Only workflow TODOs,
+which have no agent turn, are closed by the ticker.
 
 If a scheduled run fails, it is retried on subsequent polls up to
 `MAX_RETRIES` (3). On give-up, a **recurring** TODO skips only the failed

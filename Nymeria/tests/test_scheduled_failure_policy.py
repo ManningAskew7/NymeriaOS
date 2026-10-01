@@ -1539,7 +1539,7 @@ def test_trigger_action_alerts_keep_the_fix_in_the_in_app_row(
 
     row = _in_app_row(alert)
     assert row.startswith(f"[TRIGGER ALERT] Trigger \"{_LONG_NAME[:37]}...\" ({trigger.id})")
-    assert "failed its action 2 times in a row; it auto-pauses after 5." in row
+    assert "failed its action 2 times in a row; it auto-pauses after 5 failures." in row
     assert "Manage it with /triggers." in row
 
     row = _in_app_row(paused)

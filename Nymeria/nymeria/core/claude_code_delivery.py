@@ -328,6 +328,7 @@ def _deliver_as_notification(
     thread, so the bus copy would hand the output to that user."""
     from .event_bus import publish_autonomous_event
     from .notification_dispatch import create_in_app_notification
+    from .notifications import NOTIFICATION_SUMMARY_MAX_CHARS
 
     logger.warning("Claude Code job %s: %s; delivering as a notification", job.id, reason)
     task_id = f"claude-code-{job.id}"
@@ -342,7 +343,11 @@ def _deliver_as_notification(
         thread_id=job.thread_id,
         user_id=job.user_id,
         task_id=task_id,
-        data={"message": text, "summary": text[:200], "source": SOURCE},
+        data={
+            "message": text,
+            "summary": text[:NOTIFICATION_SUMMARY_MAX_CHARS],
+            "source": SOURCE,
+        },
     )
 
 

@@ -1642,7 +1642,7 @@ class TriggerManager:
             # actually started working on our prompt. The autonomous
             # queuer in agent.astream() observes fanout, so prompt_injected
             # and prompt_absorbed arrive on this stream before any
-            # response chunks — firing task_started on those would publish
+            # response chunks; firing task_started on those would publish
             # an empty trigger completion. See pending_prompt_queue.py.
             if (
                 not started_published
@@ -1774,7 +1774,7 @@ class TriggerManager:
 
             activity_msg = f"{trigger.name}: processed {event_count} event(s)"
             if partial:
-                activity_msg += " (partial — hit iteration limit)"
+                activity_msg += " (partial: hit the iteration limit)"
 
             log_activity(
                 ActivityType.TRIGGER_COMPLETED,
@@ -2068,7 +2068,9 @@ class TriggerManager:
                     0, int(getattr(settings, "trigger_failure_pause_after", 5))
                 )
                 pause_note = (
-                    f"; it auto-pauses after {pause_after}" if pause_after else ""
+                    f"; it auto-pauses after {pause_after} failures"
+                    if pause_after
+                    else ""
                 )
                 message = (
                     f"[TRIGGER ALERT] Trigger \"{subject}\" ({trigger_id}) "
@@ -2173,7 +2175,7 @@ class TriggerManager:
         # Activity log entry
         log_activity(
             ActivityType.TRIGGER_COMPLETED,
-            f"{trigger.name}: error — {safe_error[:200]}",
+            f"{trigger.name}: error: {safe_error[:200]}",
             user_id=user_id,
             thread_id=thread_id,
             metadata={

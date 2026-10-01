@@ -14,6 +14,7 @@ mutators raise ``NotificationsUnavailableError``.
 import json
 import logging
 import threading
+import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -48,8 +49,10 @@ class NotificationsUnavailableError(StoreUnavailableError):
 
 
 #: Hard cap on an in-app notification row's ``summary``, the whole text the
-#: notification center shows (both clients render it unclamped). Every writer
-#: truncates to it; external destinations still get the full message. Owner
+#: notification center shows (both clients render it unclamped). Every
+#: in-app row writer, and the live ``notification`` event that mirrors a row,
+#: truncates to it; external destinations still get the full message (the
+#: webhook and push channels keep their own preview budgets). Owner
 #: alerts are written to survive the cut (#406): verdict and remedy lead,
 #: with subjects clipped by :func:`clip_alert_subject`, and variable detail
 #: (full names, task text, errors) goes last.
@@ -60,17 +63,38 @@ NOTIFICATION_SUMMARY_MAX_CHARS = 200
 ALERT_SUBJECT_MAX_CHARS = 40
 
 
+_ZERO_WIDTH_JOINER = "\u200d"
+
+
+def _one_line(text: object) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _continues_cluster(char: str) -> bool:
+    """True when ``char`` belongs to the character before it: a combining
+    mark (any ``M*`` category, so variation selectors too) or a joiner."""
+    return char == _ZERO_WIDTH_JOINER or unicodedata.category(char).startswith("M")
+
+
 def clip_alert_subject(text: object, limit: int = ALERT_SUBJECT_MAX_CHARS) -> str:
     """A subject for an owner alert's bounded lead: one line, at most ``limit``.
 
     Whitespace runs collapse to single spaces; a longer subject keeps its
-    start and ends in "...". The alert repeats the full subject in its
-    detail tail when this clipped it, so external destinations lose nothing.
+    start and ends in "...". The cut never splits a character from its
+    combining marks or leaves a zero-width joiner before the "..." (it backs
+    off to the start of that cluster instead). The alert repeats the full
+    subject in its detail tail when this clipped it, so external
+    destinations lose nothing.
     """
-    flat = " ".join(str(text or "").split())
+    flat = _one_line(text)
     if len(flat) <= limit:
         return flat
-    return flat[: max(0, limit - 3)].rstrip() + "..."
+    end = max(0, limit - 3)
+    while end > 0 and (
+        _continues_cluster(flat[end]) or flat[end - 1] == _ZERO_WIDTH_JOINER
+    ):
+        end -= 1
+    return flat[:end].rstrip() + "..."
 
 
 def alert_subject(
@@ -80,11 +104,13 @@ def alert_subject(
 
     ``lead`` is the clipped form for the alert's opening; ``tail`` is
     ``' <label>: "<full text>".'`` when the clip lost something, else "", so
-    the full subject still reaches external destinations at the end.
+    the full subject still reaches external destinations at the end. Only
+    a length clip counts: a subject that merely had its whitespace collapsed
+    is not repeated.
     """
     full = str(text or "")
     lead = clip_alert_subject(full, limit)
-    if lead == full:
+    if lead == _one_line(full):
         return lead, ""
     return lead, f' {label}: "{full}".'
 

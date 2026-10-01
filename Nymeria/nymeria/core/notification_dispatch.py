@@ -164,6 +164,8 @@ def create_in_app_notification(
     if in_app_level == "off":
         return "Skipped Desktop notification (disabled for thread)"
     try:
+        # Late-bound on purpose, unlike the constant above: callers' tests
+        # swap the module (sys.modules) or its create_notification.
         from .notifications import create_notification
 
         summary = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
@@ -331,6 +333,13 @@ def send_owner_alert(
     gate (no ``in_app_level`` is passed, so the in-app half always lands).
     Never raises; delivery failure must not break a ticker cycle or a
     trigger fire.
+
+    Copy convention for every caller (#406): the in-app row is the message
+    cut at ``NOTIFICATION_SUMMARY_MAX_CHARS``, and a user without external
+    destinations reads only that. So lead with the ``[TAG]``, the subject
+    clipped by ``notifications.alert_subject`` (its tail repeats the full
+    subject at the end), the verdict and the remedy with its exact command;
+    put the variable detail (task text, full names, errors, paths) last.
     """
     try:
         send_via_profile(

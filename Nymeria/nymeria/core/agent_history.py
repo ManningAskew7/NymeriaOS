@@ -25,7 +25,6 @@ from .agent_text_extract import (  # noqa: F401  (re-export surface; several als
     strip_inline_thinking_text,
     trailing_marker_prefix_length,
 )
-from .prompts import AUTONOMOUS_MODE_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -254,32 +253,22 @@ def _autonomous_message_body(text: str) -> str:
     """``text`` without the autonomous run-rules block that leads it.
 
     Every autonomous wake-up persists as metadata, then the run rules, then
-    the message (``agent_turn_metadata._assemble``). The current rules text is
-    removed exactly. Each stored message keeps the rules wording it was sent
-    with, so an OLDER wording falls back to structure. Every wording so far
-    is the heading, prose, then one bullet list, so the message starts at the
-    first blank-line-delimited block after that list (a marker merely quoted
-    later in a trigger's body is never mistaken for its start). A wording
-    without a bullet list falls back to the first block that starts with a
-    known marker ("" when none does).
+    the message (``agent_turn_metadata._assemble``). Each stored message
+    keeps the rules wording it was sent with, and every wording that ever
+    shipped (2026-05-29, 2026-08-26, 2026-10-01) is exactly three
+    blank-line-delimited blocks: the heading, one prose paragraph, one bullet
+    list. So the message is everything after the third block, whatever the
+    wording: a marker quoted later in a trigger's body is never its start,
+    and a body that itself opens with a bullet list is not taken for rules.
+    A rules block of any other shape is unknown, so "" (badged "trigger").
+    Trap for a future rules edit: keep the three-block shape, or teach this
+    function the new one; stored history never changes.
     """
     if not text.startswith(_AUTONOMOUS_RULES_HEADING):
         return text
-    current = AUTONOMOUS_MODE_RULES.strip() + "\n\n"
-    if text.startswith(current):
-        return text[len(current):]
-    blocks = text.split("\n\n")
-    index = 1
-    while index < len(blocks) and not blocks[index].startswith("- "):
-        index += 1
-    if index < len(blocks):
-        while index < len(blocks) and blocks[index].startswith("- "):
-            index += 1
-        return "\n\n".join(blocks[index:])
-    markers = tuple(marker for marker, _source in _AUTONOMOUS_SOURCE_MARKERS)
-    for index in range(1, len(blocks)):
-        if blocks[index].startswith(markers):
-            return "\n\n".join(blocks[index:])
+    blocks = text.split("\n\n", 3)
+    if len(blocks) == 4 and blocks[2].startswith("- "):
+        return blocks[3]
     return ""
 
 

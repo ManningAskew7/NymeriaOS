@@ -455,7 +455,44 @@ def test_alert_subject_clips_only_what_is_too_long():
     assert len(lead) == ALERT_SUBJECT_MAX_CHARS and lead.endswith("...")
     assert over.startswith(lead[:-3])
     assert tail == f' Full name: "{over}".'  # nothing lost externally
-    # One line in the lead; the tail keeps the original text.
-    lead, tail = alert_subject("Mail\nsweep", label="Full name")
-    assert lead == "Mail sweep" and tail == ' Full name: "Mail\nsweep".'
     assert clip_alert_subject(None) == "" and clip_alert_subject("") == ""
+
+
+def test_a_subject_that_only_lost_whitespace_is_not_repeated():
+    """The lead is one line, but collapsing whitespace is not a clip: no
+    full-name tail for it, even when the raw text is past the limit."""
+    from nymeria.core.notifications import ALERT_SUBJECT_MAX_CHARS, alert_subject
+
+    assert alert_subject("Mail\nsweep", label="Full name") == ("Mail sweep", "")
+    assert alert_subject("  Mail \t sweep ", label="Full name") == ("Mail sweep", "")
+    spaced = "n" * 20 + " " * 30 + "n" * 10
+    assert len(spaced) > ALERT_SUBJECT_MAX_CHARS
+    assert alert_subject(spaced, label="Full name") == ("n" * 20 + " " + "n" * 10, "")
+
+
+@pytest.mark.parametrize(
+    ("cluster", "kept"),
+    [
+        ("e\u0301", 36),  # base + combining acute: never keep a bare "e"
+        ("\u2764\ufe0f", 36),  # emoji + variation selector (an M* mark)
+        ("\U0001F469\u200d\U0001F4BB", 35),  # ZWJ sequence: no joiner before "..."
+    ],
+    ids=["combining-mark", "variation-selector", "zwj-sequence"],
+)
+def test_the_subject_clip_never_splits_a_character_cluster(cluster, kept):
+    """The cut backs off to the start of a cluster it would split, so the
+    lead never shows a stripped accent or a dangling joiner; the tail still
+    carries the whole subject."""
+    from nymeria.core.notifications import alert_subject
+
+    name = "x" * kept + cluster + " and the rest of a long trigger name"
+    lead, tail = alert_subject(name, label="Full name")
+    assert lead == "x" * kept + "..."
+    assert tail == f' Full name: "{name}".'
+
+
+def test_a_cluster_wholly_before_the_cut_is_kept():
+    from nymeria.core.notifications import clip_alert_subject
+
+    name = "x" * 30 + "e\u0301" + "y" * 20
+    assert clip_alert_subject(name) == "x" * 30 + "e\u0301" + "y" * 5 + "..."

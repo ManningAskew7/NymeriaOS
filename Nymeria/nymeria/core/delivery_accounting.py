@@ -96,8 +96,6 @@ def record_delivery_report(
     # Every alert below leads with verdict and remedy and keeps the variable
     # parts (task, a destination up to 161 chars, the error) for the end, so
     # the in-app row's NOTIFICATION_SUMMARY_MAX_CHARS keeps the fix (#406).
-    where_lead, where_full = alert_subject(where, label="Destination")
-
     alerted = False
     paused = False
     if not recurring:
@@ -105,6 +103,8 @@ def record_delivery_report(
         # Gated on the persisted increment like every other branch:
         # unpersisted state must not drive policy.
         if count:
+            # The only copy that names the destination in its lead.
+            where_lead, where_full = alert_subject(where, label="Destination")
             send_owner_alert(
                 (
                     f"[SCHEDULED TASK NOT DELIVERED] TODO [{todo_id}] ran, "

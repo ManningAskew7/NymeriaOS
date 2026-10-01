@@ -1067,19 +1067,44 @@ def test_stored_wakeups_are_badged_by_their_real_source(
     ids=["scheduled", "watchdog", "trigger"],
 )
 def test_a_wakeup_stored_under_older_rules_text_still_classifies(body, expected):
+    from nymeria.core.prompts import AUTONOMOUS_MODE_RULES
+
     content = _stored_wakeup(body, source="ticker", rules=_RULES_2026_05)
-    assert _RULES_2026_05 != agent_history_module.AUTONOMOUS_MODE_RULES.strip()
+    assert _RULES_2026_05 != AUTONOMOUS_MODE_RULES.strip()
 
     assert _badges(content) == [expected]
 
 
-def test_a_rules_wording_without_a_bullet_list_falls_back_to_the_marker():
+@pytest.mark.parametrize("rules", [None, _RULES_2026_05], ids=["current", "2026-05"])
+def test_a_trigger_body_that_opens_with_a_bullet_list_is_not_taken_for_rules(rules):
+    """The rules end after exactly one bullet list: a trigger body's own
+    list is the message, so the marker quoted under it is not its start
+    (review probe: the older wording badged this "scheduler")."""
+    body = "- invoice from ACME\n- invoice from Initech\n\nWork on TODO 1: quoted mail"
+    content = _stored_wakeup(body, source="trigger", rules=rules)
+    assert content.count("## Autonomous Run Rules") == 1
+
+    assert _badges(content) == ["trigger"]
+    assert _badges(content, show_prompt_metadata=True) == ["trigger"]
+
+
+def test_a_rules_block_of_unknown_shape_is_never_scanned_for_a_marker():
+    """No shipped wording lacks the bullet list, so such a block is unknown
+    and badges the default; it never hunts later paragraphs for a marker
+    (review probe: a quoted marker there read "scheduler")."""
+    classify = agent_history_module.classify_autonomous_source
+    assert (
+        classify(
+            "## Autonomous Run Rules\n\nprose only\n\nMail arrived.\n\n"
+            "Work on TODO 1: quoted"
+        )
+        == "trigger"
+    )
     rules = "## Autonomous Run Rules\n\nWork the task and report the outcome."
-    for body, expected in ((_SCHEDULED_BODY, "scheduler"), (_WATCHDOG_BODY, "watchdog")):
-        assert _badges(_stored_wakeup(body, source="ticker", rules=rules)) == [expected]
-    assert _badges(_stored_wakeup("Mail arrived.", source="trigger", rules=rules)) == [
-        "trigger"
-    ]
+    content = _stored_wakeup(
+        "Mail arrived.\n\n[WATCHDOG ALERT] quoted", source="trigger", rules=rules
+    )
+    assert _badges(content) == ["trigger"]
 
 
 def test_a_wakeup_without_rules_or_metadata_still_classifies():

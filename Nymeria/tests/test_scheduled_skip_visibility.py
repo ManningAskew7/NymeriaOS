@@ -1386,6 +1386,35 @@ def test_the_skip_alert_row_keeps_the_count_and_the_next_run(
     assert "Usual causes:" in message
 
 
+def test_the_skip_alert_row_says_when_no_next_run_is_scheduled(
+    tmp_path, signals, monkeypatch
+):
+    """#406 behavior 23, other branch: the late run cleared its own schedule
+    (a mid-run write the ticker honors), so the row must say nothing is
+    next rather than name a slot."""
+    _long_zone(monkeypatch)
+    ticker, agent = _make_ticker(tmp_path)
+    todo = _add_long_todo(agent, slot=_now() - timedelta(hours=3, minutes=10))
+
+    def unschedule():
+        with agent.todo_manager.atomic_update(USER) as todo_list:
+            assert todo_list.update_item(todo.id, clear_schedule=True)
+
+    agent.on_turn = unschedule
+
+    ticker._execute_scheduled_todo(_entry_for(agent, todo.id))
+
+    assert _current(agent, todo.id).scheduled_for is None
+    message = _alerts(signals, "[SCHEDULED TASK SKIPPED]")[0]["message"]
+    row = _in_app_row(message)
+    assert row.startswith(
+        f"[SCHEDULED TASK SKIPPED] Recurring TODO [{todo.id}] skipped 3 scheduled "
+        "occurrences; no next run is scheduled."
+    )
+    assert "next run 20" not in message
+    assert f'Task: "{_LONG_TASK[:80]}".' in message
+
+
 def test_the_blocked_alert_row_keeps_the_restart_remedy_and_reclaim_time(
     tmp_path, signals, monkeypatch
 ):
@@ -1406,6 +1435,11 @@ def test_the_blocked_alert_row_keeps_the_restart_remedy_and_reclaim_time(
     assert f"reclaimed at {ticker_module._format_slot(started + 24 * 3600)}" in row
     assert f'Task: "{_LONG_TASK[:80]}", due {ticker_module._format_slot(slot)}.' in message
     assert ticker_module._format_slot(started) in message
+    # The activity row reuses the verdict and still names every fact.
+    activity = _skip_rows(signals, "execution_marker_held")[0]["message"]
+    assert "restarting the scheduler clears it now" in activity
+    assert f"reclaimed at {ticker_module._format_slot(started + 24 * 3600)}" in activity
+    assert f"run that started {ticker_module._format_slot(started)}" in activity
 
 
 def test_the_release_pending_blocked_row_says_it_retries_and_never_restart(
@@ -1421,11 +1455,18 @@ def test_the_release_pending_blocked_row_says_it_retries_and_never_restart(
     ticker._check_and_execute()  # the retry fails too
     _move_slot(agent, todo.id, _now())
 
+    started = agent._schedule_db.get_execution_started_at(todo.id)
+    assert started is not None
+
     ticker._execute_scheduled_todo(_entry_for(agent, todo.id))
 
     message = _alerts(signals, "[SCHEDULED TASK BLOCKED]")[0]["message"]
     row = _in_app_row(message)
     assert row.startswith(f"[SCHEDULED TASK BLOCKED] TODO [{todo.id}] cannot start")
     assert "retries every poll" in row
+    # The worst-case reclaim slot survives whole, zone key included (the
+    # first wording cut it to "... 13:00 Austra" even with ordinary zones).
+    assert f"reclaims it at {ticker_module._format_slot(started + 24 * 3600)}" in row
     assert "restart" not in message.lower()
     assert f'Task: "{_LONG_TASK[:80]}"' in message
+    assert ticker_module._format_slot(started) in message

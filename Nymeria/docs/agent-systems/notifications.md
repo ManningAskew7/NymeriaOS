@@ -99,8 +99,9 @@ The desktop sidebar's notifications panel is the audit log of every
 `notify` call. Each row carries:
 
 - `summary`: short message body, the first 200 characters of the message
-  (`NOTIFICATION_SUMMARY_MAX_CHARS` in `core/notifications.py`, the one cap
-  every writer uses); external destinations get the full text
+  (`NOTIFICATION_SUMMARY_MAX_CHARS` in `core/notifications.py`, the cap every
+  in-app row writer uses); external destinations get the full text (the
+  webhook and push previews keep their own budgets)
 - `profile`: profile that routed the notification (e.g. `"default"`)
 - `attempted`: destination names tried (excludes disabled destinations)
 - `delivered_to`: destinations that succeeded

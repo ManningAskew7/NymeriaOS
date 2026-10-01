@@ -1584,26 +1584,18 @@ class Ticker:
         reclaim = _format_slot(reclaim_epoch)
         due = _format_slot(entry.scheduled_for)
         task = (entry.task_preview or "")[:80]
+        # One verdict serves the alert's lead and the activity row. It is
+        # sized so the in-app row keeps the whole reclaim slot, zone key
+        # included, even with the longest tzdata zone (#406).
         if release_pending:
             # Our own failed release: the poll loop retries it every poll,
             # so the reclaim time is only the worst case.
-            cause = (
-                f"this scheduler could not release the marker from the run "
-                f"that started {started} and retries every poll; if the "
-                f"database keeps failing it is reclaimed at {reclaim}"
-            )
             verdict = (
-                f"its run marker is not released yet and the scheduler "
-                f"retries every poll; if the database keeps failing it is "
-                f"reclaimed at {reclaim}"
+                f"its run marker failed to release; the scheduler retries "
+                f"every poll and reclaims it at {reclaim} if the database "
+                f"keeps failing"
             )
         else:
-            cause = (
-                f"an execution marker left by the run that started {started} "
-                f"was never released. The scheduler reclaims it "
-                f"automatically at {reclaim}; restarting the scheduler "
-                f"clears it now"
-            )
             verdict = (
                 f"a stale run marker holds it; restarting the scheduler "
                 f"clears it now, or it is reclaimed at {reclaim}"
@@ -1642,7 +1634,10 @@ class Ticker:
         try:
             log_activity(
                 ActivityType.TASK_SKIPPED,
-                f"Blocked from starting: {task} (due {due}; {cause})",
+                (
+                    f"Blocked from starting: {task} (due {due}; {verdict}; "
+                    f"the marker is from the run that started {started})"
+                ),
                 user_id=entry.user_id,
                 thread_id=entry.thread_id,
                 metadata={
