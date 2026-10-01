@@ -3639,6 +3639,35 @@ def test_clear_rolls_back_when_the_value_set_elsewhere_is_invalid(
     assert client.get("/settings/env", headers=_auth(token)).status_code == 200
 
 
+def test_a_read_failure_after_the_check_is_the_same_400_and_changes_nothing(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # #435 review S4: the file half moved into the config layer; a read that
+    # fails there (the file changed since the route's own check) still
+    # answers 400 with the process value rolled back, never a 500.
+    app, runtime, boot = container_shape
+    boot(f"OPENAI_API_KEY=sk-{DUMMY_434}\n", OPENAI_API_KEY=f"cpx-{DUMMY_434}")
+    client, agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    before = runtime.read_bytes()
+    real_read_text = Path.read_text
+
+    def unreadable(self, *args, **kwargs):
+        if self == runtime:
+            raise PermissionError("denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+
+    response = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == f"Could not read {runtime}. Nothing was changed."
+    assert DUMMY_434 not in response.text
+    assert runtime.read_bytes() == before
+    assert os.environ["OPENAI_API_KEY"] == f"sk-{DUMMY_434}"
+    assert agent.graph_rebuilds == []
+
+
 def test_a_line_the_writer_cannot_parse_is_reported_not_claimed_cleared(
     container_shape, tmp_path: Path, monkeypatch
 ):

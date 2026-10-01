@@ -63,25 +63,39 @@ including a section run such as `nymeria init provider`) checks this file for
 you before the stack is recreated (#435). When the run changes, adds or
 removes a route or credential key, the wizard asks the running api container
 (`docker compose ... exec`, key names only, never a value) which of those keys
-the app saved its own copy of. Route keys are asked about as one group (once
-the route changes, every route key and model the app saved counts, since a
-mixed route sends a key to the wrong host; a key this run removed is named as
-one the app's copy would bring back); each credential gets its own question.
-Accepted copies are removed inside the container, and the normal `up -d`
-recreate applies both files. A real OpenAI or Gemini key whose slot this run
-hands to a gateway moves to `OPENAI_DIRECT_API_KEY` or
+the app saved its own copy of. The LLM route (`LLM_PROVIDER`, `LLM_BASE_URL`,
+the provider route and API mode, the CLIProxy management URL, the background
+base URL, and the models) is asked about as one group: once this run changes
+it, every member the app saved counts, since a mixed route sends a key to the
+wrong host, and a key this run removed is named as one the app's copy would
+bring back. The same group is asked about when this run only changes a key
+that the app's own saved route sends to its gateway, since the new key would
+go there too. Each credential, and each other service's base URL this run
+changes (embedding, TTS, STT), gets its own question. Enter accepts the route
+group and a move, but a credential whose copy would be discarded needs an
+explicit `y`. Accepted copies are removed inside the container; the `up -d`
+recreate then applies both files (when the wizard does not start the stack
+itself, it says the app's copy is already gone and to recreate now, and after
+a `--force` that rewrote the same values it names the `restart` instead,
+since compose then recreates nothing). A real OpenAI or Gemini key whose slot
+this run hands to a gateway moves to `OPENAI_DIRECT_API_KEY` or
 `GEMINI_DIRECT_API_KEY` in the app's file instead of being discarded, unless
 that slot is already set. Headless runs only warn, naming each
 `/settings clear <KEY>` to run; pass `--clear-app-overrides` to remove the
 copies without asking, or `--no-clear-app-overrides` to never remove them
-(the interactive wizard then warns only). When the stack is not running, or
-its image predates the check, the wizard names this run's keys and the
-command to run once it is up; if the wizard then starts that stack itself, it
-asks the same questions once the stack is healthy (judged against the new
-config, so a saved copy equal to the new value is not asked about) and
-restarts the api (and on the full stack the worker) after removing anything.
-After a wizard-run start, the closing note also names any key this run removed
-that the app's copy still brings back.
+(the interactive wizard then warns only). The flag acts on the run that makes
+the change: a re-run that changes nothing checks nothing. When the stack is
+not running, or its image predates the check, the wizard names this run's keys
+and the commands to run once it is up; if the wizard then starts that stack
+itself, it asks the same questions once the stack is healthy (judged against
+the new config, so a saved copy equal to the new value is not asked about, but
+a shared key judged under the route it was saved beside, so a real vendor key
+still moves) and restarts the api (and on the full stack the worker) after
+removing anything. A key whose saved route setup cannot read (a `$VAR`
+reference in the old `.env.docker`) is never moved, and `--clear-app-overrides`
+keeps it with a warning. After a wizard-run start, the closing note also names
+any key this run removed that the app's copy still brings back, unless you
+declined to remove it.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 

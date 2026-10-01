@@ -773,3 +773,113 @@ def test_removal_without_a_file_reports_not_saved(container, monkeypatch):
     assert settings_mod.remove_runtime_settings_keys(["LLM_BASE_URL"]) == {
         "LLM_BASE_URL": "not_saved"
     }
+
+
+# --- #435 review: judged under the route the app saved its copy beside -------
+#
+# The wizard's post-start check runs in a container already recreated on the
+# NEW route; the route the app saved its copy under travels as booleans.
+
+_NEW_GATEWAY_ENV = {"LLM_PROVIDER": "openai", "LLM_BASE_URL": "http://litellm:4000/v1"}
+
+
+def _facts(provider, base_url):
+    from nymeria.config.vendor_keys import RouteFacts, UNKNOWN_ROUTE
+
+    return {"OPENAI_API_KEY": RouteFacts(provider, base_url), "GEMINI_API_KEY": UNKNOWN_ROUTE}
+
+
+@pytest.mark.parametrize(
+    "file_text,prior,shape",
+    [
+        # Saved under an anthropic route: the vendor's key, whatever the
+        # container's new gateway route says (the review's HIGH).
+        (f"OPENAI_API_KEY=sk-{DUMMY}\n", (False, False), "vendor"),
+        # One known False decides; the other part need not be known.
+        (f"OPENAI_API_KEY=sk-{DUMMY}\n", (False, None), "vendor"),
+        (f"OPENAI_API_KEY=sk-{DUMMY}\n", (None, False), "vendor"),
+        # Saved under a gateway route: the gateway's key.
+        (f"OPENAI_API_KEY=sk-{DUMMY}\n", (True, True), "gateway"),
+        # The old route cannot be judged: maybe the vendor's, maybe not.
+        (f"OPENAI_API_KEY=sk-{DUMMY}\n", (True, None), "unknown"),
+        (f"OPENAI_API_KEY=sk-{DUMMY}\n", (None, None), "unknown"),
+        # Not vendor-shaped: never the vendor's key, unknown route or not.
+        (f"OPENAI_API_KEY=lm-{DUMMY}\n", (None, None), None),
+        (f"OPENAI_API_KEY=cpx-{DUMMY}\n", (None, None), "gatekeeper"),
+        # The file's own route wins where it sets it, part by part.
+        (
+            f"OPENAI_API_KEY=sk-{DUMMY}\nLLM_PROVIDER=openai\n"
+            "LLM_BASE_URL=http://litellm.example:4000/v1\n",
+            (False, False),
+            "gateway",
+        ),
+        (f"OPENAI_API_KEY=sk-{DUMMY}\nLLM_BASE_URL=http://gw.example/v1\n", (True, False), "gateway"),
+        (f"OPENAI_API_KEY=sk-{DUMMY}\nLLM_BASE_URL=http://gw.example/v1\n", (None, False), "unknown"),
+        (f"OPENAI_API_KEY=sk-{DUMMY}\nLLM_PROVIDER=anthropic\n", (None, None), "vendor"),
+    ],
+)
+def test_the_shape_is_judged_under_the_route_the_copy_was_saved_beside(
+    container, file_text, prior, shape
+):
+    _app, runtime = container
+    os.environ.pop("OPENAI_DIRECT_API_KEY", None)
+    os.environ.update(_NEW_GATEWAY_ENV)
+    runtime.write_text(file_text, encoding="utf-8")
+    settings_mod.load_env_files_into_environ(force=True)
+
+    report = settings_mod.runtime_settings_file_report(prior_route=_facts(*prior))
+
+    entry = next(e for e in report["keys"] if e["key"] == "OPENAI_API_KEY")
+    assert entry["shape"] == shape
+    assert DUMMY not in str(report)
+
+
+def test_without_the_old_route_the_shape_follows_this_process(container):
+    # The pre-start probe passes no facts: the container still runs the old
+    # route, so its own environment is the truth (slice 1 unchanged).
+    _app, runtime = container
+    os.environ.pop("OPENAI_DIRECT_API_KEY", None)
+    os.environ.update(_NEW_GATEWAY_ENV)
+    runtime.write_text(f"OPENAI_API_KEY=sk-{DUMMY}\n", encoding="utf-8")
+    settings_mod.load_env_files_into_environ(force=True)
+
+    assert _report_map()["OPENAI_API_KEY"]["shape"] == "gateway"
+
+
+@pytest.mark.parametrize(
+    "prior,status",
+    [((False, False), "relocated"), ((True, None), "relocation_refused")],
+)
+def test_the_relocation_re_check_uses_the_same_old_route(container, prior, status):
+    # The apply re-check judges as the report did: under the container's new
+    # gateway route alone the move was always refused (the review's
+    # corollary), and an unknown route never moves a key.
+    _app, runtime = container
+    os.environ.pop("OPENAI_DIRECT_API_KEY", None)
+    os.environ.update(_NEW_GATEWAY_ENV)
+    text = f"# keep\nOPENAI_API_KEY=sk-{DUMMY}\n"
+    runtime.write_text(text, encoding="utf-8")
+
+    result = settings_mod.remove_runtime_settings_keys(
+        [], relocate={"OPENAI_API_KEY": "OPENAI_DIRECT_API_KEY"}, prior_route=_facts(*prior)
+    )
+
+    assert result == {"OPENAI_API_KEY": status}
+    from dotenv import dotenv_values
+
+    if status == "relocated":
+        assert dotenv_values(runtime) == {"OPENAI_DIRECT_API_KEY": f"sk-{DUMMY}"}
+    else:
+        assert runtime.read_text(encoding="utf-8") == text
+
+
+def test_an_unreadable_file_raises_the_read_error_and_writes_nothing(container):
+    # The #434 route answers this 400 (it was before the shared primitive).
+    _app, runtime = container
+    runtime.write_bytes(b"OPENAI_API_KEY=\xff\xfe\n")
+    before = runtime.read_bytes()
+
+    with pytest.raises(settings_mod.RuntimeSettingsReadError):
+        settings_mod.remove_runtime_settings_keys(["OPENAI_API_KEY"])
+
+    assert runtime.read_bytes() == before

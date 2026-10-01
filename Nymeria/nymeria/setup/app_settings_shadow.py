@@ -22,10 +22,19 @@ run hands to a gateway moves to its direct slot in the app's file instead of
 being discarded (the #431 class).
 
 Names, classes and booleans cross the exec boundary; values never do, in either
-direction: the programs take key names as argv and print a JSON marker, and the
-wizard never echoes their stderr. Both programs contain no double quote and no
-backslash, so Windows ``list2cmdline`` and the Go argv parser in ``docker.exe``
-round-trip them unchanged.
+direction: the programs take key names (and ``route:`` facts, two booleans per
+shared slot) as argv and print a JSON marker, and the wizard never echoes their
+stderr. Both programs contain no double quote and no backslash, so Windows
+``list2cmdline`` and the Go argv parser in ``docker.exe`` round-trip them
+unchanged.
+
+When the stack was down before the start and the wizard starts it, the same
+questions run once it is healthy (the catch-up). The container then already
+runs THIS run's route, which is not the route the app saved its copy under, so
+the wizard passes the OLD route as ``vendor_keys.RouteFacts`` and both programs
+judge a shared slot's shape under it: a real vendor key moves exactly as it
+would have before the start, and a key whose route cannot be judged is
+``unknown`` (never moved, never removed without an explicit yes).
 """
 
 from __future__ import annotations
@@ -42,6 +51,14 @@ from rich.markup import escape
 
 from ..config.env_file import is_env_key_name
 from ..config.secret_keys import classify_setting_key, direct_key_slot
+from ..config.vendor_keys import (
+    ROUTE_FACTS_PREFIX,
+    UNKNOWN_ROUTE,
+    VENDOR_KEY_SLOTS,
+    RouteFacts,
+    route_facts,
+    route_facts_tokens,
+)
 
 # The file inside the container (both shapes' compose files name it).
 APP_SETTINGS_PATH = "/data/settings.env"
@@ -60,8 +77,9 @@ UNSUPPORTED = "unsupported"
 # report (the module imports, the function is missing) says `unsupported` and,
 # when it has the #254 override list, prints that too, so the post-start note
 # keeps working on an older published image. A module that does not import at
-# all prints no marker: that is a broken stack, not an old one.
-REPORT_PROGRAM = f"""import json
+# all prints no marker: that is a broken stack, not an old one. Argv: optional
+# `route:` facts (the catch-up's old route; none before the start).
+REPORT_PROGRAM = f"""import json, sys
 import nymeria.config.settings as conf
 report = getattr(conf, 'runtime_settings_file_report', None)
 if report is None:
@@ -72,28 +90,45 @@ if report is None:
         print({LEGACY_OVERRIDES_MARKER!r} + ','.join(overrides()))
 else:
     try:
+        from nymeria.config.vendor_keys import parse_route_facts
         conf.load_env_files_into_environ()
-        print({REPORT_MARKER!r} + json.dumps(report()))
+        prior = parse_route_facts(sys.argv[1:])
+        print({REPORT_MARKER!r} + json.dumps(report(prior_route=prior)))
     except Exception as exc:
         print({ERROR_MARKER!r} + type(exc).__name__)
 """
 
-# Writes. Argv: KEY names to remove, and SLOT:DIRECT pairs to move a shared
-# slot's real vendor key to its direct twin (the container re-checks both).
+# Writes. Argv: KEY names to remove, SLOT:DIRECT pairs to move a shared slot's
+# real vendor key to its direct twin (the container re-checks both), and the
+# report's `route:` facts, so the re-check judges under the same route.
 APPLY_PROGRAM = f"""import json, sys
 import nymeria.config.settings as conf
 remove = getattr(conf, 'remove_runtime_settings_keys', None)
 if remove is None:
     print({APPLY_MARKER + UNSUPPORTED!r})
 else:
-    names = [arg for arg in sys.argv[1:] if ':' not in arg]
-    moves = dict(arg.split(':', 1) for arg in sys.argv[1:] if ':' in arg)
+    args = [arg for arg in sys.argv[1:] if not arg.startswith({ROUTE_FACTS_PREFIX!r})]
+    names = [arg for arg in args if ':' not in arg]
+    moves = dict(arg.split(':', 1) for arg in args if ':' in arg)
     try:
+        from nymeria.config.vendor_keys import parse_route_facts
         conf.load_env_files_into_environ()
-        print({APPLY_MARKER!r} + json.dumps(remove(names, relocate=moves)))
+        prior = parse_route_facts(sys.argv[1:])
+        print({APPLY_MARKER!r} + json.dumps(remove(names, relocate=moves, prior_route=prior)))
     except Exception as exc:
         print({ERROR_MARKER!r} + type(exc).__name__)
 """
+
+# The LLM route: the keys a route change moves together, asked as ONE group
+# (DP3: a mixed route sends a key to the wrong host). The background base URL
+# reuses the main route's key, so it travels with it. Every one is classed
+# `route`; the other route-class keys (EMBEDDING_, TTS_, STT_BASE_URL) are
+# separate services, asked about one by one and only when this run changes
+# them (review F2: an embedder change once offered to wipe the LLM route).
+LLM_ROUTE_KEYS: frozenset[str] = frozenset({
+    "LLM_PROVIDER", "LLM_BASE_URL", "LLM_PROVIDER_ROUTE", "OPENAI_API_MODE",
+    "CLIPROXY_MANAGEMENT_URL", "LLM_BACKGROUND_BASE_URL",
+})
 
 # DP4: the models ride the route group. A model is a plain setting by #434's
 # classifier (a wrong model is an error, not a leak), but an app-saved gpt-*
@@ -105,13 +140,19 @@ ROUTE_MODEL_KEYS: frozenset[str] = frozenset(
 _VENDOR_LABELS = {"openai": "OpenAI", "google": "Google AI (Gemini)"}
 _CLASSES = frozenset({"credential", "route", "setting"})
 _KINDS = frozenset({"override", "blanked", "app_only", "same"})
-_SHAPES = frozenset({"vendor", "gateway", "gatekeeper"})
+_SHAPES = frozenset({"vendor", "gateway", "gatekeeper", "unknown"})
 _STATUSES = frozenset({
     "cleared", "relocated", "not_saved", "pinned_line_removed", "unparsable",
     "relocation_refused", "malformed",
 })
 
 ProbeStatus = Literal["report", "unsupported", "unreachable"]
+# What a removal that got no per-key answer did: `not_applied` (nothing ran in
+# the container, or an image without the step), `unconfirmed` (it ran, or may
+# have, then no answer: the one atomic write may or may not be in place).
+NOT_APPLIED = "not_applied"
+UNCONFIRMED = "unconfirmed"
+ApplyOutcome = Literal["not_applied", "unconfirmed"]
 
 
 # --- the container channel ----------------------------------------------------
@@ -125,21 +166,27 @@ class ComposeChannel:
     service on the full stack, never the worker; ``nymeria-single`` on both
     single-container composes) and ``env`` is finalize's ``_compose_env``.
     ``start_command`` is the ``up -d`` line that recreates the stack (a
-    callable: deciding it may probe the image); ``exec_hint`` the
-    user-facing ``docker compose ... exec <service>`` prefix for a recipe.
+    callable: deciding it may probe the image, so it runs only when a message
+    needs it); ``restart_command`` restarts the services that load the app's
+    file; ``exec_hint`` the user-facing ``docker compose ... exec <service>``
+    prefix for a recipe.
     """
 
     exec_argv: tuple[str, ...]
     cwd: Path
     env: Mapping[str, str]
     start_command: Callable[[], str]
+    restart_command: str
     exec_hint: str
 
 
 def _run_program(
     channel: ComposeChannel, program: str, args: Sequence[str] = ()
 ) -> subprocess.CompletedProcess[str] | None:
-    """Run one program in the container; None when it could not be run at all."""
+    """Run one program in the container; None when docker could not be started.
+
+    A timeout raises ``subprocess.TimeoutExpired``: the program may have run.
+    """
     try:
         # env-gate: full-copy - finalize's `_compose_env`, for the reason its
         # own token-file exec gives: compose resolves the project from
@@ -156,7 +203,7 @@ def _run_program(
             errors="replace",
             timeout=EXEC_TIMEOUT_SECONDS,
         )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except (OSError, ValueError):
         return None
 
 
@@ -195,9 +242,6 @@ class FileReport:
     status: ProbeStatus
     keys: tuple[FileKey, ...] = ()
     legacy_overrides: tuple[str, ...] = ()
-
-    def entry(self, key: str) -> FileKey | None:
-        return next((item for item in self.keys if item.key == key), None)
 
 
 def _parse_entry(raw: Any) -> FileKey | None:
@@ -241,20 +285,39 @@ def parse_report(stdout: str) -> FileReport:
     return FileReport("report", tuple(entry for entry in entries if entry is not None))
 
 
-def probe(channel: ComposeChannel) -> FileReport:
-    """Ask the running container what the app's file sets (one read-only exec)."""
-    result = _run_program(channel, REPORT_PROGRAM)
+def probe(
+    channel: ComposeChannel, *, prior_route: Mapping[str, RouteFacts] | None = None
+) -> FileReport:
+    """Ask the running container what the app's file sets (one read-only exec).
+
+    ``prior_route``: the route the app's copies were saved under, when the
+    container no longer runs it (the post-start catch-up).
+    """
+    args = route_facts_tokens(prior_route) if prior_route is not None else []
+    try:
+        result = _run_program(channel, REPORT_PROGRAM, args)
+    except subprocess.TimeoutExpired:
+        return FileReport("unreachable")
     if result is None:
         return FileReport("unreachable")
     return parse_report(result.stdout)
 
 
 def apply(
-    channel: ComposeChannel, keys: Sequence[str], moves: Mapping[str, str]
-) -> dict[str, str] | None:
-    """Remove ``keys`` (and move ``moves``' slots) in the container; per-key
-    status, or None when the container could not do it (no answer, an older
-    image, a read failure)."""
+    channel: ComposeChannel,
+    keys: Sequence[str],
+    moves: Mapping[str, str],
+    *,
+    prior_route: Mapping[str, RouteFacts] | None = None,
+) -> dict[str, str] | ApplyOutcome:
+    """Remove ``keys`` (and move ``moves``' slots) in the container.
+
+    Per-key status; ``NOT_APPLIED`` when nothing ran there (docker could not
+    start, or an image without the step); ``UNCONFIRMED`` when it ran, or may
+    have, without an answer (a timeout, no marker, an error marker): the
+    write is one atomic replace, so it is either fully in place or not at
+    all, and the caller cannot tell which. ``prior_route`` as for ``probe``.
+    """
     args = [key for key in keys if key not in moves and is_env_key_name(key)]
     args += [
         f"{slot}:{direct}"
@@ -263,16 +326,25 @@ def apply(
     ]
     if not args:
         return {}
-    result = _run_program(channel, APPLY_PROGRAM, args)
-    payload = _marker_payload(result.stdout if result else "", APPLY_MARKER)
-    if payload is None or payload == UNSUPPORTED:
-        return None
+    if prior_route is not None:
+        args += route_facts_tokens(prior_route)
+    try:
+        result = _run_program(channel, APPLY_PROGRAM, args)
+    except subprocess.TimeoutExpired:
+        return UNCONFIRMED
+    if result is None:
+        return NOT_APPLIED
+    payload = _marker_payload(result.stdout, APPLY_MARKER)
+    if payload == UNSUPPORTED:
+        return NOT_APPLIED
+    if payload is None:
+        return UNCONFIRMED
     try:
         data = json.loads(payload)
     except ValueError:
-        return None
+        return UNCONFIRMED
     if not isinstance(data, dict):
-        return None
+        return UNCONFIRMED
     return {
         str(key): str(status)
         for key, status in data.items()
@@ -283,11 +355,12 @@ def apply(
 # --- what this run changed ------------------------------------------------------
 
 
-def snapshot_env_file(path: Path) -> dict[str, str]:
+def snapshot_env_file(path: Path) -> dict[str, str] | None:
     """``path``'s non-empty values, raw (no ``${VAR}`` expansion). In memory only.
 
     Empty counts as unset, like compose's ``${VAR:-}``: dropping a blank line
-    changes nothing a container sees.
+    changes nothing a container sees. ``{}`` for a missing file, None for one
+    that cannot be read (its contents are unknown, not empty).
     """
     if not path.is_file():
         return {}
@@ -296,27 +369,40 @@ def snapshot_env_file(path: Path) -> dict[str, str]:
     try:
         values = dotenv_values(path, interpolate=False)
     except (OSError, UnicodeDecodeError, ValueError):
-        return {}
+        return None
     return {key: value for key, value in values.items() if value}
+
+
+def _all_unknown() -> dict[str, RouteFacts]:
+    return dict.fromkeys(VENDOR_KEY_SLOTS, UNKNOWN_ROUTE)
 
 
 @dataclass(frozen=True)
 class ConfigDiff:
     """Key NAMES this run's write changed, added or dropped (values compared
-    in memory and discarded), plus the names the new file sets."""
+    in memory and discarded), plus the names the new file sets.
+
+    ``recreates``: the file's values changed, so compose recreates the stack
+    on the next ``up -d`` (a ``--force`` rewrite of the same values does not).
+    ``prior_route``: the OLD file's LLM route as booleans per shared slot
+    (``RouteFacts``), for the post-start check, whose container already runs
+    the new one.
+    """
 
     changed: frozenset[str] = frozenset()
     added: frozenset[str] = frozenset()
     dropped: frozenset[str] = frozenset()
     after_keys: frozenset[str] = frozenset()
+    recreates: bool = True
+    prior_route: Mapping[str, RouteFacts] = field(default_factory=_all_unknown)
 
     @property
     def keys(self) -> frozenset[str]:
         return self.changed | self.added | self.dropped
 
     @property
-    def route_changed(self) -> bool:
-        return any(classify_setting_key(key) == "route" for key in self.keys)
+    def llm_route_changed(self) -> bool:
+        return bool(self.keys & LLM_ROUTE_KEYS)
 
     def candidate_names(self) -> tuple[str, ...]:
         """The route and credential keys this run changed, routes first."""
@@ -331,39 +417,98 @@ class ConfigDiff:
         return tuple(sorted(names, key=lambda k: (classify_setting_key(k) != "route", k)))
 
 
-def config_diff(before: Mapping[str, str], after: Mapping[str, str]) -> ConfigDiff:
-    """Compare two ``snapshot_env_file`` results by name."""
+def _known(value: str) -> str | None:
+    """A raw `.env.docker` value, or None when compose resolves it from
+    elsewhere (a ``$VAR`` reference), so the host cannot know it."""
+    return None if "$" in value else value
+
+
+def _prior_route(before: Mapping[str, str] | None) -> dict[str, RouteFacts]:
+    if before is None:
+        return _all_unknown()
+    provider = _known(before.get("LLM_PROVIDER", ""))
+    base_url = _known(before.get("LLM_BASE_URL", ""))
+    return {
+        slot: route_facts(slot, provider=provider, base_url=base_url)
+        for slot in VENDOR_KEY_SLOTS
+    }
+
+
+def config_diff(
+    before: Mapping[str, str] | None, after: Mapping[str, str], *, fresh: bool = False
+) -> ConfigDiff:
+    """Compare two ``snapshot_env_file`` results by name.
+
+    ``fresh`` (``--force``) counts every key the new file writes as added,
+    and so does an unreadable ``before`` (None); the old values still decide
+    ``recreates`` and ``prior_route`` when they are known.
+    """
+    base = {} if fresh or before is None else before
     return ConfigDiff(
-        changed=frozenset(k for k in before.keys() & after.keys() if before[k] != after[k]),
-        added=frozenset(after.keys() - before.keys()),
-        dropped=frozenset(before.keys() - after.keys()),
+        changed=frozenset(k for k in base.keys() & after.keys() if base[k] != after[k]),
+        added=frozenset(after.keys() - base.keys()),
+        dropped=frozenset(base.keys() - after.keys()),
         after_keys=frozenset(after),
+        recreates=before is None or dict(before) != dict(after),
+        prior_route=_prior_route(before),
     )
 
 
 # --- which app copies to ask about -----------------------------------------------
 
 
+CandidateGroup = Literal["route", "single", "credential"]
+_GROUP_ORDER = {"route": 0, "single": 1, "credential": 2}
+
+
 @dataclass(frozen=True)
 class Candidate:
-    """An app-saved copy this run's change makes stale."""
+    """An app-saved copy this run's change makes stale.
+
+    ``group``: ``route`` (the LLM route group, one question), ``single`` (a
+    separate service's base URL, its own question) or ``credential`` (its own
+    question).
+    """
 
     entry: FileKey
-    group: Literal["route", "credential"]
+    group: CandidateGroup
     # This run removed the key from .env.docker; the app's copy brings it back.
     dropped: bool = False
     # The direct slot the app's real vendor key moves to, when offered.
     relocate_to: str | None = None
+    # Route group only, when this run did not change the LLM route itself: the
+    # changed keys the app's OWN saved route sends to its gateway.
+    pulled_by: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
         return self.entry.key
+
+    @property
+    def unknown(self) -> bool:
+        """A vendor-shaped copy whose route could not be judged: maybe the user's
+        only copy of a real key, so it is never moved or removed unasked."""
+        return self.entry.shape == "unknown"
+
+    @property
+    def default_yes(self) -> bool:
+        """Enter means yes, except for a credential whose copy would be
+        discarded (review S3): that takes an explicit yes."""
+        return self.group != "credential" or bool(self.relocate_to)
 
     def label(self) -> str:
         cls = "model" if self.key in ROUTE_MODEL_KEYS else self.entry.key_class
         if self.dropped:
             return f"{self.key} ({cls}; this setup removed it, the app's copy would bring it back)"
         return f"{self.key} ({cls})"
+
+
+def _settled(entry: FileKey, diff: ConfigDiff, *, precise: bool) -> bool:
+    """The app's copy changes nothing this run cares about."""
+    if entry.kind == "same" and (precise or entry.key not in diff.keys):
+        return True
+    # A blank line over a key the new config leaves unset.
+    return entry.empty and entry.key not in diff.after_keys
 
 
 def select_candidates(
@@ -381,41 +526,56 @@ def select_candidates(
     value (it would still beat the new one); a copy of a key this run did not
     touch that equals what the container runs is skipped either way.
 
-    - A route or credential key this run changed, added or dropped, that the
-      file sets.
-    - Route tuple: once this run changes a route key, every route key the
-      file sets (and, DP4, every model), changed by this run or not: a GUI
-      route's LLM_BASE_URL left under the wizard's new provider would send
-      the new key to the old gateway.
-    - Also on a route change: a shared slot holding a GATEWAY's key (judged
-      under the app's own route), which only works with the gateway route
-      being replaced; kept, the media tools would send it to the vendor (#433).
+    - A credential this run changed, added or dropped that the file sets.
+    - The LLM route group (``LLM_ROUTE_KEYS`` plus, DP4, the models): once the
+      route is in play, every member the file sets, changed by this run or
+      not: a GUI route's LLM_BASE_URL left under the wizard's new provider
+      would send the new key to the old gateway. The route is in play when
+      this run changes an LLM route key, or when it changes a credential the
+      app's OWN saved route (a route key the file sets) sends to its gateway
+      (review MED: a key rotation would otherwise feed the new vendor key to
+      the app's gateway).
+    - A separate service's route key (embedding, TTS, STT base URL) only when
+      this run changed it, asked alone (review F2).
+    - With the route in play, a shared slot holding a GATEWAY's key (judged
+      under the route the app saved it beside), which only works with the
+      gateway route being replaced; kept, the media tools would send it to
+      the vendor (#433).
 
     ``gateway_slot(slot)`` is this run's ``tool_keys.gateway_direct_slot``:
     a vendor-shaped copy moves there when the container says the direct slot
-    is empty and the new ``.env.docker`` does not set it either.
+    is empty and the new ``.env.docker`` does not set it either. An
+    ``unknown`` shape never moves.
     """
     if report.status != "report":
         return []
-    route_changed = diff.route_changed
+    live = [entry for entry in report.keys if not _settled(entry, diff, precise=precise)]
+    app_route = [entry.key for entry in live if entry.key in LLM_ROUTE_KEYS]
+    gateway_fed = tuple(
+        entry.key
+        for entry in live
+        if entry.key_class == "credential"
+        and entry.key in diff.keys
+        and entry.shape == "gateway"
+    )
+    pulled_by = gateway_fed if app_route and not diff.llm_route_changed else ()
+    route_in_play = diff.llm_route_changed or bool(pulled_by)
     picked: list[Candidate] = []
-    for entry in report.keys:
+    for entry in live:
         in_diff = entry.key in diff.keys
-        route_member = entry.key_class == "route" or (
-            route_changed and entry.key in ROUTE_MODEL_KEYS
-        )
-        if in_diff and (entry.key_class == "credential" or route_member):
-            pass
-        elif route_changed and route_member:
-            pass
-        elif route_changed and entry.key_class == "credential" and entry.shape == "gateway":
-            pass
+        group: CandidateGroup
+        if entry.key in LLM_ROUTE_KEYS or entry.key in ROUTE_MODEL_KEYS:
+            if not route_in_play:
+                continue
+            group = "route"
+        elif entry.key_class == "credential":
+            if not (in_diff or (route_in_play and entry.shape == "gateway")):
+                continue
+            group = "credential"
+        elif entry.key_class == "route" and in_diff:
+            group = "single"
         else:
             continue
-        if entry.kind == "same" and (precise or not in_diff):
-            continue
-        if entry.empty and entry.key not in diff.after_keys:
-            continue  # a blank line over a key the new config leaves unset
         relocate_to = None
         if entry.shape == "vendor" and not entry.direct_set:
             direct = gateway_slot(entry.key)
@@ -424,12 +584,13 @@ def select_candidates(
         picked.append(
             Candidate(
                 entry,
-                "route" if route_member else "credential",
+                group,
                 dropped=entry.key in diff.dropped,
                 relocate_to=relocate_to,
+                pulled_by=pulled_by if group == "route" else (),
             )
         )
-    return sorted(picked, key=lambda c: (c.group != "route", c.key))
+    return sorted(picked, key=lambda c: (_GROUP_ORDER[c.group], c.key))
 
 
 # --- the conversation ---------------------------------------------------------
@@ -446,6 +607,11 @@ class ShadowRun:
     # Keys gone from the app's file because of this run (cleared, moved, or
     # already gone when the removal ran): never named as a shadow afterwards.
     cleared: set[str] = field(default_factory=set)
+    # Keys the user answered no for: the closing note does not repeat them.
+    declined: set[str] = field(default_factory=set)
+    # Keys whose copy the pre-start step removed or moved (or may have):
+    # with an unchanged config (`--force`) the start must restart to apply it.
+    removed_before_start: list[str] = field(default_factory=list)
 
 
 def _names(keys: Iterable[str]) -> str:
@@ -459,70 +625,86 @@ def _clear_commands(keys: Sequence[str]) -> str:
     return ", ".join(commands[:-1]) + " and " + commands[-1]
 
 
-def _discard_note(candidate: Candidate) -> str:
-    """What removing this credential copy does to it (never its value)."""
-    key = candidate.key
-    if candidate.relocate_to:
-        from ..config.vendor_keys import VENDOR_KEY_SLOTS
+def _vendor_label(key: str) -> str:
+    slot = VENDOR_KEY_SLOTS.get(key)
+    return _VENDOR_LABELS.get(slot.vendor, "vendor") if slot else "vendor"
 
-        slot = VENDOR_KEY_SLOTS.get(key)
-        vendor = _VENDOR_LABELS.get(slot.vendor, "vendor") if slot else "vendor"
+
+def _key_note(candidate: Candidate, *, later: bool) -> str:
+    """What removing this copy does to it, never its value: ``later=False``
+    as the question is asked, ``later=True`` for a later ``/settings clear``
+    (which never moves a key)."""
+    key = candidate.key
+    direct = direct_key_slot(key)
+    shape = candidate.entry.shape
+    if candidate.group != "credential":
+        return ""
+    if shape == "gateway":
         return (
-            f"The app's copy of {key} looks like a real {vendor} key, and this "
-            f"setup's route sends {key} to a gateway, so it moves to "
+            f"The app's copy of {key} is a gateway's key: it only works with the "
+            "app's own gateway route"
+            + ("." if later else ", so removing it discards nothing this setup uses.")
+        )
+    if candidate.unknown:
+        return (
+            f"Setup cannot tell whether the app's copy of {key} is a real "
+            f"{_vendor_label(key)} key or a gateway's (it could not read the route "
+            "the app saved it under), so it is not moved"
+            + (": " if later else " and removing it discards it: ")
+            + f"if it is your own key, save it as {direct} first."
+        )
+    if candidate.relocate_to and not later:
+        return (
+            f"The app's copy of {key} looks like a real {_vendor_label(key)} key, and "
+            f"this setup's route sends {key} to a gateway, so it moves to "
             f"{candidate.relocate_to} in the app's settings (the slot the media "
             "tools read) instead of being discarded."
         )
-    if candidate.entry.shape == "gateway":
-        return (
-            f"The app's copy of {key} is a gateway's key: it only works with the "
-            "app's own gateway route, so removing it discards nothing this setup "
-            "uses."
-        )
-    direct = direct_key_slot(key)
-    if candidate.entry.shape == "vendor" and candidate.entry.direct_set and direct:
+    if not direct:
+        return "" if later else "Removing it discards the app's copy."
+    if shape == "vendor" and candidate.entry.direct_set and not later:
         return (
             f"Removing it discards the app's copy ({direct} is already set, so it "
             "is not moved there)."
         )
-    if direct:
-        return (
-            f"Removing it discards the app's copy: if it is a real vendor key you "
-            f"still need, save it as {direct} first."
-        )
-    return "Removing it discards the app's copy."
-
-
-def _clear_hint(candidate: Candidate) -> str:
-    """What a later ``/settings clear`` does to this copy (it never moves one)."""
-    key = candidate.key
-    if candidate.entry.shape == "gateway":
-        return (
-            f" The app's copy of {key} is a gateway's key: it only works with the "
-            "app's own gateway route."
-        )
-    direct = direct_key_slot(key)
-    if not direct:
-        return ""
-    hint = (
-        f" Clearing {key} discards the app's copy: if it is a real vendor key you "
-        f"still need, save it as {direct} first."
+    note = (
+        f"{f'Clearing {key}' if later else 'Removing it'} discards the app's copy: "
+        f"if it is a real vendor key you still need, save it as {direct} first."
     )
-    if candidate.relocate_to:
-        hint += (
-            f" (--clear-app-overrides moves it to {candidate.relocate_to} "
-            "instead.)"
-        )
-    return hint
+    if later and candidate.relocate_to:
+        note += f" (--clear-app-overrides moves it to {candidate.relocate_to} instead.)"
+    return note
 
 
-def _ask(console: Console, prompt: str) -> bool:
-    """Default yes; "n...", EOF (Ctrl+D) and Ctrl+C decline (the local-rag prompt)."""
+def _later_notes(candidates: Sequence[Candidate]) -> str:
+    notes = (_key_note(c, later=True) for c in candidates)
+    return "".join(f" {note}" for note in notes if note)
+
+
+def _route_note(route: Sequence[Candidate]) -> str:
+    """Why the app's route group is asked about on a credential-only change."""
+    pulled = next((c.pulled_by for c in route if c.pulled_by), ())
+    if not pulled:
+        return ""
+    return (
+        f" The app's own saved route sends {_names(pulled)} to its gateway, so "
+        f"while it stays, this setup's new {_names(pulled)} goes there too."
+    )
+
+
+def _ask(console: Console, prompt: str, *, default: bool) -> bool:
+    """Enter takes ``default``; "y..." and "n..." decide; EOF (Ctrl+D) and
+    Ctrl+C decline (the local-rag prompt)."""
+    suffix = r" \[Y/n] " if default else r" \[y/N] "
     try:
-        answer = console.input(prompt + r" \[Y/n] ").strip().lower()
+        answer = console.input(prompt + suffix).strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
-    return not answer.startswith("n")
+    if answer.startswith("y"):
+        return True
+    if answer.startswith("n"):
+        return False
+    return default
 
 
 def _when(started: bool) -> str:
@@ -535,11 +717,21 @@ def _kept_warning(
     console: Console, candidates: Sequence[Candidate], *, started: bool = False
 ) -> None:
     keys = [c.key for c in candidates]
-    hints = "".join(_clear_hint(c) for c in candidates if c.group == "credential")
     console.print(
         f"[yellow]Kept the app's copy of {_names(keys)}: it overrides this setup "
         f"{_when(started)}. To use this setup's value later, an admin runs "
-        f"{_clear_commands(keys)} in the app.{escape(hints)}[/yellow]"
+        f"{_clear_commands(keys)} in the app.{escape(_later_notes(candidates))}[/yellow]"
+    )
+
+
+def _held_warning(console: Console, candidates: Sequence[Candidate], *, started: bool) -> None:
+    """--clear-app-overrides never removes a copy setup cannot judge (#435 review)."""
+    keys = [c.key for c in candidates]
+    console.print(
+        f"[yellow]Kept the app's copy of {_names(keys)}: --clear-app-overrides "
+        f"never removes a key setup cannot judge, and it overrides this setup "
+        f"{_when(started)}.{escape(_later_notes(candidates))} Then an admin runs "
+        f"{_clear_commands(keys)} in the app.[/yellow]"
     )
 
 
@@ -547,15 +739,18 @@ def _warn_only(
     console: Console, candidates: Sequence[Candidate], *, started: bool = False
 ) -> None:
     keys = [c.key for c in candidates]
-    hints = "".join(_clear_hint(c) for c in candidates if c.group == "credential")
+    route = [c for c in candidates if c.group == "route"]
     console.print(
         f"\n[yellow]Settings saved in the app override this setup {_when(started)}: "
         f"the app's copy ({APP_SETTINGS_PATH} on the data volume) loads last and "
-        f"sets {_names(c.label() for c in candidates)}. To use this setup's "
-        f"values, an admin runs {_clear_commands(keys)} in the app"
-        + ("" if started else " after the start")
-        + ", or re-run setup with --clear-app-overrides to remove them now."
-        + f"{escape(hints)}[/yellow]"
+        f"sets {_names(c.label() for c in candidates)}.{escape(_route_note(route))} "
+        f"To use this setup's values, an admin runs {_clear_commands(keys)} in the "
+        "app" + ("" if started else " after the start")
+        # A re-run with the same values changes nothing, so it checks nothing:
+        # the flag only helps on the run that makes the change.
+        + ". To have setup remove them instead, pass --clear-app-overrides on the "
+        "run that makes the change (a re-run that changes nothing checks nothing)."
+        + f"{escape(_later_notes(candidates))}[/yellow]"
     )
 
 
@@ -563,18 +758,30 @@ def _report_outcomes(
     console: Console,
     channel: ComposeChannel,
     attempted: Sequence[Candidate],
-    statuses: Mapping[str, str] | None,
+    statuses: Mapping[str, str] | ApplyOutcome,
     run: ShadowRun,
     *,
-    applies_when: str,
+    applies_when: Callable[[], str],
 ) -> list[str]:
-    """Print each key's outcome; return the keys whose copy left the file."""
+    """Print each key's outcome; return the keys whose copy left the file (or
+    may have: an unconfirmed removal still needs the restart or recreate)."""
     keys = [c.key for c in attempted]
-    if statuses is None:
+    if statuses == UNCONFIRMED:
+        recipe = f"{channel.exec_hint} cut -d= -f1 {APP_SETTINGS_PATH}"
         console.print(
-            "[yellow]Could not remove the app's copies: the container did not "
-            f"answer. An admin runs {_clear_commands(keys)} in the app once the "
-            "stack is up.[/yellow]"
+            f"[yellow]Setup could not confirm the removal of {_names(keys)}: the "
+            "container did not answer, so the change may or may not have been "
+            "made. To see which keys the app's settings still set (names only), "
+            f"run `{escape(recipe)}`; an admin can clear any still listed with "
+            f"{_clear_commands(keys)} in the app.[/yellow]"
+        )
+        console.print(applies_when())
+        return keys
+    if isinstance(statuses, str):  # NOT_APPLIED
+        console.print(
+            "[yellow]Could not remove the app's copies: setup could not run the "
+            f"removal in the container, so nothing changed. An admin runs "
+            f"{_clear_commands(keys)} in the app once the stack is up.[/yellow]"
         )
         return []
     removed = [k for k in keys if statuses.get(k) in ("cleared", "pinned_line_removed")]
@@ -618,7 +825,7 @@ def _report_outcomes(
                 f"clear {key} in the app.[/yellow]"
             )
     if removed or moved:
-        console.print(applies_when)
+        console.print(applies_when())
     return [*removed, *(c.key for c in moved)]
 
 
@@ -630,16 +837,20 @@ def resolve_candidates(
     *,
     mode: bool | None,
     interactive: bool,
-    applies_when: str,
+    applies_when: Callable[[], str],
     started: bool = False,
+    prior_route: Mapping[str, RouteFacts] | None = None,
 ) -> list[str]:
     """Ask (or follow the flag), then remove the accepted copies in one exec.
 
-    ``mode``: True clears every candidate without asking, False never clears
+    ``mode``: True clears every candidate without asking (except an
+    ``unknown`` one, which it keeps with a warning), False never clears
     (warn only), None asks when ``interactive`` and warns otherwise.
     ``started``: the stack is already running this run's config (the
-    post-start catch-up), which only changes the copy. Returns the keys whose
-    copy left the app's file.
+    post-start catch-up), which only changes the copy; ``prior_route`` then
+    goes to the removal's re-check. ``applies_when`` is built only when
+    something was removed (deciding the start command may probe the image).
+    Returns the keys whose copy left the app's file (or may have).
     """
     if not candidates:
         return []
@@ -648,7 +859,10 @@ def resolve_candidates(
         return []
     accepted: list[Candidate] = []
     if mode is True:
-        accepted = list(candidates)
+        held = [c for c in candidates if c.unknown]
+        if held:
+            _held_warning(console, held, started=started)
+        accepted = [c for c in candidates if not c.unknown]
     else:
         console.print(
             "\n[bold]Settings saved in the app[/bold]\nThe app keeps its own copy "
@@ -659,34 +873,43 @@ def resolve_candidates(
         )
         route = [c for c in candidates if c.group == "route"]
         if route:
-            console.print(f"Route settings the app saved: {_names(c.label() for c in route)}.")
+            console.print(
+                f"Route settings the app saved: {_names(c.label() for c in route)}."
+                + escape(_route_note(route))
+            )
             if _ask(
                 console,
                 f"Remove the app-saved route settings ({_names(c.key for c in route)}) "
                 "so this choice takes effect?",
+                default=True,
             ):
                 accepted.extend(route)
             else:
+                run.declined.update(c.key for c in route)
                 _kept_warning(console, route, started=started)
-        for candidate in (c for c in candidates if c.group == "credential"):
+        for candidate in (c for c in candidates if c.group != "route"):
             notes = []
             if candidate.dropped:
                 notes.append(
                     f"This setup removed {candidate.key}; the app's copy would bring it back."
                 )
-            notes.append(_discard_note(candidate))
-            console.print(escape(" ".join(notes)))
+            if note := _key_note(candidate, later=False):
+                notes.append(note)
+            if notes:
+                console.print(escape(" ".join(notes)))
             if _ask(
                 console,
                 f"Remove the app-saved {candidate.key} so this choice takes effect?",
+                default=candidate.default_yes,
             ):
                 accepted.append(candidate)
             else:
+                run.declined.add(candidate.key)
                 _kept_warning(console, [candidate], started=started)
     if not accepted:
         return []
     moves = {c.key: c.relocate_to for c in accepted if c.relocate_to}
-    statuses = apply(channel, [c.key for c in accepted], moves)
+    statuses = apply(channel, [c.key for c in accepted], moves, prior_route=prior_route)
     return _report_outcomes(
         console, channel, accepted, statuses, run, applies_when=applies_when
     )
@@ -705,8 +928,39 @@ def _warn_unchecked(console: Console, report: FileReport, diff: ConfigDiff) -> N
         f"If the app saved its own copy ({APP_SETTINGS_PATH} on the data volume) "
         "of a key this setup changed, that copy loads last and overrides this "
         f"setup once the stack is up: {labels}. After the start an admin can run "
-        "/settings clear <KEY> in the app for each (it says there is nothing to "
+        f"{_clear_commands(names)} in the app (each says there is nothing to "
         "clear when the app saved none).[/yellow]"
+    )
+
+
+def _applies_before_start(channel: ComposeChannel, diff: ConfigDiff, *, starts: bool) -> str:
+    """When a pre-start removal takes effect, honestly (review S1, F7)."""
+    if not diff.recreates:
+        # A --force rewrite of the same values: compose recreates nothing.
+        if starts:
+            return (
+                "The stack's configuration did not change, so the start does not "
+                "recreate it: setup restarts it after the start so this takes effect."
+            )
+        return (
+            "The stack's configuration did not change, so `up -d` does not "
+            f"recreate it: run `{escape(channel.restart_command)}` now so this "
+            "takes effect."
+        )
+    start = escape(channel.start_command())
+    if starts:
+        return (
+            "This takes effect when the stack is recreated: the start command "
+            f"(`{start}`) does that."
+        )
+    # The removal is already in the file, the recreate is the user's: a
+    # restart in between (a reboot, say) boots the OLD .env.docker without
+    # the app's copy, so say so plainly.
+    return (
+        f"The app's settings already changed, so recreate the stack now with "
+        f"`{start}`. Until then it keeps its old configuration, and a restart "
+        "before the recreate (a reboot, say) would start the old configuration "
+        "without the removed copies."
     )
 
 
@@ -718,9 +972,15 @@ def check_before_start(
     mode: bool | None,
     interactive: bool,
     gateway_slot: Callable[[str], str | None],
+    starts: bool = True,
 ) -> ShadowRun:
     """The pre-start step: no exec at all unless this run changed a route or
-    credential key; then one probe, the questions, and one apply."""
+    credential key; then one probe, the questions, and one apply.
+
+    ``starts``: this run itself runs the start command next (a wizard-run
+    start); False on the print and scoped paths, where the recreate is the
+    user's to run.
+    """
     run = ShadowRun(diff)
     if not diff.candidate_names():
         run.checked = True  # nothing this run changed can be shadowed
@@ -733,17 +993,14 @@ def check_before_start(
     candidates = select_candidates(
         report, diff, precise=False, gateway_slot=gateway_slot
     )
-    resolve_candidates(
+    run.removed_before_start = resolve_candidates(
         console,
         channel,
         candidates,
         run,
         mode=mode,
         interactive=interactive,
-        applies_when=(
-            "This takes effect when the stack is recreated: the start command "
-            f"(`{escape(channel.start_command())}`) does that."
-        ),
+        applies_when=lambda: _applies_before_start(channel, diff, starts=starts),
     )
     return run
 
@@ -763,10 +1020,14 @@ def check_after_start(
 
     ``report`` is the post-start probe, judged against THIS run's config, so
     the selection is precise: a copy equal to the new value is not asked
-    about. Same questions and removal as before the start; the caller then
-    restarts the services that load the file. Returns the keys it raised
-    (asked or warned about, so the closing note does not repeat them) and the
-    keys whose copy left the file (empty: no restart needed).
+    about. It must be probed with ``run.diff.prior_route``: the container now
+    runs the new route, and a shared slot's shape is judged under the route
+    the app saved it beside (the review's HIGH: judged under the new one, a
+    real vendor key read as the new gateway's and was discarded). Same
+    questions and removal as before the start; the caller then restarts the
+    services that load the file. Returns the keys it raised (asked or warned
+    about, so the closing note does not repeat them) and the keys whose copy
+    left the file (empty: no restart needed).
     """
     if run.checked or report.status != "report":
         return frozenset(), []
@@ -779,8 +1040,9 @@ def check_after_start(
         run,
         mode=mode,
         interactive=interactive,
-        applies_when="The running stack loaded them at boot, so setup restarts it:",
+        applies_when=lambda: "The running stack loaded them at boot, so setup restarts it:",
         started=True,
+        prior_route=run.diff.prior_route,
     )
     return frozenset(c.key for c in candidates), changed
 
@@ -798,9 +1060,12 @@ __all__ = [
     "ConfigDiff",
     "FileKey",
     "FileReport",
+    "LLM_ROUTE_KEYS",
+    "NOT_APPLIED",
     "REPORT_PROGRAM",
     "ROUTE_MODEL_KEYS",
     "ShadowRun",
+    "UNCONFIRMED",
     "apply",
     "check_after_start",
     "check_before_start",

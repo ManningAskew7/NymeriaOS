@@ -1169,9 +1169,11 @@ class _FakeStack:
     """The running stack as the wizard's subprocess calls meet it (see above).
 
     ``up`` recreates (re-reads .env.docker and starts a stopped stack);
-    ``down`` answers every exec like a stopped service; ``report_stdout``
-    stands in for an older image's answer; ``before_apply`` runs between the
-    probe and the removal (a concurrent in-app change).
+    ``down`` answers every exec like a stopped service; ``report_stdout`` and
+    ``apply_stdout`` stand in for an older image's answer; ``before_apply``
+    runs between the probe and the removal (a concurrent in-app change);
+    ``apply_times_out`` lets the real removal run, then times the exec out
+    (the docker client gave up after the write).
     """
 
     def __init__(self, tmp_path: Path, root: Path):
@@ -1186,7 +1188,9 @@ class _FakeStack:
         self.envs: list[dict] = []
         self.outputs: list[str] = []
         self.report_stdout: str | None = None
+        self.apply_stdout: str | None = None
         self.before_apply = None
+        self.apply_times_out = False
 
     def boot(self, app_file: str | None = None) -> "_FakeStack":
         """Create the stack from the current .env.docker, with an app file."""
@@ -1228,6 +1232,8 @@ class _FakeStack:
         program = program_args[1]
         if program == app_shadow.REPORT_PROGRAM and self.report_stdout is not None:
             return subprocess.CompletedProcess(cmd, 0, self.report_stdout, "")
+        if program == app_shadow.APPLY_PROGRAM and self.apply_stdout is not None:
+            return subprocess.CompletedProcess(cmd, 0, self.apply_stdout, "")
         if program == app_shadow.APPLY_PROGRAM and self.before_apply is not None:
             self.before_apply(self)
         env = {
@@ -1248,6 +1254,8 @@ class _FakeStack:
             timeout=120,
         )
         self.outputs.append(result.stdout + result.stderr)
+        if program == app_shadow.APPLY_PROGRAM and self.apply_times_out:
+            raise subprocess.TimeoutExpired(cmd, app_shadow.EXEC_TIMEOUT_SECONDS)
         return result
 
     def execs(self, program: str) -> list[list[str]]:
@@ -1361,8 +1369,9 @@ def test_one_probe_and_no_output_when_the_app_saved_none_of_the_changed_keys(
     assert "settings.env" not in out and "saved in the app" not in out.lower()
 
 
-def test_interactive_enter_removes_the_app_copy_of_a_changed_key(monkeypatch, tmp_path):
-    # W3: the run changes OPENAI_API_KEY and the app saved its own copy.
+def test_interactive_yes_removes_the_app_copy_of_a_changed_key(monkeypatch, tmp_path):
+    # W3: the run changes OPENAI_API_KEY and the app saved its own copy. A
+    # discard takes an explicit yes (review S3: Enter keeps it).
     app_file = (
         "# saved in the app\n"
         f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
@@ -1370,12 +1379,12 @@ def test_interactive_enter_removes_the_app_copy_of_a_changed_key(monkeypatch, tm
         f"OPENAI_API_KEY=sk-{DUMMY}-dup\n"
     )
     root, fake = _installed(monkeypatch, tmp_path, *_OPENAI, app_file=app_file)
-    console = _interactive(monkeypatch, "")
+    console = _interactive(monkeypatch, "y")
 
     assert setup_main([*_docker(), "--root", str(root), *_OPENAI_NEW_KEY]) == 0
 
     assert console.prompts == [
-        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]"
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [y/N]"
     ]
     # One removal exec, and its argv after the program is the key name only.
     assert fake.program_args(app_shadow.APPLY_PROGRAM) == [["OPENAI_API_KEY"]]
@@ -1383,10 +1392,15 @@ def test_interactive_enter_removes_the_app_copy_of_a_changed_key(monkeypatch, tm
     assert fake.settings.stat().st_mode & 0o777 == 0o600
     out = console.text
     assert "Removed the app's copy of OPENAI_API_KEY." in out
+    # Review S1: this run only prints the start command, so the removal is
+    # already in the file while the recreate is the user's: say so plainly.
     assert (
-        "This takes effect when the stack is recreated: the start command "
-        "(`docker compose -f docker-compose.single.yml up -d`) does that." in out
+        "The app's settings already changed, so recreate the stack now with "
+        "`docker compose -f docker-compose.single.yml up -d`. Until then it keeps "
+        "its old configuration, and a restart before the recreate (a reboot, say) "
+        "would start the old configuration without the removed copies." in out
     )
+    assert "does that" not in out
 
 
 def test_the_interactive_wizard_without_a_terminal_warns_instead_of_asking(
@@ -1403,7 +1417,7 @@ def test_the_interactive_wizard_without_a_terminal_warns_instead_of_asking(
 
     assert console.prompts == []
     assert fake.execs(app_shadow.APPLY_PROGRAM) == []
-    assert "re-run setup with --clear-app-overrides" in console.text
+    assert "pass --clear-app-overrides on the run that makes the change" in console.text
 
 
 @pytest.mark.parametrize("answer", ["n", "no", EOFError(), KeyboardInterrupt()])
@@ -1437,7 +1451,7 @@ def test_a_dropped_route_key_is_asked_about_as_coming_back(monkeypatch, tmp_path
 
     assert console.prompts == [
         "Remove the app-saved route settings (LLM_BASE_URL) so this choice takes effect? [Y/n]",
-        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]",
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [y/N]",
     ]
     out = console.text
     assert (
@@ -1472,7 +1486,7 @@ def test_a_route_change_asks_about_every_route_key_and_model_the_app_saved(
     assert console.prompts == [
         "Remove the app-saved route settings (LLM_BASE_URL, LLM_FAST_MODEL, "
         "LLM_MODEL) so this choice takes effect? [Y/n]",
-        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]",
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [y/N]",
     ]
     out = console.text
     assert "LLM_BASE_URL (route), LLM_FAST_MODEL (model), LLM_MODEL (model)." in out
@@ -1605,7 +1619,10 @@ def test_headless_default_warns_and_changes_nothing(monkeypatch, tmp_path, capsy
         "an admin runs /settings clear LLM_BASE_URL and /settings clear "
         "OPENAI_API_KEY in the app" in out
     )
-    assert "re-run setup with --clear-app-overrides" in out
+    # A re-run with the same values checks nothing, so the advice names the
+    # run that makes the change, never a bare re-run.
+    assert "pass --clear-app-overrides on the run that makes the change" in out
+    assert "re-run setup with --clear-app-overrides" not in out
 
 
 @pytest.mark.parametrize("stack", ["slim", "full"])
@@ -1651,7 +1668,7 @@ def test_the_no_clear_flag_never_asks(monkeypatch, tmp_path):
     assert console.prompts == []
     assert fake.execs(app_shadow.APPLY_PROGRAM) == []
     assert fake.text() == _APP_GATEWAY_FILE
-    assert "re-run setup with --clear-app-overrides" in console.text
+    assert "pass --clear-app-overrides on the run that makes the change" in console.text
 
 
 @pytest.mark.parametrize(
@@ -1683,9 +1700,13 @@ def test_an_unchecked_stack_names_this_runs_keys_conditionally(
     out = console.text
     assert f"Setup could not check the settings saved in the app: {why}." in out
     assert "If the app saved its own copy (/data/settings.env on the data volume)" in out
-    for label in ("LLM_BASE_URL (route)", "LLM_PROVIDER (route)", "OPENAI_API_KEY (credential)"):
-        assert label in out
-    assert "/settings clear <KEY>" in out
+    for key, cls in (
+        ("LLM_BASE_URL", "route"), ("LLM_PROVIDER", "route"), ("OPENAI_API_KEY", "credential"),
+    ):
+        assert f"{key} ({cls})" in out
+        # The real commands, not a placeholder (review NIT, W14).
+        assert f"/settings clear {key}" in out
+    assert "<KEY>" not in out
 
 
 @pytest.mark.parametrize(
@@ -1803,12 +1824,17 @@ def test_after_the_start_a_kept_dropped_key_is_named_and_a_cleared_one_never(
     out = _flat(capsys.readouterr().out)
     after_start = out[out.index("Nymeria is up."):]
     if clear:
+        # This run runs the start itself, so the recreate it names is its own.
+        assert (
+            "This takes effect when the stack is recreated: the start command "
+            "(`docker compose -f docker-compose.single.yml up -d`) does that." in out
+        )
         assert "LLM_BASE_URL" not in after_start and "OPENAI_API_KEY" not in after_start
     else:
         assert (
             "This setup removed LLM_BASE_URL, OPENAI_API_KEY from .env.docker, but the "
-            "app's saved copy (/data/settings.env) brings it back, so it is still in "
-            "effect." in after_start
+            "app's saved copies (/data/settings.env) bring them back, so they are "
+            "still in effect. To drop them" in after_start
         )
         assert "/settings clear LLM_BASE_URL and /settings clear OPENAI_API_KEY" in after_start
     assert "USER_TIMEZONE" not in after_start
@@ -1817,10 +1843,12 @@ def test_after_the_start_a_kept_dropped_key_is_named_and_a_cleared_one_never(
     assert [cmd for cmd in fake.calls if "restart" in cmd] == []
 
 
-def _started_from_down(monkeypatch, tmp_path, *, stack="slim", app_file=_APP_GATEWAY_FILE):
+def _started_from_down(
+    monkeypatch, tmp_path, *, stack="slim", app_file=_APP_GATEWAY_FILE, install=_GATEWAY
+):
     """W15: an installed stack, stopped before this reconfigure; health waits
     are recorded (and pass)."""
-    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, stack=stack, app_file=app_file)
+    root, fake = _installed(monkeypatch, tmp_path, *install, stack=stack, app_file=app_file)
     fake.down = True
     health: list[str] = []
     monkeypatch.setattr(
@@ -1856,7 +1884,7 @@ def test_a_stack_the_wizard_started_is_checked_after_the_start(
 
     assert console.prompts == [
         "Remove the app-saved route settings (LLM_BASE_URL) so this choice takes effect? [Y/n]",
-        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]",
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [y/N]",
     ]
     assert fake.text() == "# keep-me\nUSER_TIMEZONE=UTC\nLLM_PROVIDER=anthropic\n"
     # Ordered: start, the one removal, then the restart; health waited twice.
@@ -1899,7 +1927,7 @@ def test_a_started_stack_that_keeps_the_app_copies_is_never_restarted(
     out = console.text if console is not None else _flat(capsys.readouterr().out)
     if how == "headless":
         assert "Settings saved in the app override this setup in the stack that just started" in out
-        assert "in the app, or re-run setup with --clear-app-overrides" in out
+        assert "in the app. To have setup remove them instead, pass --clear-app-overrides" in out
         assert "in the app after the start" not in out
     else:
         assert len(console.prompts) == 2
@@ -1907,7 +1935,46 @@ def test_a_started_stack_that_keeps_the_app_copies_is_never_restarted(
             "Kept the app's copy of LLM_BASE_URL: it overrides this setup in the "
             "stack that just started." in out
         )
-    assert "brings it back" not in out[out.index("Nymeria is up."):]
+    tail = out[out.index("Nymeria is up."):]
+    assert "brings it back" not in tail and "bring them back" not in tail
+
+
+@pytest.mark.parametrize("how", ["flag", "enter"])
+def test_after_the_start_a_real_vendor_key_still_moves_to_its_direct_slot(
+    monkeypatch, tmp_path, capsys, how
+):
+    # The catch-up twin of W7 (review HIGH): the recreated container runs
+    # THIS run's gateway route, under which the app's real OpenAI key reads
+    # as the gateway's. Judged under the route it was saved under (the old
+    # .env.docker, passed in as booleans), it moves exactly as before the
+    # start: never discarded.
+    vendor = f"sk-{DUMMY}-vendor"
+    root, fake, health = _started_from_down(
+        monkeypatch, tmp_path, install=_ANTHROPIC, app_file=f"# keep\nOPENAI_API_KEY={vendor}\n"
+    )
+    console = _interactive(monkeypatch, "") if how == "enter" else None
+    flags = ["--clear-app-overrides"] if how == "flag" else []
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_GATEWAY, "--start", *flags]) == 0
+
+    from dotenv import dotenv_values
+
+    saved = dotenv_values(fake.settings)
+    assert "OPENAI_API_KEY" not in saved
+    assert saved["OPENAI_DIRECT_API_KEY"] == vendor
+    assert fake.text().startswith("# keep\n")
+    out = console.text if console is not None else _flat(capsys.readouterr().out)
+    assert "Moved the app's copy of OPENAI_API_KEY to OPENAI_DIRECT_API_KEY" in out
+    assert "discards nothing" not in out
+    if console is not None:
+        # A relocation keeps Enter as yes.
+        assert console.prompts == [
+            "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]"
+        ]
+    assert _restarts(fake) == [
+        ["docker", "compose", "-f", "docker-compose.single.yml", "restart", "nymeria-single"]
+    ]
 
 
 def test_a_failed_restart_names_the_command_to_run(monkeypatch, tmp_path, capsys):
@@ -1989,3 +2056,262 @@ def test_the_clear_flag_parses_three_ways():
     ):
         state = runner_mod._build_state(parser.parse_args(argv))
         assert state.clear_app_overrides is expected
+
+
+# --- #435 review fixes ---------------------------------------------------------
+
+
+def test_enter_takes_the_route_group_but_never_discards_a_credential(monkeypatch, tmp_path):
+    # Review S3: Enter is yes for the route group (and for a move), but a
+    # credential whose copy would be discarded takes an explicit yes.
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    console = _interactive(monkeypatch, "", "")
+
+    assert setup_main([*_docker(), "--root", str(root), *_ANTHROPIC]) == 0
+
+    assert console.prompts == [
+        "Remove the app-saved route settings (LLM_BASE_URL) so this choice takes effect? [Y/n]",
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [y/N]",
+    ]
+    assert fake.program_args(app_shadow.APPLY_PROGRAM) == [["LLM_BASE_URL"]]
+    assert fake.text() == f"# keep-me\nOPENAI_API_KEY=sk-{DUMMY}-appgw\nUSER_TIMEZONE=UTC\n"
+    assert "Kept the app's copy of OPENAI_API_KEY" in console.text
+
+
+@pytest.mark.parametrize("app_route", [True, False])
+def test_a_key_rotation_asks_about_the_route_the_app_saved_for_its_gateway(
+    monkeypatch, tmp_path, app_route
+):
+    # Review MED: the run only rotates OPENAI_API_KEY (.env.docker keeps its
+    # direct openai route), but the app saved its own LiteLLM route, which
+    # would send the new key to LiteLLM after the recreate: the app's route
+    # group is asked about, with the reason. When the gateway is
+    # .env.docker's own (the app saved no route), only the key is asked and
+    # the app's model stays.
+    if app_route:
+        install = _OPENAI
+        app_file = (
+            "LLM_BASE_URL=http://litellm.example:4000/v1\n"
+            "LLM_MODEL=gpt-app\n"
+            f"OPENAI_API_KEY=sk-{DUMMY}-litellm\n"
+        )
+        rotate = _OPENAI_NEW_KEY
+    else:
+        install = _GATEWAY
+        app_file = f"LLM_MODEL=gpt-app\nOPENAI_API_KEY=sk-{DUMMY}-litellm\n"
+        rotate = [*_GATEWAY[:-4], "--api-key", f"sk-{DUMMY}-gw2", "--model", "gpt-dummy"]
+    root, fake = _installed(monkeypatch, tmp_path, *install, app_file=app_file)
+    console = _interactive(monkeypatch, *(["y", "y"] if app_route else ["y"]))
+
+    assert setup_main([*_docker(), "--root", str(root), *rotate]) == 0
+
+    key_prompt = "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [y/N]"
+    if app_route:
+        assert console.prompts == [
+            "Remove the app-saved route settings (LLM_BASE_URL, LLM_MODEL) so this "
+            "choice takes effect? [Y/n]",
+            key_prompt,
+        ]
+        assert (
+            "The app's own saved route sends OPENAI_API_KEY to its gateway, so while "
+            "it stays, this setup's new OPENAI_API_KEY goes there too." in console.text
+        )
+        assert fake.text().strip() == ""
+    else:
+        assert console.prompts == [key_prompt]
+        assert "saved route sends" not in console.text
+        assert fake.text() == "LLM_MODEL=gpt-app\n"
+
+
+def test_an_embedder_change_never_touches_the_apps_llm_route(monkeypatch, tmp_path, capsys):
+    # Review F2: EMBEDDING_BASE_URL is route-class but not the LLM route, so
+    # `nymeria init embedder` on a GUI-onboarded install (its LLM route and
+    # the gateway's key saved in the app) offers only the embedder's own
+    # base URL, alone.
+    app_file = (
+        "LLM_BASE_URL=http://litellm.example:4000/v1\n"
+        "LLM_MODEL=gpt-app\n"
+        f"OPENAI_API_KEY=sk-{DUMMY}-litellm\n"
+        "EMBEDDING_BASE_URL=http://embedder.example/v1\n"
+    )
+    root, fake = _installed(monkeypatch, tmp_path, *_OPENAI, app_file=app_file)
+    real = runner_mod.finalize
+
+    def choosing_an_embedder(state, **kw):
+        state.embedder = "value-voyage-lite"  # what the embedder step records
+        return real(state, **kw)
+
+    monkeypatch.setattr(runner_mod, "finalize", choosing_an_embedder)
+    capsys.readouterr()
+
+    assert setup_main([
+        "embedder", *_docker(), "--root", str(root), *_OPENAI,
+        "--embedding-api-key", f"pa-{DUMMY}", "--clear-app-overrides",
+    ]) == 0
+
+    assert fake.program_args(app_shadow.APPLY_PROGRAM) == [["EMBEDDING_BASE_URL"]]
+    assert fake.text() == (
+        "LLM_BASE_URL=http://litellm.example:4000/v1\nLLM_MODEL=gpt-app\n"
+        f"OPENAI_API_KEY=sk-{DUMMY}-litellm\n"
+    )
+    assert "Removed the app's copy of EMBEDDING_BASE_URL." in _flat(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("how", ["flag", "enter"])
+def test_after_the_start_a_key_saved_under_an_unknown_route_is_never_removed_unasked(
+    monkeypatch, tmp_path, capsys, how
+):
+    # Review HIGH (b): the old .env.docker's base URL is a ${...} reference
+    # the host cannot resolve, so the route the app saved its sk- key under
+    # is unknown: the key may be the vendor's or a gateway's. It never moves,
+    # --clear-app-overrides keeps it with a warning, and Enter keeps it.
+    saved = f"OPENAI_API_KEY=sk-{DUMMY}-saved\n"
+    root, fake, health = _started_from_down(
+        monkeypatch, tmp_path, install=_OPENAI, app_file=saved
+    )
+    env_docker = root / ".env.docker"
+    env_docker.write_text(
+        env_docker.read_text(encoding="utf-8") + "LLM_BASE_URL=${IT31_OLD_GATEWAY}\n",
+        encoding="utf-8",
+    )
+    console = _interactive(monkeypatch, "") if how == "enter" else None
+    flags = ["--clear-app-overrides"] if how == "flag" else []
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_GATEWAY, "--start", *flags]) == 0
+
+    assert fake.text() == saved
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    assert _restarts(fake) == []
+    out = console.text if console is not None else _flat(capsys.readouterr().out)
+    assert (
+        "Setup cannot tell whether the app's copy of OPENAI_API_KEY is a real OpenAI "
+        "key or a gateway's" in out
+    )
+    assert "save it as OPENAI_DIRECT_API_KEY first" in out
+    assert "moves to" not in out
+    if console is not None:
+        assert console.prompts == [
+            "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [y/N]"
+        ]
+    else:
+        assert "--clear-app-overrides never removes a key setup cannot judge" in out
+
+
+@pytest.mark.parametrize("answer", ["timeout", "old image"])
+def test_a_removal_without_an_answer_says_what_is_known(monkeypatch, tmp_path, capsys, answer):
+    # Review S2: the removal is one atomic write. A client that timed out
+    # after it may or may not have made the change (say so, and how to see
+    # which keys remain, names only); an image without the step changed
+    # nothing.
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    if answer == "timeout":
+        fake.apply_times_out = True
+    else:
+        fake.apply_stdout = app_shadow.APPLY_MARKER + "unsupported\n"
+    capsys.readouterr()
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_ANTHROPIC, "--clear-app-overrides",
+    ]) == 0
+
+    out = _flat(capsys.readouterr().out)
+    assert "Removed the app's copy" not in out
+    if answer == "timeout":
+        assert fake.text() == "# keep-me\nUSER_TIMEZONE=UTC\n"
+        assert (
+            "Setup could not confirm the removal of LLM_BASE_URL, OPENAI_API_KEY: the "
+            "container did not answer, so the change may or may not have been made." in out
+        )
+        assert (
+            "docker compose -f docker-compose.single.yml exec nymeria-single cut -d= "
+            "-f1 /data/settings.env" in out
+        )
+        assert "nothing changed" not in out
+    else:
+        assert fake.text() == _APP_GATEWAY_FILE
+        assert (
+            "Could not remove the app's copies: setup could not run the removal in "
+            "the container, so nothing changed." in out
+        )
+        assert "may or may not" not in out
+
+
+@pytest.mark.parametrize("start", [False, True])
+def test_force_over_an_unchanged_config_restarts_instead_of_claiming_a_recreate(
+    monkeypatch, tmp_path, capsys, start
+):
+    # Review F7: --force rewrote the same values, so compose recreates
+    # nothing and the running api keeps the removed copy until a restart.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_OPENAI, app_file=f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+    )
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    capsys.readouterr()
+    flags = ["--start"] if start else []
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_OPENAI, "--force", "--clear-app-overrides", *flags,
+    ]) == 0
+
+    assert fake.text().strip() == ""
+    out = _flat(capsys.readouterr().out)
+    assert "does that" not in out and "recreate the stack now" not in out
+    restart = ["docker", "compose", "-f", "docker-compose.single.yml", "restart", "nymeria-single"]
+    if start:
+        assert "setup restarts it after the start so this takes effect" in out
+        assert _restarts(fake) == [restart]
+        up = next(i for i, cmd in enumerate(fake.calls) if "up" in cmd)
+        assert up < fake.calls.index(restart)
+    else:
+        assert (
+            f"The stack's configuration did not change, so `up -d` does not recreate "
+            f"it: run `{' '.join(restart)}` now so this takes effect." in out
+        )
+        assert _restarts(fake) == []
+
+
+def test_after_the_start_a_copy_declined_before_it_is_not_named_again(monkeypatch, tmp_path):
+    # Review NIT: the user said no before the start; the closing note does
+    # not repeat it (a headless warning still is, see the W21 test).
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    console = _interactive(monkeypatch, "n", "n")
+
+    assert setup_main([*_docker(), "--root", str(root), *_ANTHROPIC, "--start"]) == 0
+
+    assert fake.text() == _APP_GATEWAY_FILE
+    out = console.text
+    assert "Kept the app's copy of LLM_BASE_URL" in out
+    after_start = out[out.index("Nymeria is up."):]
+    assert "LLM_BASE_URL" not in after_start and "OPENAI_API_KEY" not in after_start
+
+
+def test_no_start_command_is_built_when_nothing_is_removed(tmp_path):
+    # Review NIT: deciding the start command may probe the image, so it is
+    # built only for a removal's closing line. The channel answers like a
+    # container whose app file holds no key this run changed.
+    import json
+
+    report = app_shadow.REPORT_MARKER + json.dumps(
+        {"file": True, "keys": [{"key": "USER_TIMEZONE", "class": "setting", "kind": "override"}]}
+    )
+    built: list[int] = []
+    channel = app_shadow.ComposeChannel(
+        exec_argv=(sys.executable, "-c", f"print({report!r})"),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        start_command=lambda: built.append(1) or "docker compose up -d",
+        restart_command="docker compose restart api",
+        exec_hint="docker compose exec api",
+    )
+    console = _ScriptedConsole()
+    diff = app_shadow.config_diff({"OPENAI_API_KEY": "a"}, {"OPENAI_API_KEY": "b"})
+
+    run = app_shadow.check_before_start(
+        console, channel, diff, mode=True, interactive=False, gateway_slot=lambda _s: None
+    )
+
+    assert run.checked is True
+    assert built == []
+    assert console.text == ""

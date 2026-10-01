@@ -784,10 +784,12 @@ def finalize(
             )
     # #435: what this write changes, by name, for the app-saved-settings check
     # below. A fresh write (--force) counts every key it writes as changed: the
-    # user asked for this file's values wholesale. A first install has no
-    # running stack whose app file could hold anything, so it is skipped.
+    # user asked for this file's values wholesale (the old values still say
+    # whether compose will recreate, and which route the app's copies were
+    # saved under). A first install has no running stack whose app file could
+    # hold anything, so it is skipped.
     reconfiguring_docker = for_docker and config_path.exists()
-    env_before = snapshot_env_file(config_path) if reconfiguring_docker and merge else {}
+    env_before = snapshot_env_file(config_path) if reconfiguring_docker else {}
     write_config(
         config_path,
         data_dir=data_dir,
@@ -868,10 +870,15 @@ def finalize(
             state.app_settings_run = app_settings_shadow.check_before_start(
                 console,
                 _app_settings_channel(spec_now, root),
-                config_diff(env_before, snapshot_env_file(config_path)),
+                config_diff(
+                    env_before, snapshot_env_file(config_path) or {}, fresh=not merge
+                ),
                 mode=state.clear_app_overrides,
                 interactive=app_settings_shadow.is_interactive(non_interactive),
                 gateway_slot=lambda slot: gateway_direct_slot(state, slot),
+                # Whether this run runs `up -d` itself, or leaves it to the user.
+                starts=scoped_section is None
+                and state.next_action is NextAction.START_API_OPEN_FRONTEND,
             )
     else:
         if state.clear_app_overrides is not None:
@@ -3288,8 +3295,18 @@ def _start_now_docker(
         return 0
     console.print("[green]Nymeria is up.[/green]")
     channel = _app_settings_channel(spec, root)
-    report = app_settings_shadow.probe(channel)
     run = state.app_settings_run
+    if run is not None and run.removed_before_start and not run.diff.recreates:
+        # #435 review F7: a --force rewrite of the same values left the
+        # containers as they were, so the pre-start removal needs a restart.
+        console.print("Restarting so the change to the app's settings takes effect:")
+        _restart_for_app_settings(console, spec=spec, root=root)
+    # The catch-up's probe carries the OLD route (as booleans): the recreated
+    # container runs this run's, not the one the app saved its copies under.
+    report = app_settings_shadow.probe(
+        channel,
+        prior_route=run.diff.prior_route if run is not None and not run.checked else None,
+    )
     raised: frozenset[str] = frozenset()
     if run is not None:
         # #435 DP2: the pre-start check could not reach the stack (stopped,
@@ -3892,8 +3909,16 @@ def _app_settings_channel(spec: _DockerStackSpec, root: Path) -> ComposeChannel:
         start_command=lambda: _compose_command_str(
             spec, *_up_subcommand(_image_rebuild_needed(spec))
         ),
+        restart_command=_compose_command_str(spec, "restart", *_app_settings_services(spec)),
         exec_hint=_compose_command_str(spec, "exec", spec.service),
     )
+
+
+def _app_settings_services(spec: _DockerStackSpec) -> list[str]:
+    """The services that load `/data/settings.env` at boot: the api (and on
+    the full stack the worker, whose environment anchor loads the same file).
+    The mcp container and the bots never load it."""
+    return [spec.service] + (["worker"] if spec.service == DOCKER_FULL_SERVICE else [])
 
 
 def _post_start_shadows(
@@ -3905,13 +3930,14 @@ def _post_start_shadows(
     """``(overridden, brought_back)`` names for the post-start note (DP6).
 
     Judged by the recreated container, so against THIS run's config. A key
-    this run cleared from the app's file is never named, nor one the
-    post-start catch-up just raised (``exclude``). ``brought_back``: keys
-    this run removed from `.env.docker` that the app's file still sets
-    (#434's report can only call those "saved only in the app"; the wizard
-    knows it just dropped them). An older image reports names only.
+    this run cleared from the app's file is never named, nor one the user
+    declined to remove before the start, nor one the post-start catch-up just
+    raised (``exclude``). ``brought_back``: keys this run removed from
+    `.env.docker` that the app's file still sets (#434's report can only call
+    those "saved only in the app"; the wizard knows it just dropped them).
+    An older image reports names only.
     """
-    cleared = (run.cleared if run is not None else set()) | exclude
+    cleared = (run.cleared | run.declined if run is not None else set()) | exclude
     dropped = run.diff.dropped if run is not None else frozenset()
     if report.status == "unsupported":
         return tuple(k for k in report.legacy_overrides if k not in cleared), ()
@@ -3929,12 +3955,11 @@ def _restart_for_app_settings(
 ) -> None:
     """Restart the services that load `/data/settings.env` and wait for health.
 
-    The api (and on the full stack the worker, whose environment anchor loads
-    the same file) read it once at boot, so the post-start catch-up's removal
-    needs a restart, not a recreate: the environment is already this run's.
-    The mcp container and the bots never load it.
+    ``_app_settings_services`` read it once at boot, so the post-start
+    catch-up's removal (or a pre-start one over an unchanged config) needs a
+    restart, not a recreate: the environment is already this run's.
     """
-    services = [spec.service] + (["worker"] if spec.service == DOCKER_FULL_SERVICE else [])
+    services = _app_settings_services(spec)
     manual = _compose_command_str(spec, "restart", *services)
     _print_command(console, manual)
     try:
@@ -3995,10 +4020,17 @@ def _print_docker_settings_overrides(
             "the app would only save a new copy there."
         )
     if brought_back:
+        one = len(brought_back) == 1
         parts.append(
             f"This setup removed {', '.join(brought_back)} from .env.docker, but "
-            "the app's saved copy (/data/settings.env) brings it back, so it is "
-            "still in effect. To drop it, an admin runs "
+            + (
+                "the app's saved copy (/data/settings.env) brings it back, so it "
+                "is still in effect. To drop it"
+                if one
+                else "the app's saved copies (/data/settings.env) bring them back, "
+                "so they are still in effect. To drop them"
+            )
+            + ", an admin runs "
             f"{' and '.join(f'/settings clear {key}' for key in brought_back)} "
             "in the app."
         )

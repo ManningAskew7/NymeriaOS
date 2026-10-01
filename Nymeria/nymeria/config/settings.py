@@ -12,7 +12,17 @@ import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, List, Literal, Mapping, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +37,10 @@ from .llm_providers import (
     provider_requires_api_key,
     resolve_provider_api_key,
 )
+
+if TYPE_CHECKING:
+    # vendor_keys imports this module's host predicates lazily; the type only.
+    from .vendor_keys import RouteFacts
 
 logger = logging.getLogger(__name__)
 
@@ -586,7 +600,55 @@ def _effective_setting(values: Mapping[str, str], key: str) -> str:
     return values[key] if key in values else os.environ.get(key, "")
 
 
-def runtime_settings_file_report() -> dict[str, Any]:
+def _slot_shape(
+    values: Mapping[str, str],
+    slot: str,
+    prior_route: Optional[Mapping[str, "RouteFacts"]],
+) -> Optional[str]:
+    """The shape of the file's ``slot`` value under the route it was saved beside.
+
+    That route is the APP's effective one: the file's ``LLM_PROVIDER`` and
+    ``LLM_BASE_URL`` where it sets them, else the route the copy lived under
+    without them. Without ``prior_route`` that is this process's own
+    environment (true before a recreate). With it (``vendor_keys.RouteFacts``
+    per slot, booleans the wizard derived from the OLD `.env.docker`), the
+    process's environment is already the NEW route (the wizard's post-start
+    check), so the facts stand in for it; a part they do not know makes a
+    vendor-shaped value ``unknown`` rather than a guess (#435 review).
+    """
+    from .vendor_keys import (
+        UNKNOWN_ROUTE,
+        VENDOR_KEY_SLOTS,
+        RouteFacts,
+        route_facts,
+        shape_under_route,
+        shared_slot_shape,
+    )
+
+    value = values[slot]
+    if prior_route is None:
+        return shared_slot_shape(
+            slot,
+            value,
+            provider=_effective_setting(values, "LLM_PROVIDER"),
+            base_url=_effective_setting(values, "LLM_BASE_URL"),
+        )
+    if slot not in VENDOR_KEY_SLOTS:
+        return None
+    prior = prior_route.get(slot, UNKNOWN_ROUTE)
+    in_file = route_facts(
+        slot, provider=values.get("LLM_PROVIDER"), base_url=values.get("LLM_BASE_URL")
+    )
+    facts = RouteFacts(
+        in_file.provider if "LLM_PROVIDER" in values else prior.provider,
+        in_file.base_url if "LLM_BASE_URL" in values else prior.base_url,
+    )
+    return shape_under_route(slot, value, feeds_gateway=facts.feeds_gateway)
+
+
+def runtime_settings_file_report(
+    *, prior_route: Optional[Mapping[str, "RouteFacts"]] = None
+) -> dict[str, Any]:
     """Names, classes and booleans for every key the runtime settings file sets.
 
     The in-container half of the wizard's reconfigure check (#435): the
@@ -598,19 +660,16 @@ def runtime_settings_file_report() -> dict[str, Any]:
     process's baseline exactly like ``runtime_settings_shadows``) and
     ``empty`` (the line is blank). A shared provider slot with a direct twin
     (``config.vendor_keys``) also carries ``shape`` (``vendor``, ``gateway``,
-    ``gatekeeper`` or None) judged under the app's EFFECTIVE route (the
-    file's ``LLM_PROVIDER``/``LLM_BASE_URL`` where it sets them, else this
-    process's), and ``direct_set`` (the direct slot holds a value with the
-    file applied).
+    ``gatekeeper``, ``unknown`` or None) judged under the app's effective
+    route (``_slot_shape``; ``prior_route`` as there), and ``direct_set``
+    (the direct slot holds a value with the file applied).
     """
-    from .vendor_keys import VENDOR_KEY_SLOTS, shared_slot_shape
+    from .vendor_keys import VENDOR_KEY_SLOTS
 
     runtime = runtime_settings_file()
     if runtime is None:
         return {"file": False, "keys": []}
     values = _runtime_settings_values()
-    provider = _effective_setting(values, "LLM_PROVIDER")
-    base_url = _effective_setting(values, "LLM_BASE_URL")
     entries: List[dict[str, Any]] = []
     for key, value in sorted(values.items()):
         if key in CONTAINER_PINNED_KEYS:
@@ -630,9 +689,7 @@ def runtime_settings_file_report() -> dict[str, Any]:
         }
         slot = VENDOR_KEY_SLOTS.get(key)
         if slot is not None:
-            entry["shape"] = shared_slot_shape(
-                key, value, provider=provider, base_url=base_url
-            )
+            entry["shape"] = _slot_shape(values, key, prior_route)
             entry["direct_set"] = bool(_effective_setting(values, slot.direct).strip())
         entries.append(entry)
     return {"file": runtime.is_file(), "keys": entries}
@@ -740,8 +797,36 @@ RemovalStatus = Literal[
 ]
 
 
+class RuntimeSettingsReadError(OSError):
+    """The runtime settings file could not be read or parsed.
+
+    Raised by ``remove_runtime_settings_keys`` before it writes (and by its
+    re-read after one), apart from a failed WRITE (a plain ``OSError``), so
+    the #434 clear route keeps answering a read failure 400 as it did.
+    """
+
+
+def _read_runtime_settings(runtime: Path) -> tuple[List[str], dict[str, str]]:
+    """The file's lines and raw values, or ``RuntimeSettingsReadError``."""
+    from dotenv import dotenv_values
+
+    try:
+        lines = runtime.read_text(encoding="utf-8").splitlines()
+        # Raw text (no ${VAR} expansion): a relocated value is re-written, so
+        # the next load expands it exactly as it expanded the original line.
+        raw = dotenv_values(runtime, interpolate=False)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise RuntimeSettingsReadError(
+            f"cannot read the runtime settings file ({type(exc).__name__})"
+        ) from exc
+    return lines, {key: value for key, value in raw.items() if value is not None}
+
+
 def remove_runtime_settings_keys(
-    keys: Sequence[str], *, relocate: Optional[Mapping[str, str]] = None
+    keys: Sequence[str],
+    *,
+    relocate: Optional[Mapping[str, str]] = None,
+    prior_route: Optional[Mapping[str, "RouteFacts"]] = None,
 ) -> dict[str, RemovalStatus]:
     """Remove every line for each key from the runtime settings file.
 
@@ -757,9 +842,10 @@ def remove_runtime_settings_keys(
     THIS FILE instead of being discarded (the #431 class), in the same
     replace as the drop. Re-checked here, because the file may have changed
     since the wizard's probe: the value must still be vendor-shaped under the
-    app's effective route and the direct slot empty with the file applied;
-    otherwise the slot is KEPT (``relocation_refused``), never cleared without
-    its promised move. A relocated slot need not also be listed in ``keys``.
+    app's effective route (``_slot_shape``, ``prior_route`` as the report
+    takes it) and the direct slot empty with the file applied; otherwise the
+    slot is KEPT (``relocation_refused``), never cleared without its
+    promised move. A relocated slot need not also be listed in ``keys``.
 
     Per-key status: ``cleared``; ``relocated``; ``not_saved`` (no line);
     ``pinned_line_removed`` (a ``CONTAINER_PINNED_KEYS`` line, whose value the
@@ -767,14 +853,13 @@ def remove_runtime_settings_keys(
     writer cannot replace, such as ``export KEY=...``: left alone and never
     claimed removed); ``relocation_refused``; ``malformed`` (not a key name,
     or a relocation pair that is not a known slot and its twin). Raises
-    ``OSError``, ``UnicodeDecodeError`` or ``ValueError`` when the file cannot
-    be read, before anything is written. A shape with no runtime file reports
-    every well-formed key ``not_saved``.
+    ``RuntimeSettingsReadError`` when the file cannot be read (before
+    anything is written, or on the re-read after the write) and ``OSError``
+    when the write fails (nothing replaced). A shape with no runtime file
+    reports every well-formed key ``not_saved``.
     """
-    from dotenv import dotenv_values
-
     from .env_file import env_line_key, format_env_value, is_env_key_name, write_env_file
-    from .vendor_keys import VENDOR_KEY_SLOTS, shared_slot_shape
+    from .vendor_keys import VENDOR_KEY_SLOTS
 
     moves = dict(relocate or {})
     status: dict[str, RemovalStatus] = {}
@@ -782,17 +867,8 @@ def remove_runtime_settings_keys(
     lines: List[str] = []
     values: dict[str, str] = {}
     if runtime is not None and runtime.is_file():
-        lines = runtime.read_text(encoding="utf-8").splitlines()
-        # Raw text (no ${VAR} expansion): a relocated value is re-written, so
-        # the next load expands it exactly as it expanded the original line.
-        values = {
-            key: value
-            for key, value in dotenv_values(runtime, interpolate=False).items()
-            if value is not None
-        }
+        lines, values = _read_runtime_settings(runtime)
     line_keys = {env_line_key(line) for line in lines}
-    provider = _effective_setting(values, "LLM_PROVIDER")
-    base_url = _effective_setting(values, "LLM_BASE_URL")
     produced: List[Tuple[str, str]] = []
     drop: List[str] = []
     for key in dict.fromkeys([*keys, *moves]):
@@ -809,9 +885,7 @@ def remove_runtime_settings_keys(
             status[key] = "unparsable"
             continue
         if key in moves and slot is not None:
-            vendor = shared_slot_shape(
-                key, values[key], provider=provider, base_url=base_url
-            ) == "vendor"
+            vendor = _slot_shape(values, key, prior_route) == "vendor"
             if not vendor or _effective_setting(values, slot.direct).strip():
                 status[key] = "relocation_refused"
                 continue
@@ -827,7 +901,7 @@ def remove_runtime_settings_keys(
     write_env_file(runtime, produced, merge=True, drop=drop)
     # A second line for the key in a shape the writer cannot drop (beside one
     # it could) still sets it: say so rather than claim it removed.
-    remaining = dotenv_values(runtime, interpolate=False)
+    _lines, remaining = _read_runtime_settings(runtime)
     for key in drop:
         if remaining.get(key) is not None:
             status[key] = "unparsable"

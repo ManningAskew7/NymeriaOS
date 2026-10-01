@@ -1185,3 +1185,64 @@ def test_the_keys_step_counts_a_new_route_key_typed_this_run():
     state.present_env_keys.add("OPENAI_API_KEY")
     state.gateway_env_keys.add("OPENAI_API_KEY")
     assert required_backend_credentials(state) == []
+
+
+# --- #435 review: the old route crosses the exec boundary as booleans ----------
+
+
+def test_route_facts_round_trip_as_argv_tokens_without_a_value():
+    from nymeria.config.vendor_keys import (
+        RouteFacts,
+        parse_route_facts,
+        route_facts,
+        route_facts_tokens,
+    )
+
+    base = "http://user:secret-it31@litellm.example:4000/v1"
+    facts = {
+        "OPENAI_API_KEY": route_facts("OPENAI_API_KEY", provider="openai", base_url=base),
+        "GEMINI_API_KEY": route_facts("GEMINI_API_KEY", provider="openai", base_url=None),
+    }
+
+    tokens = route_facts_tokens(facts)
+
+    assert tokens == [
+        "route:GEMINI_API_KEY:provider=0,base_url=?",
+        "route:OPENAI_API_KEY:provider=1,base_url=1",
+    ]
+    assert not any("secret-it31" in token or "litellm" in token for token in tokens)
+    assert all('"' not in token and "\\" not in token for token in tokens)
+    assert parse_route_facts(["LLM_BASE_URL", *tokens]) == {
+        "GEMINI_API_KEY": RouteFacts(False, None),
+        "OPENAI_API_KEY": RouteFacts(True, True),
+    }
+
+
+def test_no_route_token_means_judge_locally_and_a_garbled_one_means_unknown():
+    from nymeria.config.vendor_keys import UNKNOWN_ROUTE, RouteFacts, parse_route_facts
+
+    assert parse_route_facts(["OPENAI_API_KEY", "OPENAI_API_KEY:OPENAI_DIRECT_API_KEY"]) is None
+    assert parse_route_facts([
+        "route:OPENAI_API_KEY:provider=1",  # truncated
+        "route:ANTHROPIC_API_KEY:provider=0,base_url=0",  # not a shared slot
+        "route:GEMINI_API_KEY:provider=0,base_url=0",
+    ]) == {"OPENAI_API_KEY": UNKNOWN_ROUTE, "GEMINI_API_KEY": RouteFacts(False, False)}
+
+
+@pytest.mark.parametrize(
+    "provider,base_url,feeds",
+    [
+        (True, True, True),
+        (True, False, False),
+        (False, None, False),
+        (None, False, False),
+        (True, None, None),
+        (None, True, None),
+        (None, None, None),
+    ],
+)
+def test_route_facts_feed_a_gateway_only_when_both_are_true(provider, base_url, feeds):
+    from nymeria.config.vendor_keys import RouteFacts
+
+    assert RouteFacts(provider, base_url).feeds_gateway is feeds
+

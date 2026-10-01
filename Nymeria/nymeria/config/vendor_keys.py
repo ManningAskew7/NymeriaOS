@@ -11,14 +11,23 @@ the runner and finalize). ``setup/tool_keys.py`` re-exports them.
 
 Values are judged in memory only: callers get a boolean or a shape name, never
 a fragment of the value.
+
+A shape depends on the LLM route the value sits beside. Where the judge's own
+environment is not that route (the wizard's post-start check runs in a
+container already recreated on the NEW route, while the app saved its copy
+under the old one), the route travels as ``RouteFacts``: two booleans per
+slot, rendered as ``route:`` argv tokens, never the route's values.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional
+from typing import Callable, Iterable, Literal, Mapping, Optional
 
-SlotShape = Literal["vendor", "gateway", "gatekeeper"]
+# ``unknown``: a vendor-shaped value whose route could not be judged, so it may
+# be the vendor's key or a gateway's (a LiteLLM key also starts ``sk-``).
+SlotShape = Literal["vendor", "gateway", "gatekeeper", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,17 @@ def _vendor_host(vendor: str) -> Callable[[str], bool]:
     return is_google_api_host if vendor == "google" else is_openai_api_host
 
 
+def _provider_is(provider: str, vendor: str) -> bool:
+    from .llm_providers import normalize_llm_provider
+
+    return bool(provider) and normalize_llm_provider(provider) == vendor
+
+
+def _base_url_off_vendor(base_url: str, vendor: str) -> bool:
+    base_url = (base_url or "").strip()
+    return bool(base_url) and not _vendor_host(vendor)(base_url)
+
+
 def route_feeds_gateway(provider: str, base_url: str, *, vendor: str) -> bool:
     """True when an LLM route makes ``vendor``'s key slot a gateway's key.
 
@@ -57,12 +77,84 @@ def route_feeds_gateway(provider: str, base_url: str, *, vendor: str) -> bool:
     route OF that provider reads the slot, and only a base URL off the
     vendor's own hosts makes the key the gateway's rather than the vendor's.
     """
-    from .llm_providers import normalize_llm_provider
+    return _provider_is(provider, vendor) and _base_url_off_vendor(base_url, vendor)
 
-    if not provider or normalize_llm_provider(provider) != vendor:
-        return False
-    base_url = (base_url or "").strip()
-    return bool(base_url) and not _vendor_host(vendor)(base_url)
+
+@dataclass(frozen=True)
+class RouteFacts:
+    """What an LLM route says about one shared slot, as two booleans (#435).
+
+    ``provider``: the route's provider is the slot's vendor; ``base_url``: the
+    route's base URL is set and off the vendor's own hosts. Both true is
+    ``route_feeds_gateway``. None is unknown (the caller could not read that
+    part of the route). Never a value, so it may cross the wizard's exec
+    boundary as an argv token.
+    """
+
+    provider: Optional[bool]
+    base_url: Optional[bool]
+
+    @property
+    def feeds_gateway(self) -> Optional[bool]:
+        """``route_feeds_gateway`` in three values: one known False decides."""
+        if self.provider is False or self.base_url is False:
+            return False
+        if self.provider and self.base_url:
+            return True
+        return None
+
+
+UNKNOWN_ROUTE = RouteFacts(None, None)
+
+
+def route_facts(slot: str, *, provider: Optional[str], base_url: Optional[str]) -> RouteFacts:
+    """``RouteFacts`` for the shared ``slot`` under a route; a None part is unknown."""
+    vendor = VENDOR_KEY_SLOTS[slot].vendor
+    return RouteFacts(
+        None if provider is None else _provider_is(provider, vendor),
+        None if base_url is None else _base_url_off_vendor(base_url, vendor),
+    )
+
+
+# argv tokens: `route:OPENAI_API_KEY:provider=1,base_url=?` (1, 0 or ? each).
+# No double quote and no backslash (the Windows argv round trip).
+ROUTE_FACTS_PREFIX = "route:"
+_FACT_CODES = {True: "1", False: "0", None: "?"}
+_ROUTE_TOKEN = re.compile(
+    r"route:([A-Z][A-Z0-9_]*):provider=([01?]),base_url=([01?])"
+)
+
+
+def route_facts_tokens(facts: Mapping[str, RouteFacts]) -> list[str]:
+    """One ``route:`` argv token per shared slot in ``facts``."""
+    return [
+        f"{ROUTE_FACTS_PREFIX}{slot}:provider={_FACT_CODES[fact.provider]},"
+        f"base_url={_FACT_CODES[fact.base_url]}"
+        for slot, fact in sorted(facts.items())
+        if slot in VENDOR_KEY_SLOTS
+    ]
+
+
+def parse_route_facts(argv: Iterable[str]) -> Optional[dict[str, RouteFacts]]:
+    """The ``route:`` tokens in ``argv``, per shared slot.
+
+    None when there is no ``route:`` token at all: the caller then judges
+    under its own environment's route. Otherwise every shared slot gets an
+    entry, UNKNOWN for one with no token or a malformed one, so a garbled
+    hint can only make a judgement more careful, never a guess.
+    """
+    tokens = [arg for arg in argv if arg.startswith(ROUTE_FACTS_PREFIX)]
+    if not tokens:
+        return None
+    decode = {"1": True, "0": False, "?": None}
+    facts = dict.fromkeys(VENDOR_KEY_SLOTS, UNKNOWN_ROUTE)
+    for token in tokens:
+        match = _ROUTE_TOKEN.fullmatch(token)
+        if match and match.group(1) in VENDOR_KEY_SLOTS:
+            facts[match.group(1)] = RouteFacts(
+                decode[match.group(2)], decode[match.group(3)]
+            )
+    return facts
 
 
 def _looks_like_gatekeeper(value: str) -> bool:
@@ -107,6 +199,30 @@ def slot_holds_gateway_key(slot: str, value: str, *, provider: str, base_url: st
     return route_feeds_gateway(provider, base_url, vendor=direct.vendor)
 
 
+def shape_under_route(
+    slot: str, value: str, *, feeds_gateway: Optional[bool]
+) -> Optional[SlotShape]:
+    """A shared slot's value judged under a route that does (or does not, or
+    may) feed the slot to a gateway: the one rule behind ``shared_slot_shape``.
+
+    ``feeds_gateway`` None (the route is unknown): a vendor-shaped value is
+    ``unknown``, since it may be the vendor's key or a gateway's; anything
+    else cannot be the vendor's key and reads None.
+    """
+    entry = VENDOR_KEY_SLOTS.get(slot)
+    value = (value or "").strip()
+    if entry is None or not value:
+        return None
+    if _looks_like_gatekeeper(value):
+        return "gatekeeper"
+    if feeds_gateway:
+        return "gateway"
+    vendor_shaped = value.startswith(entry.key_prefix)
+    if feeds_gateway is None:
+        return "unknown" if vendor_shaped else None
+    return "vendor" if vendor_shaped else None
+
+
 def shared_slot_shape(
     slot: str, value: str, *, provider: str, base_url: str
 ) -> Optional[SlotShape]:
@@ -114,24 +230,28 @@ def shared_slot_shape(
 
     None for an empty value, a slot with no direct twin, or a value that is
     neither (a non-vendor-shaped key beside a route that keeps the slot the
-    vendor's). A shape name, never the value.
+    vendor's). A shape name, never the value. The same rule as
+    ``slot_holds_vendor_key`` and ``slot_holds_gateway_key``.
     """
-    if slot not in VENDOR_KEY_SLOTS or not (value or "").strip():
+    entry = VENDOR_KEY_SLOTS.get(slot)
+    if entry is None:
         return None
-    if _looks_like_gatekeeper(value):
-        return "gatekeeper"
-    if slot_holds_vendor_key(slot, value, provider=provider, base_url=base_url):
-        return "vendor"
-    if slot_holds_gateway_key(slot, value, provider=provider, base_url=base_url):
-        return "gateway"
-    return None
+    feeds = route_feeds_gateway(provider, base_url, vendor=entry.vendor)
+    return shape_under_route(slot, value, feeds_gateway=feeds)
 
 
 __all__ = [
+    "ROUTE_FACTS_PREFIX",
+    "RouteFacts",
     "SlotShape",
+    "UNKNOWN_ROUTE",
     "VENDOR_KEY_SLOTS",
     "VendorKeySlot",
+    "parse_route_facts",
+    "route_facts",
+    "route_facts_tokens",
     "route_feeds_gateway",
+    "shape_under_route",
     "shared_slot_shape",
     "slot_holds_gateway_key",
     "slot_holds_vendor_key",

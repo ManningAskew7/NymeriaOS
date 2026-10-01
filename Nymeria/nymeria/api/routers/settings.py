@@ -912,6 +912,7 @@ def clear_server_setting(
     from ...config.secret_keys import direct_key_slot
     from ...config.settings import (
         CONTAINER_PINNED_KEYS,
+        RuntimeSettingsReadError,
         remove_runtime_settings_keys,
         restore_runtime_settings_baseline,
         runtime_settings_file,
@@ -989,9 +990,16 @@ def clear_server_setting(
         ) from exc
 
     # The file half is the config layer's, shared with the wizard's
-    # in-container clear (#435), so the two cannot drift.
+    # in-container clear (#435), so the two cannot drift. A read failure there
+    # (the file changed since the check above) is the same 400 as that check.
     try:
         removal = remove_runtime_settings_keys([env_name])[env_name]
+    except RuntimeSettingsReadError as exc:
+        _rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read {runtime}. Nothing was changed.",
+        ) from exc
     except BaseException:
         _rollback()
         raise
