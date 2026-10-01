@@ -573,6 +573,71 @@ def runtime_settings_ignored() -> Tuple[str, ...]:
     )
 
 
+# What the wizard on the HOST learns about the file (#435). A superset of the
+# shadow kinds: `same` is a copy that changes nothing now (equal to the value
+# set elsewhere, or an empty line over nothing). The shadow report skips it,
+# but the wizard cannot: a copy equal to the OLD `.env.docker` value still
+# beats the new one once the stack is recreated.
+SettingsFileKind = Literal["override", "blanked", "app_only", "same"]
+
+
+def _effective_setting(values: Mapping[str, str], key: str) -> str:
+    """``key`` as this process sees it with the file applied (the file wins)."""
+    return values[key] if key in values else os.environ.get(key, "")
+
+
+def runtime_settings_file_report() -> dict[str, Any]:
+    """Names, classes and booleans for every key the runtime settings file sets.
+
+    The in-container half of the wizard's reconfigure check (#435): the
+    wizard runs on the host, reads this over ``compose exec`` stdout, and
+    never sees a value, so nothing here carries one. ``{"file": bool,
+    "keys": [...]}``, one entry per key the file sets (container-pinned keys
+    excepted, they never apply), sorted: ``key``, ``class`` (#434's
+    classifier), ``kind`` (``SettingsFileKind``, judged against this
+    process's baseline exactly like ``runtime_settings_shadows``) and
+    ``empty`` (the line is blank). A shared provider slot with a direct twin
+    (``config.vendor_keys``) also carries ``shape`` (``vendor``, ``gateway``,
+    ``gatekeeper`` or None) judged under the app's EFFECTIVE route (the
+    file's ``LLM_PROVIDER``/``LLM_BASE_URL`` where it sets them, else this
+    process's), and ``direct_set`` (the direct slot holds a value with the
+    file applied).
+    """
+    from .vendor_keys import VENDOR_KEY_SLOTS, shared_slot_shape
+
+    runtime = runtime_settings_file()
+    if runtime is None:
+        return {"file": False, "keys": []}
+    values = _runtime_settings_values()
+    provider = _effective_setting(values, "LLM_PROVIDER")
+    base_url = _effective_setting(values, "LLM_BASE_URL")
+    entries: List[dict[str, Any]] = []
+    for key, value in sorted(values.items()):
+        if key in CONTAINER_PINNED_KEYS:
+            continue
+        baseline = runtime_settings_baseline(key)
+        if value == (baseline or ""):
+            kind: SettingsFileKind = "same"
+        elif not baseline:
+            kind = "app_only"
+        else:
+            kind = "blanked" if value == "" else "override"
+        entry: dict[str, Any] = {
+            "key": key,
+            "class": classify_setting_key(key),
+            "kind": kind,
+            "empty": value == "",
+        }
+        slot = VENDOR_KEY_SLOTS.get(key)
+        if slot is not None:
+            entry["shape"] = shared_slot_shape(
+                key, value, provider=provider, base_url=base_url
+            )
+            entry["direct_set"] = bool(_effective_setting(values, slot.direct).strip())
+        entries.append(entry)
+    return {"file": runtime.is_file(), "keys": entries}
+
+
 def shadow_labels(shadows: Sequence[RuntimeSettingsShadow]) -> str:
     """``OPENAI_API_KEY (credential), LLM_BASE_URL (route), USER_TIMEZONE``."""
     return ", ".join(shadow.label() for shadow in shadows)
@@ -662,6 +727,111 @@ def restore_runtime_settings_baseline(key: str) -> Optional[str]:
         else:
             os.environ[key] = value
         return value
+
+
+RemovalStatus = Literal[
+    "cleared",
+    "relocated",
+    "not_saved",
+    "pinned_line_removed",
+    "unparsable",
+    "relocation_refused",
+    "malformed",
+]
+
+
+def remove_runtime_settings_keys(
+    keys: Sequence[str], *, relocate: Optional[Mapping[str, str]] = None
+) -> dict[str, RemovalStatus]:
+    """Remove every line for each key from the runtime settings file.
+
+    The FILE half of a clear, shared by #434's ``/settings clear`` applier
+    (``api/routers/settings.py::clear_server_setting``, which owns the process
+    half: restore, rebind, rebuild) and #435's wizard, which runs this in a
+    fresh process inside the container over ``compose exec`` so no value
+    crosses the boundary. One atomic 0600 replace through the shared writer
+    for the whole call, comments and other lines kept.
+
+    ``relocate`` maps a shared slot to its direct twin (``OPENAI_API_KEY`` to
+    ``OPENAI_DIRECT_API_KEY``): the slot's value moves to the direct slot IN
+    THIS FILE instead of being discarded (the #431 class), in the same
+    replace as the drop. Re-checked here, because the file may have changed
+    since the wizard's probe: the value must still be vendor-shaped under the
+    app's effective route and the direct slot empty with the file applied;
+    otherwise the slot is KEPT (``relocation_refused``), never cleared without
+    its promised move. A relocated slot need not also be listed in ``keys``.
+
+    Per-key status: ``cleared``; ``relocated``; ``not_saved`` (no line);
+    ``pinned_line_removed`` (a ``CONTAINER_PINNED_KEYS`` line, whose value the
+    file never moved); ``unparsable`` (the file sets the key on a line the
+    writer cannot replace, such as ``export KEY=...``: left alone and never
+    claimed removed); ``relocation_refused``; ``malformed`` (not a key name,
+    or a relocation pair that is not a known slot and its twin). Raises
+    ``OSError``, ``UnicodeDecodeError`` or ``ValueError`` when the file cannot
+    be read, before anything is written. A shape with no runtime file reports
+    every well-formed key ``not_saved``.
+    """
+    from dotenv import dotenv_values
+
+    from .env_file import env_line_key, format_env_value, is_env_key_name, write_env_file
+    from .vendor_keys import VENDOR_KEY_SLOTS, shared_slot_shape
+
+    moves = dict(relocate or {})
+    status: dict[str, RemovalStatus] = {}
+    runtime = runtime_settings_file()
+    lines: List[str] = []
+    values: dict[str, str] = {}
+    if runtime is not None and runtime.is_file():
+        lines = runtime.read_text(encoding="utf-8").splitlines()
+        # Raw text (no ${VAR} expansion): a relocated value is re-written, so
+        # the next load expands it exactly as it expanded the original line.
+        values = {
+            key: value
+            for key, value in dotenv_values(runtime, interpolate=False).items()
+            if value is not None
+        }
+    line_keys = {env_line_key(line) for line in lines}
+    provider = _effective_setting(values, "LLM_PROVIDER")
+    base_url = _effective_setting(values, "LLM_BASE_URL")
+    produced: List[Tuple[str, str]] = []
+    drop: List[str] = []
+    for key in dict.fromkeys([*keys, *moves]):
+        slot = VENDOR_KEY_SLOTS.get(key)
+        if not is_env_key_name(key) or (
+            key in moves and (slot is None or slot.direct != moves[key])
+        ):
+            status[key] = "malformed"
+            continue
+        if key not in values:
+            status[key] = "not_saved"
+            continue
+        if key not in line_keys:
+            status[key] = "unparsable"
+            continue
+        if key in moves and slot is not None:
+            vendor = shared_slot_shape(
+                key, values[key], provider=provider, base_url=base_url
+            ) == "vendor"
+            if not vendor or _effective_setting(values, slot.direct).strip():
+                status[key] = "relocation_refused"
+                continue
+            produced.append((slot.direct, format_env_value(values[key])))
+            status[key] = "relocated"
+        else:
+            status[key] = (
+                "pinned_line_removed" if key in CONTAINER_PINNED_KEYS else "cleared"
+            )
+        drop.append(key)
+    if runtime is None or not drop:
+        return status
+    write_env_file(runtime, produced, merge=True, drop=drop)
+    # A second line for the key in a shape the writer cannot drop (beside one
+    # it could) still sets it: say so rather than claim it removed.
+    remaining = dotenv_values(runtime, interpolate=False)
+    for key in drop:
+        if remaining.get(key) is not None:
+            status[key] = "unparsable"
+    return status
 
 
 def environ_without_runtime_settings(environ: Mapping[str, str]) -> dict[str, str]:

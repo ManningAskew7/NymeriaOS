@@ -356,7 +356,12 @@ Add `--skip-llm-test` to write config without the live checks (the provider
 key test and the post-start chat smoke test), and `--force` to discard the
 existing `config.env` and rebuild it from flags alone. Add `--run-doctor` for
 the quick post-init doctor check, or `--full-doctor` when you also want doctor
-to make its own live LLM check.
+to make its own live LLM check. On a Docker install, settings saved in the app
+(`/data/settings.env`) override `.env.docker`; when a reconfigure changes a
+route or credential key the app also saved, the wizard asks whether to drop
+the app's copy (headless runs warn; `--clear-app-overrides` drops them
+without asking). A section run such as `nymeria init provider` ends by naming
+the `docker compose ... up -d` command that applies the change.
 
 To diagnose an existing install without changing files, run:
 

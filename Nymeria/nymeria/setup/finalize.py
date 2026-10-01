@@ -33,7 +33,7 @@ from .._runtime_paths import (
     configure_project_root,
     find_project_root,
 )
-from ..config.env_file import format_env_value, is_env_key_name, write_env_file
+from ..config.env_file import format_env_value, write_env_file
 from ..config.llm_providers import LLMProviderSpec
 from ..core import secrets as nymeria_secrets
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
@@ -50,7 +50,8 @@ from ..onboarding import (
 # `source_checkout_root` is reached through the module, not bound by name: it
 # is the one symbol tests fake, and a single patch point (environment.py, where
 # it lives) beats every importer needing its own.
-from . import environment
+from . import app_settings_shadow, environment
+from .app_settings_shadow import ComposeChannel, config_diff, snapshot_env_file
 from .environment import DOCKER_SINGLE_COMPOSE, clone_free_docker_blocked_reason
 from .external_access import (
     CORS_ORIGINS_ENV,
@@ -781,6 +782,12 @@ def finalize(
                 f"in {direct_slot}, the slot the media tools read while "
                 f"{provider_key_env} belongs to the new route's gateway.[/yellow]"
             )
+    # #435: what this write changes, by name, for the app-saved-settings check
+    # below. A fresh write (--force) counts every key it writes as changed: the
+    # user asked for this file's values wholesale. A first install has no
+    # running stack whose app file could hold anything, so it is skipped.
+    reconfiguring_docker = for_docker and config_path.exists()
+    env_before = snapshot_env_file(config_path) if reconfiguring_docker and merge else {}
     write_config(
         config_path,
         data_dir=data_dir,
@@ -852,7 +859,31 @@ def finalize(
             if init_seed_env:
                 shadow_keys.update(init_seed_env)
             _warn_shadowing_process_env(console, shadow_keys)
+        if reconfiguring_docker:
+            # Before the stack is recreated (and before a scoped run returns):
+            # an app-saved copy of a key this run changed would beat it.
+            from .tool_keys import gateway_direct_slot
+
+            spec_now = _docker_stack_spec(state)
+            state.app_settings_run = app_settings_shadow.check_before_start(
+                console,
+                _app_settings_channel(spec_now, root),
+                config_diff(env_before, snapshot_env_file(config_path)),
+                mode=state.clear_app_overrides,
+                interactive=app_settings_shadow.is_interactive(non_interactive),
+                gateway_slot=lambda slot: gateway_direct_slot(state, slot),
+            )
     else:
+        if state.clear_app_overrides is not None:
+            flag = "--clear-app-overrides" if state.clear_app_overrides else (
+                "--no-clear-app-overrides"
+            )
+            console.print(
+                f"[yellow]{flag} applies only to Docker installs (settings saved "
+                "in the app live in the container's data volume there); this "
+                "install's app saves to its own config file, so there is nothing "
+                "to clear. Ignored.[/yellow]"
+            )
         # Honor the configured account TTL/cap policy (backlog #107 fold-in):
         # a bare construction silently minted with constructor defaults.
         # Resolve settings against the TARGET root's env files (an `init
@@ -922,6 +953,15 @@ def finalize(
         # A focused `init <section>` jump: report the one change and stop. No token
         # handoff, post-setup launch, or doctor for a single-setting edit.
         console.print(f"\n[green]Updated[/green] the {scoped_section} settings.")
+        if for_docker:
+            # The new .env.docker reaches the containers only when compose
+            # recreates them (`restart` keeps the old environment).
+            spec_now = _docker_stack_spec(state)
+            console.print(f"Recreate the stack from {root} to apply them:")
+            _print_command(
+                console,
+                _compose_command_str(spec_now, *_up_subcommand(_image_rebuild_needed(spec_now))),
+            )
         if scoped_section == "hosting":
             if state.hosting is HostingOption.SERVICE:
                 # Scoped runs never launch anything, so hand over the one
@@ -3243,7 +3283,9 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
         _print_docker_server_browser_steps(console, state, root=root)
         return 0
     console.print("[green]Nymeria is up.[/green]")
-    _print_docker_settings_overrides(console, _docker_settings_overrides(spec=spec, root=root))
+    report = app_settings_shadow.probe(_app_settings_channel(spec, root))
+    overridden, brought_back = _post_start_shadows(report, state.app_settings_run)
+    _print_docker_settings_overrides(console, overridden, brought_back=brought_back)
     verify_public_url_now(state, console)
     smoke_token = None
     if not state.skip_llm_test:
@@ -3813,79 +3855,87 @@ def _read_docker_token_file(
     return match.group(0) if match else None
 
 
-# The in-container half of the #254 follow-up: the server's own override
-# computation (runtime settings file vs the container environment, i.e. the
-# `.env.docker` values), key NAMES only. An image older than #254 lacks the
-# functions and exits non-zero, which reads as "nothing to report".
-_SETTINGS_OVERRIDES_MARKER = "NYMERIA_SETTINGS_OVERRIDES="
-_SETTINGS_OVERRIDES_SNIPPET = (
-    "from nymeria.config.settings import "
-    "load_env_files_into_environ, runtime_settings_overrides\n"
-    "load_env_files_into_environ()\n"
-    f"print({_SETTINGS_OVERRIDES_MARKER!r} + ','.join(runtime_settings_overrides()))\n"
-)
+def _app_settings_channel(spec: _DockerStackSpec, root: Path) -> ComposeChannel:
+    """The compose exec the #435 settings-file check runs its programs over.
 
-
-def _docker_settings_overrides(*, spec: _DockerStackSpec, root: Path) -> tuple[str, ...]:
-    """Env keys whose app-saved value overrides the one in `.env.docker` (#254).
-
-    A setting saved in the app lives in the data volume's runtime settings
-    file, which loads last and wins, so a reconfigure's `.env.docker` value
-    for that key is silently not in effect. Empty on any failure.
+    The api service on the full stack (never the worker) and `nymeria-single`
+    on both single-container composes, with this module's `_compose_env`.
     """
-    command = _compose_argv(
-        spec, "exec", "-T", spec.service, "python3", "-c", _SETTINGS_OVERRIDES_SNIPPET
+    return ComposeChannel(
+        exec_argv=tuple(_compose_argv(spec, "exec", "-T", spec.service)),
+        cwd=root,
+        env=_compose_env(spec),
+        start_command=lambda: _compose_command_str(
+            spec, *_up_subcommand(_image_rebuild_needed(spec))
+        ),
+        exec_hint=_compose_command_str(spec, "exec", spec.service),
     )
-    try:
-        # env-gate: full-copy - same `_compose_env` and reason as
-        # _read_docker_token_file: compose needs it to identify the project;
-        # the exec runs inside the already-running container.
-        result = subprocess.run(
-            command,
-            cwd=str(root),
-            env=_compose_env(spec),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return ()
-    if result.returncode != 0:
-        return ()
-    for line in (result.stdout or "").splitlines():
-        if line.startswith(_SETTINGS_OVERRIDES_MARKER):
-            names = (name.strip() for name in line[len(_SETTINGS_OVERRIDES_MARKER):].split(","))
-            return tuple(name for name in names if is_env_key_name(name))
-    return ()
 
 
-def _print_docker_settings_overrides(console: Console, keys: tuple[str, ...]) -> None:
-    """Warn, not rewrite: the wizard cannot tell a key the user just changed
-    from one it re-produced unchanged from `.env.docker`, so clearing the
-    app-saved copy could revert a newer in-app change (#254 follow-up).
+def _post_start_shadows(
+    report: app_settings_shadow.FileReport, run: app_settings_shadow.ShadowRun | None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(overridden, brought_back)`` names for the post-start note (DP6).
 
-    The remedy is `/settings clear` (#434), never `/settings set`: setting the
-    key in the app re-saves it to the same file, so the NEXT wizard run is
-    shadowed again."""
-    if not keys:
+    Judged by the recreated container, so against THIS run's config. A key
+    this run cleared from the app's file is never named. ``brought_back``:
+    keys this run removed from `.env.docker` that the app's file still sets
+    (#434's report can only call those "saved only in the app"; the wizard
+    knows it just dropped them). An older image reports names only.
+    """
+    cleared = run.cleared if run is not None else set()
+    dropped = run.diff.dropped if run is not None else frozenset()
+    if report.status == "unsupported":
+        return tuple(k for k in report.legacy_overrides if k not in cleared), ()
+    overridden = tuple(e.key for e in report.keys if e.shadows and e.key not in cleared)
+    brought_back = tuple(
+        e.key
+        for e in report.keys
+        if e.key in dropped and e.kind == "app_only" and e.key not in cleared
+    )
+    return overridden, brought_back
+
+
+def _print_docker_settings_overrides(
+    console: Console, keys: tuple[str, ...], *, brought_back: tuple[str, ...] = ()
+) -> None:
+    """Name what the app's saved settings override once the stack is up.
+
+    Warn-only here: whatever the user was asked before the start was answered
+    there (#435), and anything else (a plain setting such as a timezone) is
+    the user's in-app choice. The remedy is `/settings clear` (#434), never
+    `/settings set`: setting the key in the app re-saves it to the same file,
+    so the NEXT wizard run is shadowed again."""
+    if not keys and not brought_back:
         return
     from ..config.secret_keys import direct_key_slot
 
     discards = "".join(
         f" Clearing {key} discards the app's copy: if it is a real vendor key "
         f"you still need, save it as {slot} first."
-        for key in keys
+        for key in (*keys, *brought_back)
         if (slot := direct_key_slot(key))
     )
-    console.print(
-        f"\n[yellow]Settings saved in the app override {len(keys)} value(s) set "
-        f"elsewhere (for example in .env.docker): {', '.join(keys)}. The app's "
-        "copy (/data/settings.env on the data volume) loads last and wins, so "
-        "the other values for those keys are not in effect. To use the value "
-        "this setup wrote, an admin runs /settings clear <KEY> in the app (any "
-        "chat or the CLI), which removes the app's copy; changing the key in "
-        f"the app would only save a new copy there.{discards}[/yellow]"
-    )
+    parts: list[str] = []
+    if keys:
+        parts.append(
+            f"Settings saved in the app override {len(keys)} value(s) set "
+            f"elsewhere (for example in .env.docker): {', '.join(keys)}. The app's "
+            "copy (/data/settings.env on the data volume) loads last and wins, so "
+            "the other values for those keys are not in effect. To use the value "
+            "this setup wrote, an admin runs /settings clear <KEY> in the app (any "
+            "chat or the CLI), which removes the app's copy; changing the key in "
+            "the app would only save a new copy there."
+        )
+    if brought_back:
+        parts.append(
+            f"This setup removed {', '.join(brought_back)} from .env.docker, but "
+            "the app's saved copy (/data/settings.env) brings it back, so it is "
+            "still in effect. To drop it, an admin runs "
+            f"{' and '.join(f'/settings clear {key}' for key in brought_back)} "
+            "in the app."
+        )
+    console.print(f"\n[yellow]{' '.join(parts)}{discards}[/yellow]")
 
 
 def _print_docker_bootstrap_token(

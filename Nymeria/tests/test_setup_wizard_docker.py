@@ -7,13 +7,20 @@ Split out of the former monolithic test_setup_wizard.py (dev-todo #54).
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
+from rich.console import Console
+
 from nymeria.onboarding import HostingOption
+from nymeria.setup import app_settings_shadow as app_shadow
 from nymeria.setup import environment as environment_mod
 from nymeria.setup import finalize as finalize_mod
 from nymeria.setup import runner as runner_mod
@@ -936,6 +943,17 @@ def test_docker_local_rag_hint_ignores_the_host_interpreter(monkeypatch, tmp_pat
     assert "NYMERIA_LOCAL_RAG=1 was written" in capsys.readouterr().out
 
 
+def _report_stdout(*entries: dict) -> str:
+    """The in-container report marker line, as the real program prints it."""
+    return "noise\n" + app_shadow.REPORT_MARKER + json.dumps(
+        {"file": True, "keys": list(entries)}
+    ) + "\n"
+
+
+def _entry(key: str, cls: str = "setting", kind: str = "override", **extra) -> dict:
+    return {"key": key, "class": cls, "kind": kind, "empty": False, **extra}
+
+
 @pytest.mark.parametrize("stack,service", [("full", "api"), ("slim", "nymeria-single")])
 def test_start_now_names_env_keys_the_app_saved_settings_override(
     monkeypatch, tmp_path, capsys, stack, service
@@ -945,7 +963,13 @@ def test_start_now_names_env_keys_the_app_saved_settings_override(
     _stub_llm(monkeypatch)
     calls = _record_compose(
         monkeypatch,
-        overrides_stdout="noise\nNYMERIA_SETTINGS_OVERRIDES=LLM_MODEL,USER_TIMEZONE,bad key;rm\n",
+        overrides_stdout=_report_stdout(
+            _entry("LLM_MODEL"),
+            _entry("USER_TIMEZONE"),
+            _entry("bad key;rm"),
+            _entry("TWITCH_CHANNEL", kind="app_only"),  # saved only in the app
+            _entry("LLM_PROVIDER", "route", kind="same"),  # equal: no shadow
+        ),
     )
     monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
     root = tmp_path / "checkout"
@@ -957,7 +981,9 @@ def test_start_now_names_env_keys_the_app_saved_settings_override(
     [probe] = [cmd for cmd, _env in calls if "python3" in cmd]
     assert probe[probe.index("exec") : probe.index("exec") + 3] == ["exec", "-T", service]
     out = " ".join(capsys.readouterr().out.split())
-    assert "LLM_MODEL, USER_TIMEZONE" in out
+    assert "override 2 value(s)" in out
+    assert "LLM_MODEL, USER_TIMEZONE." in out
+    assert "TWITCH_CHANNEL" not in out and "LLM_PROVIDER" not in out
     # The base is the container environment (compose defaults included), so
     # the copy must not claim every key came from .env.docker.
     assert "set elsewhere (for example in .env.docker)" in out
@@ -985,11 +1011,35 @@ def test_the_override_note_names_the_direct_slot_for_a_shared_credential():
     assert "Clearing LLM_MODEL" not in out
 
 
+def test_an_image_older_than_the_report_still_names_its_overrides(
+    monkeypatch, tmp_path, capsys
+):
+    # A published image from before #435 prints the #254 override names.
+    _stub_llm(monkeypatch)
+    _record_compose(
+        monkeypatch,
+        overrides_stdout=(
+            app_shadow.REPORT_MARKER + "unsupported\n"
+            + app_shadow.LEGACY_OVERRIDES_MARKER + "LLM_MODEL,bad key\n"
+        ),
+    )
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main([*_FULL_ARGS, "--root", str(root), "--start"]) == 0
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "override 1 value(s) set elsewhere (for example in .env.docker): LLM_MODEL." in out
+    assert "bad key" not in out
+
+
 @pytest.mark.parametrize(
     "stdout,rc",
     [
-        ("NYMERIA_SETTINGS_OVERRIDES=\n", 0),  # nothing overridden
-        ("Traceback: no such function\n", 1),  # an older image
+        (_report_stdout(), 0),  # nothing saved in the app
+        ("Traceback: no such function\n", 1),  # no marker: no answer
+        (app_shadow.REPORT_MARKER + "unsupported\n", 0),  # older than #254 too
         ("", 0),
     ],
 )
@@ -1039,13 +1089,14 @@ def test_the_image_probe_names_the_compose_files_full_image(monkeypatch):
     assert asked == [(finalize_mod.DOCKER_FULL_IMAGE, "sentence_transformers")]
 
 
-def test_the_in_container_override_snippet_runs_the_servers_own_computation(tmp_path):
+def test_the_in_container_report_runs_the_servers_own_computation(tmp_path):
     # Runs the real program the wizard execs in the container: a renamed or
-    # broken function would otherwise fail silently (non-zero reads as "none").
-    marker = finalize_mod._SETTINGS_OVERRIDES_MARKER
+    # broken function would otherwise fail silently (no marker reads as "no
+    # answer").
     settings_file = tmp_path / "settings.env"
     settings_file.write_text(
-        "NYMERIA_TEST_OVERRIDE_PROBE=from-file\nNYMERIA_TEST_ONLY_IN_FILE=x\n",
+        "NYMERIA_TEST_OVERRIDE_PROBE=from-file\nNYMERIA_TEST_ONLY_IN_FILE=x\n"
+        "NYMERIA_TEST_SAME=same\n",
         encoding="utf-8",
     )
     root = tmp_path / "root"
@@ -1055,11 +1106,12 @@ def test_the_in_container_override_snippet_runs_the_servers_own_computation(tmp_
         NYMERIA_PROJECT_ROOT=str(root),
         NYMERIA_SETTINGS_FILE=str(settings_file),
         NYMERIA_TEST_OVERRIDE_PROBE="from-env",
+        NYMERIA_TEST_SAME="same",
     )
     checkout = Path(finalize_mod.__file__).resolve().parents[2]
 
     result = subprocess.run(
-        [sys.executable, "-c", finalize_mod._SETTINGS_OVERRIDES_SNIPPET],
+        [sys.executable, "-c", app_shadow.REPORT_PROGRAM],
         cwd=str(checkout),
         env=env,
         capture_output=True,
@@ -1068,6 +1120,747 @@ def test_the_in_container_override_snippet_runs_the_servers_own_computation(tmp_
     )
 
     assert result.returncode == 0, result.stderr[-2000:]
-    [line] = [line for line in result.stdout.splitlines() if line.startswith(marker)]
-    # Only a key that held a DIFFERENT value first is an override.
-    assert line == marker + "NYMERIA_TEST_OVERRIDE_PROBE"
+    report = app_shadow.parse_report(result.stdout)
+    assert report.status == "report"
+    # Only a key that held a DIFFERENT value first is an override; a copy
+    # equal to it is `same` (still listed: the wizard needs it).
+    assert {e.key: e.kind for e in report.keys} == {
+        "NYMERIA_TEST_ONLY_IN_FILE": "app_only",
+        "NYMERIA_TEST_OVERRIDE_PROBE": "override",
+        "NYMERIA_TEST_SAME": "same",
+    }
+
+
+# --- #435: a reconfigure asks about the app's saved copies before the start ---
+#
+# The container is emulated by running the REAL in-container programs in a
+# fresh interpreter whose environment is only the "container's" (the
+# .env.docker the stack was created from, plus the shape's settings-file
+# variable) against a tmp stand-in for /data/settings.env. Every value below
+# carries DUMMY so the names-only sweep can look for it.
+
+_REAL_RUN = subprocess.run  # captured at import, before any test fakes it
+_CHECKOUT = Path(finalize_mod.__file__).resolve().parents[2]
+DUMMY = "dummy-it31"
+_GATEWAY = [
+    "--provider", "openai", "--base-url", "http://127.0.0.1:9/v1",
+    "--api-key", f"sk-{DUMMY}-gw", "--model", "gpt-dummy",
+]
+_ANTHROPIC = ["--provider", "anthropic", "--model", "claude-dummy", "--api-key", f"sk-ant-{DUMMY}"]
+_OPENAI = ["--provider", "openai", "--model", "gpt-dummy", "--api-key", f"sk-{DUMMY}-one"]
+_OPENAI_NEW_KEY = ["--provider", "openai", "--model", "gpt-dummy", "--api-key", f"sk-{DUMMY}-two"]
+# What a GUI-saved gateway route and its key look like in the app's file.
+_APP_GATEWAY_FILE = (
+    "# keep-me\n"
+    "LLM_BASE_URL=http://127.0.0.1:9/v1\n"
+    f"OPENAI_API_KEY=sk-{DUMMY}-appgw\n"
+    "USER_TIMEZONE=UTC\n"
+)
+
+
+def _docker(stack: str = "slim") -> list[str]:
+    return [
+        "--hosting", "docker", "--docker-stack", stack, "--non-interactive",
+        "--skip-llm-test", "--no-server-browser",
+    ]
+
+
+class _FakeStack:
+    """The running stack as the wizard's subprocess calls meet it (see above).
+
+    ``up`` recreates (re-reads .env.docker and starts a stopped stack);
+    ``down`` answers every exec like a stopped service; ``report_stdout``
+    stands in for an older image's answer; ``before_apply`` runs between the
+    probe and the removal (a concurrent in-app change).
+    """
+
+    def __init__(self, tmp_path: Path, root: Path):
+        self.root = root
+        self.app = tmp_path / "container-app"
+        self.app.mkdir()
+        self.settings = tmp_path / "container-data" / "settings.env"
+        self.settings.parent.mkdir()
+        self.down = False
+        self.env: dict[str, str] = {}
+        self.calls: list[list[str]] = []
+        self.envs: list[dict] = []
+        self.outputs: list[str] = []
+        self.report_stdout: str | None = None
+        self.before_apply = None
+
+    def boot(self, app_file: str | None = None) -> "_FakeStack":
+        """Create the stack from the current .env.docker, with an app file."""
+        if app_file is not None:
+            self.settings.write_text(app_file, encoding="utf-8")
+            self.settings.chmod(0o600)
+        self.recreate()
+        self.calls.clear()
+        self.envs.clear()
+        return self
+
+    def recreate(self) -> None:
+        from dotenv import dotenv_values
+
+        values = dotenv_values(self.root / ".env.docker", interpolate=False)
+        self.env = {key: value for key, value in values.items() if value is not None}
+
+    def install(self, monkeypatch) -> "_FakeStack":
+        def fake_run(cmd, *args, **kwargs):
+            cmd = list(cmd)
+            self.calls.append(cmd)
+            self.envs.append(dict(kwargs.get("env") or {}))
+            if "exec" in cmd and "python3" in cmd:
+                return self._exec(cmd)
+            if "cat" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "Token: nym_bootstrap_aaa111\n", "")
+            if "up" in cmd:
+                self.down = False
+                self.recreate()
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return self
+
+    def _exec(self, cmd: list[str]):
+        if self.down:
+            return subprocess.CompletedProcess(cmd, 1, "", "service is not running")
+        program_args = cmd[cmd.index("python3") + 1:]
+        program = program_args[1]
+        if program == app_shadow.REPORT_PROGRAM and self.report_stdout is not None:
+            return subprocess.CompletedProcess(cmd, 0, self.report_stdout, "")
+        if program == app_shadow.APPLY_PROGRAM and self.before_apply is not None:
+            self.before_apply(self)
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            # The image's packages: this interpreter's import path, checkout
+            # first (a user-site install needs no HOME this way).
+            "PYTHONPATH": os.pathsep.join([str(_CHECKOUT), *filter(None, sys.path)]),
+            "NYMERIA_PROJECT_ROOT": str(self.app),
+            "NYMERIA_SETTINGS_FILE": str(self.settings),
+            **self.env,
+        }
+        result = _REAL_RUN(
+            [sys.executable, *program_args],
+            cwd=str(_CHECKOUT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.outputs.append(result.stdout + result.stderr)
+        return result
+
+    def execs(self, program: str) -> list[list[str]]:
+        return [cmd for cmd in self.calls if "python3" in cmd and program in cmd]
+
+    def program_args(self, program: str) -> list[list[str]]:
+        """The argv after `-c <program>` of each exec of ``program``."""
+        return [cmd[cmd.index(program) + 1:] for cmd in self.execs(program)]
+
+    def text(self) -> str:
+        return self.settings.read_text(encoding="utf-8")
+
+
+class _ScriptedConsole(Console):
+    """A console at a terminal that answers prompts from a script."""
+
+    def __init__(self, *answers):
+        self.buffer = io.StringIO()
+        super().__init__(file=self.buffer, width=400, force_terminal=False)
+        self.answers = list(answers)
+        self.prompts: list[str] = []
+
+    def input(self, prompt="", **_kwargs):  # type: ignore[override]
+        self.prompts.append(" ".join(str(prompt).replace("\\[", "[").split()))
+        if not self.answers:
+            raise AssertionError(f"unexpected prompt: {prompt}")
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.buffer.getvalue().split())
+
+
+def _interactive(monkeypatch, *answers) -> _ScriptedConsole:
+    """Finalize as the interactive wizard runs it after the TUI (at a terminal,
+    non_interactive=False), reached through the flag path for brevity."""
+    console = _ScriptedConsole(*answers)
+    monkeypatch.setattr(runner_mod, "Console", lambda: console)
+    real = runner_mod.finalize
+    monkeypatch.setattr(
+        runner_mod,
+        "finalize",
+        lambda state, **kw: real(state, **{**kw, "non_interactive": False}),
+    )
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    return console
+
+
+def _installed(monkeypatch, tmp_path, *install, stack: str = "slim", app_file=None):
+    """A first Docker install, then the stack created from it with an app file."""
+    _stub_llm(monkeypatch)
+    _hosted_rag(monkeypatch)
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    fake = _FakeStack(tmp_path, root).install(monkeypatch)
+    assert setup_main([*_docker(stack), "--root", str(root), *install]) == 0
+    # A first install has no stack whose app file could hold anything.
+    assert fake.execs(app_shadow.REPORT_PROGRAM) == []
+    return root, fake.boot(app_file)
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_the_in_container_programs_survive_windows_argv_quoting():
+    # W26: list2cmdline plus docker.exe's Go argv parser round-trip a program
+    # with no double quote and no backslash unchanged.
+    for program in (app_shadow.REPORT_PROGRAM, app_shadow.APPLY_PROGRAM):
+        assert '"' not in program
+        assert "\\" not in program
+        assert subprocess.list2cmdline(["python3", "-c", program]).count('"') == 2
+
+
+@pytest.mark.parametrize("extra", [[], ["--port", "8097"]])
+def test_a_reconfigure_that_changes_no_route_or_credential_never_execs(
+    monkeypatch, tmp_path, capsys, extra
+):
+    # W1: same provider and key (nothing changes), or a plain setting
+    # (API_PORT): no exec before the start, no question, no new output.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_OPENAI, app_file=f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+    )
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_OPENAI, *extra]) == 0
+
+    assert [cmd for cmd in fake.calls if "exec" in cmd] == []
+    out = _flat(capsys.readouterr().out)
+    assert "settings.env" not in out and "saved in the app" not in out.lower()
+
+
+def test_one_probe_and_no_output_when_the_app_saved_none_of_the_changed_keys(
+    monkeypatch, tmp_path, capsys
+):
+    # W2: a candidate exists (the key changed), the app file holds other keys.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_OPENAI, app_file="USER_TIMEZONE=UTC\nLLM_MODEL=gpt-app\n"
+    )
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_OPENAI_NEW_KEY]) == 0
+
+    assert len(fake.execs(app_shadow.REPORT_PROGRAM)) == 1
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    out = _flat(capsys.readouterr().out)
+    assert "settings.env" not in out and "saved in the app" not in out.lower()
+
+
+def test_interactive_enter_removes_the_app_copy_of_a_changed_key(monkeypatch, tmp_path):
+    # W3: the run changes OPENAI_API_KEY and the app saved its own copy.
+    app_file = (
+        "# saved in the app\n"
+        f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+        "USER_TIMEZONE=UTC\n"
+        f"OPENAI_API_KEY=sk-{DUMMY}-dup\n"
+    )
+    root, fake = _installed(monkeypatch, tmp_path, *_OPENAI, app_file=app_file)
+    console = _interactive(monkeypatch, "")
+
+    assert setup_main([*_docker(), "--root", str(root), *_OPENAI_NEW_KEY]) == 0
+
+    assert console.prompts == [
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]"
+    ]
+    # One removal exec, and its argv after the program is the key name only.
+    assert fake.program_args(app_shadow.APPLY_PROGRAM) == [["OPENAI_API_KEY"]]
+    assert fake.text() == "# saved in the app\nUSER_TIMEZONE=UTC\n"
+    assert fake.settings.stat().st_mode & 0o777 == 0o600
+    out = console.text
+    assert "Removed the app's copy of OPENAI_API_KEY." in out
+    assert (
+        "This takes effect when the stack is recreated: the start command "
+        "(`docker compose -f docker-compose.single.yml up -d`) does that." in out
+    )
+
+
+def test_the_interactive_wizard_without_a_terminal_warns_instead_of_asking(
+    monkeypatch, tmp_path
+):
+    # A pipe or a harness cannot answer: warn only (the local-rag rule).
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_OPENAI, app_file=f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+    )
+    console = _interactive(monkeypatch)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: False))
+
+    assert setup_main([*_docker(), "--root", str(root), *_OPENAI_NEW_KEY]) == 0
+
+    assert console.prompts == []
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    assert "re-run setup with --clear-app-overrides" in console.text
+
+
+@pytest.mark.parametrize("answer", ["n", "no", EOFError(), KeyboardInterrupt()])
+def test_declining_keeps_the_app_copy_and_says_how_to_clear_it(
+    monkeypatch, tmp_path, answer
+):
+    # W4: "n", EOF (Ctrl+D) and Ctrl+C all decline; nothing is removed.
+    app_file = f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+    root, fake = _installed(monkeypatch, tmp_path, *_OPENAI, app_file=app_file)
+    console = _interactive(monkeypatch, answer)
+
+    assert setup_main([*_docker(), "--root", str(root), *_OPENAI_NEW_KEY]) == 0
+
+    assert len(console.prompts) == 1
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    assert fake.text() == app_file
+    out = console.text
+    assert "Kept the app's copy of OPENAI_API_KEY" in out
+    assert "an admin runs /settings clear OPENAI_API_KEY in the app" in out
+    assert "save it as OPENAI_DIRECT_API_KEY first" in out
+
+
+def test_a_dropped_route_key_is_asked_about_as_coming_back(monkeypatch, tmp_path):
+    # W5 + W8: gateway route to anthropic drops LLM_BASE_URL (and retires
+    # the gateway key, #433); the app's copies would bring both back. The
+    # app's key is the app gateway's own: cleared, never relocated.
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    console = _interactive(monkeypatch, "y", "y")
+
+    assert setup_main([*_docker(), "--root", str(root), *_ANTHROPIC]) == 0
+
+    assert console.prompts == [
+        "Remove the app-saved route settings (LLM_BASE_URL) so this choice takes effect? [Y/n]",
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]",
+    ]
+    out = console.text
+    assert (
+        "Route settings the app saved: LLM_BASE_URL (route; this setup removed it, "
+        "the app's copy would bring it back)." in out
+    )
+    assert "This setup removed OPENAI_API_KEY; the app's copy would bring it back." in out
+    assert "is a gateway's key: it only works with the app's own gateway route" in out
+    assert "moves to" not in out
+    assert fake.program_args(app_shadow.APPLY_PROGRAM) == [["LLM_BASE_URL", "OPENAI_API_KEY"]]
+    assert fake.text() == "# keep-me\nUSER_TIMEZONE=UTC\n"
+
+
+def test_a_route_change_asks_about_every_route_key_and_model_the_app_saved(
+    monkeypatch, tmp_path
+):
+    # W6 + DP4: a GUI-saved route (base URL, model, its gateway's key) under
+    # an install whose .env.docker never had a base URL. The run changes the
+    # provider: the app's LLM_BASE_URL (neither written nor dropped) and
+    # models ride the route group, and its gateway key is asked about alone.
+    app_file = (
+        "LLM_BASE_URL=http://litellm.example:4000/v1\n"
+        "LLM_MODEL=gpt-app\n"
+        f"OPENAI_API_KEY=sk-{DUMMY}-litellm\n"
+        "LLM_FAST_MODEL=gpt-fast\n"
+    )
+    root, fake = _installed(monkeypatch, tmp_path, *_OPENAI, app_file=app_file)
+    console = _interactive(monkeypatch, "y", "n")
+
+    assert setup_main([*_docker(), "--root", str(root), *_ANTHROPIC]) == 0
+
+    assert console.prompts == [
+        "Remove the app-saved route settings (LLM_BASE_URL, LLM_FAST_MODEL, "
+        "LLM_MODEL) so this choice takes effect? [Y/n]",
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]",
+    ]
+    out = console.text
+    assert "LLM_BASE_URL (route), LLM_FAST_MODEL (model), LLM_MODEL (model)." in out
+    assert "it only works with the app's own gateway route" in out
+    assert fake.text() == f"OPENAI_API_KEY=sk-{DUMMY}-litellm\n"
+
+
+def test_no_route_change_leaves_an_app_saved_model_alone(monkeypatch, tmp_path, capsys):
+    # DP4's other half: only a route change pulls the model in.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_OPENAI,
+        app_file=f"LLM_MODEL=gpt-app\nOPENAI_API_KEY=sk-{DUMMY}-app\n",
+    )
+
+    assert setup_main([
+        *_docker(), "--root", str(root), "--provider", "openai", "--model", "gpt-other",
+        "--api-key", f"sk-{DUMMY}-two", "--clear-app-overrides",
+    ]) == 0
+
+    assert fake.program_args(app_shadow.APPLY_PROGRAM) == [["OPENAI_API_KEY"]]
+    assert fake.text() == "LLM_MODEL=gpt-app\n"
+
+
+def test_a_real_vendor_key_moves_to_its_direct_slot_when_a_gateway_takes_the_slot(
+    monkeypatch, tmp_path
+):
+    # W7: the app's copy is a real OpenAI key (judged under the app's own
+    # route), this run hands OPENAI_API_KEY to a gateway, and the direct slot
+    # is set nowhere: it moves inside the container, the value never leaves.
+    vendor = f"sk-{DUMMY}-vendor"
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_ANTHROPIC, app_file=f"# keep\nOPENAI_API_KEY={vendor}\n"
+    )
+    console = _interactive(monkeypatch, "")
+
+    assert setup_main([*_docker(), "--root", str(root), *_GATEWAY]) == 0
+
+    assert console.prompts == [
+        "Remove the app-saved OPENAI_API_KEY so this choice takes effect? [Y/n]"
+    ]
+    out = console.text
+    assert (
+        "looks like a real OpenAI key, and this setup's route sends OPENAI_API_KEY "
+        "to a gateway, so it moves to OPENAI_DIRECT_API_KEY in the app's settings"
+    ) in out
+    assert fake.program_args(app_shadow.APPLY_PROGRAM) == [
+        ["OPENAI_API_KEY:OPENAI_DIRECT_API_KEY"]
+    ]
+    from dotenv import dotenv_values
+
+    saved = dotenv_values(fake.settings)
+    assert "OPENAI_API_KEY" not in saved
+    assert saved["OPENAI_DIRECT_API_KEY"] == vendor
+    assert fake.text().startswith("# keep\n")
+    assert "Moved the app's copy of OPENAI_API_KEY to OPENAI_DIRECT_API_KEY" in out
+
+
+@pytest.mark.parametrize("where", ["app file", "container env", "new .env.docker"])
+def test_no_move_when_the_direct_slot_is_already_set_anywhere(monkeypatch, tmp_path, where):
+    # W9: clearing then discards the app's copy, and the question says so.
+    app_file = f"OPENAI_API_KEY=sk-{DUMMY}-vendor\n"
+    if where == "app file":
+        app_file += f"OPENAI_DIRECT_API_KEY=sk-{DUMMY}-direct\n"
+    root, fake = _installed(monkeypatch, tmp_path, *_ANTHROPIC, app_file=app_file)
+    if where == "container env":
+        fake.env["OPENAI_DIRECT_API_KEY"] = f"sk-{DUMMY}-direct"
+    extra = ["--openai-api-key", f"sk-{DUMMY}-media"] if where == "new .env.docker" else []
+    console = _interactive(monkeypatch, "y")
+
+    assert setup_main([*_docker(), "--root", str(root), *_GATEWAY, *extra]) == 0
+
+    assert fake.program_args(app_shadow.APPLY_PROGRAM) == [["OPENAI_API_KEY"]]
+    out = console.text
+    assert "moves to" not in out
+    if where == "new .env.docker":
+        # The host knows the new file sets it; the container cannot.
+        assert "save it as OPENAI_DIRECT_API_KEY first" in out
+    else:
+        assert "OPENAI_DIRECT_API_KEY is already set, so it is not moved there" in out
+    from dotenv import dotenv_values
+
+    assert "OPENAI_API_KEY" not in dotenv_values(fake.settings)
+
+
+def test_a_move_whose_preconditions_changed_since_the_probe_keeps_the_key(
+    monkeypatch, tmp_path, capsys
+):
+    # W10: the direct slot was saved in the app between the probe and the
+    # removal: the container refuses the move and KEEPS the slot.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_ANTHROPIC, app_file=f"OPENAI_API_KEY=sk-{DUMMY}-vendor\n"
+    )
+
+    def late_save(stack):
+        with stack.settings.open("a", encoding="utf-8") as fh:
+            fh.write(f"OPENAI_DIRECT_API_KEY=sk-{DUMMY}-late\n")
+
+    fake.before_apply = late_save
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_GATEWAY, "--clear-app-overrides"]) == 0
+
+    assert fake.text() == (
+        f"OPENAI_API_KEY=sk-{DUMMY}-vendor\nOPENAI_DIRECT_API_KEY=sk-{DUMMY}-late\n"
+    )
+    out = _flat(capsys.readouterr().out)
+    assert "Kept OPENAI_API_KEY: the app's copy no longer qualifies for the move" in out
+    assert "Moved the app's copy" not in out and "Removed the app's copy" not in out
+
+
+def test_headless_default_warns_and_changes_nothing(monkeypatch, tmp_path, capsys):
+    # W11: no prompt, no removal; one warning with classes, the commands and
+    # the flag; the app file is byte-identical; exit 0.
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    before = fake.settings.read_bytes()
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_ANTHROPIC]) == 0
+
+    assert len(fake.execs(app_shadow.REPORT_PROGRAM)) == 1
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    assert fake.settings.read_bytes() == before
+    out = _flat(capsys.readouterr().out)
+    assert "Settings saved in the app override this setup once the stack is recreated" in out
+    assert (
+        "LLM_BASE_URL (route; this setup removed it, the app's copy would bring it "
+        "back), OPENAI_API_KEY (credential; this setup removed it" in out
+    )
+    assert (
+        "an admin runs /settings clear LLM_BASE_URL and /settings clear "
+        "OPENAI_API_KEY in the app" in out
+    )
+    assert "re-run setup with --clear-app-overrides" in out
+
+
+@pytest.mark.parametrize("stack", ["slim", "full"])
+def test_headless_clear_flag_removes_every_candidate(monkeypatch, tmp_path, capsys, stack):
+    # W12 + W17: one probe and one removal, both execs into the stack's api
+    # service (never the worker) with the spec's compose args and env.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_GATEWAY, stack=stack, app_file=_APP_GATEWAY_FILE
+    )
+    capsys.readouterr()
+
+    assert setup_main([
+        *_docker(stack), "--root", str(root), *_ANTHROPIC, "--clear-app-overrides",
+    ]) == 0
+
+    assert fake.text() == "# keep-me\nUSER_TIMEZONE=UTC\n"
+    assert fake.settings.stat().st_mode & 0o777 == 0o600
+    out = _flat(capsys.readouterr().out)
+    assert "Removed the app's copy of LLM_BASE_URL, OPENAI_API_KEY." in out
+    prefix = (
+        ["docker", "compose", "-f", "docker-compose.single.yml", "exec", "-T", "nymeria-single"]
+        if stack == "slim"
+        else ["docker", "compose", "--env-file", ".env.docker", "exec", "-T", "api"]
+    )
+    execs = [(cmd, env) for cmd, env in zip(fake.calls, fake.envs) if "exec" in cmd]
+    assert len(execs) == 2
+    for cmd, env in execs:
+        assert cmd[: len(prefix)] == prefix
+        assert "worker" not in cmd
+        # finalize's _compose_env: the API port pinned for compose.
+        assert env["API_PORT"] == "8000"
+
+
+def test_the_no_clear_flag_never_asks(monkeypatch, tmp_path):
+    # W13: the interactive wizard with --no-clear-app-overrides warns only.
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    console = _interactive(monkeypatch)
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_ANTHROPIC, "--no-clear-app-overrides",
+    ]) == 0
+
+    assert console.prompts == []
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    assert fake.text() == _APP_GATEWAY_FILE
+    assert "re-run setup with --clear-app-overrides" in console.text
+
+
+@pytest.mark.parametrize(
+    "state,why",
+    [
+        ("down", "the stack is not running (or did not answer)"),
+        ("old image", "the running image predates this check"),
+    ],
+)
+def test_an_unchecked_stack_names_this_runs_keys_conditionally(
+    monkeypatch, tmp_path, state, why
+):
+    # W14: no prompt, no removal; the warning names the run's route and
+    # credential keys as "if the app saved its own copy".
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    if state == "down":
+        fake.down = True
+    else:
+        fake.report_stdout = app_shadow.REPORT_MARKER + "unsupported\n"
+    console = _interactive(monkeypatch)
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_ANTHROPIC, "--clear-app-overrides",
+    ]) == 0
+
+    assert console.prompts == []
+    assert fake.execs(app_shadow.APPLY_PROGRAM) == []
+    assert fake.text() == _APP_GATEWAY_FILE
+    out = console.text
+    assert f"Setup could not check the settings saved in the app: {why}." in out
+    assert "If the app saved its own copy (/data/settings.env on the data volume)" in out
+    for label in ("LLM_BASE_URL (route)", "LLM_PROVIDER (route)", "OPENAI_API_KEY (credential)"):
+        assert label in out
+    assert "/settings clear <KEY>" in out
+
+
+@pytest.mark.parametrize(
+    "stack,command",
+    [
+        ("slim", "docker compose -f docker-compose.single.yml up -d"),
+        ("full", "docker compose --env-file .env.docker up -d"),
+    ],
+)
+def test_a_scoped_provider_run_asks_first_and_names_the_recreate(
+    monkeypatch, tmp_path, stack, command
+):
+    # W16: the question flow runs before "Updated", which now names the
+    # command that applies the change.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_GATEWAY, stack=stack, app_file=_APP_GATEWAY_FILE
+    )
+    console = _interactive(monkeypatch, "y", "y")
+
+    assert setup_main(["provider", *_docker(stack), "--root", str(root), *_ANTHROPIC]) == 0
+
+    assert len(console.prompts) == 2
+    out = console.text
+    updated = out.index("Updated the provider settings.")
+    assert out.index("Removed the app's copy of LLM_BASE_URL, OPENAI_API_KEY.") < updated
+    assert f"Recreate the stack from {root} to apply them: {command}" in out[updated:]
+
+
+def test_nothing_crosses_the_exec_boundary_but_names(monkeypatch, tmp_path):
+    # W18: dummy values in .env.docker and the app file never reach console
+    # output, an exec argv, or (running the real programs) their output.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_ANTHROPIC,
+        app_file=(
+            f"OPENAI_API_KEY=sk-{DUMMY}-vendor\nLLM_BASE_URL=http://{DUMMY}.example/v1\n"
+            f"GEMINI_API_KEY=AIza-{DUMMY}\n"
+        ),
+    )
+    console = _interactive(monkeypatch, "y", "y")
+
+    assert setup_main([*_docker(), "--root", str(root), *_GATEWAY]) == 0
+
+    assert len(fake.execs(app_shadow.APPLY_PROGRAM)) == 1
+    assert fake.outputs and all(DUMMY not in output for output in fake.outputs)
+    assert all(DUMMY not in arg for cmd in fake.calls for arg in cmd)
+    assert DUMMY not in console.buffer.getvalue()
+    assert all(DUMMY not in prompt for prompt in console.prompts)
+
+
+def test_an_unparsable_line_is_reported_never_claimed_removed(monkeypatch, tmp_path, capsys):
+    # W19: the other key still clears; the export line stays, with the recipe.
+    app_file = f"LLM_BASE_URL=http://127.0.0.1:9/v1\nexport OPENAI_API_KEY=sk-{DUMMY}-appgw\n"
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=app_file)
+    capsys.readouterr()
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_ANTHROPIC, "--clear-app-overrides",
+    ]) == 0
+
+    assert fake.text() == f"export OPENAI_API_KEY=sk-{DUMMY}-appgw\n"
+    out = _flat(capsys.readouterr().out)
+    assert "Removed the app's copy of LLM_BASE_URL." in out
+    assert (
+        "Could not remove OPENAI_API_KEY: its line in /data/settings.env is not in "
+        "KEY=value form" in out
+    )
+    assert (
+        "docker compose -f docker-compose.single.yml exec nymeria-single sed -i -E "
+        "'/^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY[[:space:]]*=/d' "
+        "/data/settings.env" in out
+    )
+
+
+def test_a_key_gone_before_the_removal_reads_as_already_gone(monkeypatch, tmp_path, capsys):
+    # W20: removed in the app between the probe and the removal.
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+
+    def removed_in_app(stack):
+        stack.settings.write_text(
+            stack.text().replace("LLM_BASE_URL=http://127.0.0.1:9/v1\n", ""),
+            encoding="utf-8",
+        )
+
+    fake.before_apply = removed_in_app
+    capsys.readouterr()
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_ANTHROPIC, "--clear-app-overrides",
+    ]) == 0
+
+    out = _flat(capsys.readouterr().out)
+    assert "LLM_BASE_URL: already gone from the app's settings." in out
+    assert "Removed the app's copy of OPENAI_API_KEY." in out
+    assert "Could not remove" not in out
+    assert fake.text() == "# keep-me\nUSER_TIMEZONE=UTC\n"
+
+
+@pytest.mark.parametrize("clear", [False, True])
+def test_after_the_start_a_kept_dropped_key_is_named_and_a_cleared_one_never(
+    monkeypatch, tmp_path, capsys, clear
+):
+    # W21 (DP6): judged by the recreated container. Kept: the app's copies
+    # of keys this run dropped are named as brought back. Cleared: neither
+    # is named, and the plain setting the app saved stays unmentioned.
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, app_file=_APP_GATEWAY_FILE)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    capsys.readouterr()
+    flags = ["--clear-app-overrides"] if clear else []
+
+    assert setup_main([*_docker(), "--root", str(root), *_ANTHROPIC, "--start", *flags]) == 0
+
+    # The post-start probe ran against the recreated container.
+    assert len(fake.execs(app_shadow.REPORT_PROGRAM)) == 2
+    assert "LLM_BASE_URL" not in fake.env
+    out = _flat(capsys.readouterr().out)
+    after_start = out[out.index("Nymeria is up."):]
+    if clear:
+        assert "LLM_BASE_URL" not in after_start and "OPENAI_API_KEY" not in after_start
+    else:
+        assert (
+            "This setup removed LLM_BASE_URL, OPENAI_API_KEY from .env.docker, but the "
+            "app's saved copy (/data/settings.env) brings it back, so it is still in "
+            "effect." in after_start
+        )
+        assert "/settings clear LLM_BASE_URL and /settings clear OPENAI_API_KEY" in after_start
+    assert "USER_TIMEZONE" not in after_start
+
+
+def test_the_flag_on_a_native_install_is_ignored_with_one_note(monkeypatch, tmp_path, capsys):
+    # W22 (DP8): no exec, one note, the run succeeds.
+    _stub_llm(monkeypatch)
+    _hosted_rag(monkeypatch)
+    root = tmp_path / "native"
+    root.mkdir()
+    fake = _FakeStack(tmp_path, root).install(monkeypatch)
+    base = [
+        "--hosting", "local", "--root", str(root), "--non-interactive",
+        "--skip-llm-test", "--no-server-browser",
+    ]
+    assert setup_main([*base, *_OPENAI]) == 0
+    capsys.readouterr()
+
+    assert setup_main([*base, *_ANTHROPIC, "--clear-app-overrides"]) == 0
+
+    assert [cmd for cmd in fake.calls if "exec" in cmd] == []
+    out = _flat(capsys.readouterr().out)
+    assert out.count("--clear-app-overrides applies only to Docker installs") == 1
+    assert "Ignored." in out
+
+
+def test_force_counts_every_written_route_and_credential_key(monkeypatch, tmp_path, capsys):
+    # W23: a fresh write over a running stack has no "before": the app's copy
+    # of a key re-written unchanged is still a candidate (the user asked for
+    # this file's values wholesale). The same run without --force is not.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_OPENAI, app_file=f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+    )
+    assert setup_main([*_docker(), "--root", str(root), *_OPENAI]) == 0
+    assert fake.execs(app_shadow.REPORT_PROGRAM) == []
+    capsys.readouterr()
+
+    assert setup_main([*_docker(), "--root", str(root), *_OPENAI, "--force"]) == 0
+
+    assert len(fake.execs(app_shadow.REPORT_PROGRAM)) == 1
+    out = _flat(capsys.readouterr().out)
+    assert "loads last and sets OPENAI_API_KEY (credential)." in out
+
+
+def test_the_clear_flag_parses_three_ways():
+    # Section 5: a mode-dependent default (None) with explicit overrides.
+    parser = runner_mod.build_parser()
+    for argv, expected in (
+        ([], None),
+        (["--clear-app-overrides"], True),
+        (["--no-clear-app-overrides"], False),
+    ):
+        state = runner_mod._build_state(parser.parse_args(argv))
+        assert state.clear_app_overrides is expected

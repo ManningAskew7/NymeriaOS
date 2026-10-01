@@ -58,6 +58,27 @@ them (clearing one only removes its dead line). Before #254 these writes went
 to `/app/.env` in the container's own filesystem: they applied on a `restart`
 and were silently lost on the next recreate.
 
+A Docker reconfigure (`nymeria init` against an existing `.env.docker`,
+including a section run such as `nymeria init provider`) checks this file for
+you before the stack is recreated (#435). When the run changes, adds or
+removes a route or credential key, the wizard asks the running api container
+(`docker compose ... exec`, key names only, never a value) which of those keys
+the app saved its own copy of. Route keys are asked about as one group (once
+the route changes, every route key and model the app saved counts, since a
+mixed route sends a key to the wrong host; a key this run removed is named as
+one the app's copy would bring back); each credential gets its own question.
+Accepted copies are removed inside the container, and the normal `up -d`
+recreate applies both files. A real OpenAI or Gemini key whose slot this run
+hands to a gateway moves to `OPENAI_DIRECT_API_KEY` or
+`GEMINI_DIRECT_API_KEY` in the app's file instead of being discarded, unless
+that slot is already set. Headless runs only warn, naming each
+`/settings clear <KEY>` to run; pass `--clear-app-overrides` to remove the
+copies without asking, or `--no-clear-app-overrides` to never remove them
+(the interactive wizard then warns only). When the stack is not running, or
+its image predates the check, the wizard names this run's keys and the
+command to run once it is up. After a wizard-run start, the closing note also
+names any key this run removed that the app's copy still brings back.
+
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 
 ## Runtime Settings Updates
@@ -801,7 +822,11 @@ Use `--data-dir` when `NYMERIA_DATA_DIR` should differ from the runtime root's
 smoke test follow it),
 `--next-action print_commands|cli|start_api_open_frontend`, `--force`, and
 `--skip-llm-test`. Add `--run-doctor` (quick) or `--full-doctor` (with a live LLM
-check) to validate after writing config. CLIProxy subscription-OAuth provider
+check) to validate after writing config. On a Docker reconfigure,
+`--clear-app-overrides` / `--no-clear-app-overrides` decide what happens to an
+app-saved copy of a route or credential key the run changes (default: ask in
+the interactive wizard, warn only headless; see the settings-file section near
+the top). Other hosting shapes accept the flag and ignore it with a note. CLIProxy subscription-OAuth provider
 routing is deferred and is not part of `nymeria init` in this phase; use a direct
 provider API key.
 

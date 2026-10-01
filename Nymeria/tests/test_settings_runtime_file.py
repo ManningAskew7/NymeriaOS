@@ -510,3 +510,266 @@ def test_a_shadowed_anthropic_key_names_its_direct_slot(container):
     assert "ANTHROPIC_API_KEY (credential)" in warning
     assert "save it as ANTHROPIC_DIRECT_API_KEY first" in warning
     assert DUMMY not in warning
+
+
+# --- #435: the report and the removal the wizard runs in the container ---------
+
+
+def _report_map() -> dict[str, dict]:
+    return {
+        entry["key"]: {k: v for k, v in entry.items() if k != "key"}
+        for entry in settings_mod.runtime_settings_file_report()["keys"]
+    }
+
+
+def test_the_report_lists_every_key_with_kind_class_and_shape(container):
+    # Unlike the shadow report it keeps `same` copies (a copy equal to the
+    # OLD .env.docker value still beats a new one after a recreate) and
+    # blank lines over nothing; pinned keys never apply, so never listed.
+    _app, runtime = container
+    os.environ["LLM_PROVIDER"] = "openai"
+    os.environ["OPENAI_API_KEY"] = f"sk-{DUMMY}-env"
+    os.environ["USER_TIMEZONE"] = "UTC"
+    os.environ["LLM_MODEL"] = "gpt-env"
+    for absent in (
+        "GEMINI_API_KEY", "GEMINI_DIRECT_API_KEY", "OPENAI_DIRECT_API_KEY",
+        "STT_PROVIDER", "LLM_BASE_URL",
+    ):
+        os.environ.pop(absent, None)
+    runtime.write_text(
+        f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+        "USER_TIMEZONE=UTC\n"
+        "LLM_MODEL=\n"
+        "STT_PROVIDER=\n"
+        "LLM_BASE_URL=http://litellm.example:4000/v1\n"
+        f"GEMINI_API_KEY=AIza-{DUMMY}\n"
+        "NYMERIA_DATA_DIR=/elsewhere\n",
+        encoding="utf-8",
+    )
+
+    settings_mod.load_env_files_into_environ(force=True)
+    report = settings_mod.runtime_settings_file_report()
+
+    assert report["file"] is True
+    assert _report_map() == {
+        # Judged under the APP's effective route: the file's LiteLLM base URL
+        # with the environment's openai provider feeds the slot to a gateway.
+        "OPENAI_API_KEY": {
+            "class": "credential", "kind": "override", "empty": False,
+            "shape": "gateway", "direct_set": False,
+        },
+        "USER_TIMEZONE": {"class": "setting", "kind": "same", "empty": False},
+        "LLM_MODEL": {"class": "setting", "kind": "blanked", "empty": True},
+        "STT_PROVIDER": {"class": "setting", "kind": "same", "empty": True},
+        "LLM_BASE_URL": {"class": "route", "kind": "app_only", "empty": False},
+        # A google route never reads it: the vendor's own key.
+        "GEMINI_API_KEY": {
+            "class": "credential", "kind": "app_only", "empty": False,
+            "shape": "vendor", "direct_set": False,
+        },
+    }
+    assert DUMMY not in str(report)
+
+
+@pytest.mark.parametrize(
+    "file_line,env,shape,direct_set",
+    [
+        # Under a route that keeps the slot the vendor's: a real key.
+        (f"OPENAI_API_KEY=sk-{DUMMY}", {"LLM_PROVIDER": "anthropic"}, "vendor", False),
+        (f"OPENAI_API_KEY=cpx-{DUMMY}", {"LLM_PROVIDER": "openai"}, "gatekeeper", False),
+        # A non-vendor-shaped value off a gateway route is neither.
+        (f"OPENAI_API_KEY=lm-{DUMMY}", {"LLM_PROVIDER": "anthropic"}, None, False),
+        # The direct slot set in the environment only.
+        (
+            f"OPENAI_API_KEY=sk-{DUMMY}",
+            {"LLM_PROVIDER": "anthropic", "OPENAI_DIRECT_API_KEY": f"sk-{DUMMY}-d"},
+            "vendor",
+            True,
+        ),
+    ],
+)
+def test_the_reported_shape_never_carries_the_value(container, file_line, env, shape, direct_set):
+    _app, runtime = container
+    for key in ("LLM_BASE_URL", "OPENAI_DIRECT_API_KEY", "LLM_PROVIDER"):
+        os.environ.pop(key, None)
+    os.environ.update(env)
+    runtime.write_text(file_line + "\n", encoding="utf-8")
+
+    settings_mod.load_env_files_into_environ(force=True)
+
+    entry = _report_map()["OPENAI_API_KEY"]
+    assert (entry["shape"], entry["direct_set"]) == (shape, direct_set)
+    assert DUMMY not in str(settings_mod.runtime_settings_file_report())
+
+
+def test_the_shape_follows_the_files_route_without_a_reload(container):
+    # The file's route wins where it sets one, read from the file itself (as
+    # the kinds are), not from whatever this process last exported: an
+    # in-app save of a gateway base URL after the load makes the same key a
+    # gateway's key.
+    _app, runtime = container
+    for key in ("LLM_BASE_URL", "OPENAI_DIRECT_API_KEY"):
+        os.environ.pop(key, None)
+    os.environ["LLM_PROVIDER"] = "openai"
+    runtime.write_text(f"OPENAI_API_KEY=sk-{DUMMY}\n", encoding="utf-8")
+    settings_mod.load_env_files_into_environ(force=True)
+    assert _report_map()["OPENAI_API_KEY"]["shape"] == "vendor"
+
+    runtime.write_text(
+        f"OPENAI_API_KEY=sk-{DUMMY}\nLLM_BASE_URL=http://litellm.example:4000/v1\n",
+        encoding="utf-8",
+    )
+
+    assert _report_map()["OPENAI_API_KEY"]["shape"] == "gateway"
+
+
+def test_the_report_without_a_runtime_file_says_so(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("NYMERIA_SETTINGS_FILE", raising=False)
+    assert settings_mod.runtime_settings_file_report() == {"file": False, "keys": []}
+
+
+def test_removal_drops_every_line_for_each_key_and_keeps_the_rest(container):
+    _app, runtime = container
+    runtime.write_text(
+        "# saved in the app\n"
+        f"OPENAI_API_KEY=sk-{DUMMY}-a\n"
+        "USER_TIMEZONE=UTC\n"
+        f"  OPENAI_API_KEY = sk-{DUMMY}-b\n"
+        "LLM_BASE_URL=http://x:9/v1\n"
+        "NYMERIA_DATA_DIR=/elsewhere\n",
+        encoding="utf-8",
+    )
+    runtime.chmod(0o644)
+
+    status = settings_mod.remove_runtime_settings_keys(
+        ["OPENAI_API_KEY", "LLM_BASE_URL", "NYMERIA_DATA_DIR", "LLM_MODEL"]
+    )
+
+    assert status == {
+        "OPENAI_API_KEY": "cleared",
+        "LLM_BASE_URL": "cleared",
+        "NYMERIA_DATA_DIR": "pinned_line_removed",
+        "LLM_MODEL": "not_saved",
+    }
+    assert runtime.read_text(encoding="utf-8") == "# saved in the app\nUSER_TIMEZONE=UTC\n"
+    assert runtime.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_relocation_moves_the_value_and_drops_the_slot_in_one_write(container, monkeypatch):
+    _app, runtime = container
+    os.environ["LLM_PROVIDER"] = "anthropic"
+    os.environ.pop("OPENAI_DIRECT_API_KEY", None)
+    os.environ.pop("LLM_BASE_URL", None)
+    value = f"sk-{DUMMY} with space"
+    runtime.write_text(f'# keep\nOPENAI_API_KEY="{value}"\n', encoding="utf-8")
+    from nymeria.config import env_file
+
+    writes: list[tuple] = []
+    real_write = env_file.write_env_file
+    monkeypatch.setattr(
+        env_file,
+        "write_env_file",
+        lambda *a, **kw: writes.append((a, kw)) or real_write(*a, **kw),
+    )
+
+    status = settings_mod.remove_runtime_settings_keys(
+        [], relocate={"OPENAI_API_KEY": "OPENAI_DIRECT_API_KEY"}
+    )
+
+    assert status == {"OPENAI_API_KEY": "relocated"}
+    assert len(writes) == 1
+    from dotenv import dotenv_values
+
+    assert dotenv_values(runtime) == {"OPENAI_DIRECT_API_KEY": value}
+    assert runtime.read_text(encoding="utf-8").startswith("# keep\n")
+
+
+@pytest.mark.parametrize(
+    "file_text,env",
+    [
+        # The direct slot was saved since the probe.
+        (f"OPENAI_API_KEY=sk-{DUMMY}\nOPENAI_DIRECT_API_KEY=sk-{DUMMY}-d\n", {}),
+        # ...or is set in the environment.
+        (f"OPENAI_API_KEY=sk-{DUMMY}\n", {"OPENAI_DIRECT_API_KEY": f"sk-{DUMMY}-d"}),
+        # The app's own route now feeds the slot to a gateway: not the vendor's.
+        (f"OPENAI_API_KEY=sk-{DUMMY}\nLLM_BASE_URL=http://litellm:4000/v1\n", {}),
+        # Not vendor-shaped.
+        (f"OPENAI_API_KEY=cpx-{DUMMY}\n", {}),
+    ],
+)
+def test_a_relocation_that_no_longer_qualifies_keeps_the_slot(container, file_text, env):
+    _app, runtime = container
+    os.environ["LLM_PROVIDER"] = "openai"
+    os.environ.pop("OPENAI_DIRECT_API_KEY", None)
+    os.environ.pop("LLM_BASE_URL", None)
+    os.environ.update(env)
+    runtime.write_text(file_text, encoding="utf-8")
+
+    status = settings_mod.remove_runtime_settings_keys(
+        ["OPENAI_API_KEY"], relocate={"OPENAI_API_KEY": "OPENAI_DIRECT_API_KEY"}
+    )
+
+    assert status == {"OPENAI_API_KEY": "relocation_refused"}
+    assert runtime.read_text(encoding="utf-8") == file_text
+
+
+def test_an_unparsable_line_is_never_claimed_removed(container):
+    _app, runtime = container
+    text = f"export OPENAI_API_KEY=sk-{DUMMY}\nLLM_BASE_URL=http://x:9/v1\n"
+    runtime.write_text(text, encoding="utf-8")
+
+    status = settings_mod.remove_runtime_settings_keys(
+        ["OPENAI_API_KEY", "LLM_BASE_URL"],
+        relocate={"OPENAI_API_KEY": "OPENAI_DIRECT_API_KEY"},
+    )
+
+    assert status == {"OPENAI_API_KEY": "unparsable", "LLM_BASE_URL": "cleared"}
+    # Nothing moved for the key that stayed, and its line is untouched.
+    assert runtime.read_text(encoding="utf-8") == f"export OPENAI_API_KEY=sk-{DUMMY}\n"
+
+
+def test_a_second_unparsable_line_beside_a_parsable_one_is_reported(container):
+    # The writer drops the parsable line; the export one still sets the key.
+    _app, runtime = container
+    runtime.write_text(
+        f"OPENAI_API_KEY=sk-{DUMMY}-a\nexport OPENAI_API_KEY=sk-{DUMMY}-b\n",
+        encoding="utf-8",
+    )
+
+    status = settings_mod.remove_runtime_settings_keys(["OPENAI_API_KEY"])
+
+    assert status == {"OPENAI_API_KEY": "unparsable"}
+    assert runtime.read_text(encoding="utf-8") == f"export OPENAI_API_KEY=sk-{DUMMY}-b\n"
+
+
+@pytest.mark.parametrize(
+    "keys,relocate",
+    [
+        (["openai_api_key"], {}),
+        (["KEY; rm -rf /"], {}),
+        ([], {"OPENAI_API_KEY": "ANTHROPIC_DIRECT_API_KEY"}),  # not its twin
+        ([], {"LLM_BASE_URL": "OPENAI_DIRECT_API_KEY"}),  # not a shared slot
+    ],
+)
+def test_malformed_names_and_pairs_change_nothing(container, keys, relocate):
+    _app, runtime = container
+    text = "OPENAI_API_KEY=sk-x\nLLM_BASE_URL=http://x:9/v1\nopenai_api_key=y\n"
+    runtime.write_text(text, encoding="utf-8")
+
+    status = settings_mod.remove_runtime_settings_keys(keys, relocate=relocate)
+
+    assert set(status.values()) == {"malformed"}
+    assert runtime.read_text(encoding="utf-8") == text
+
+
+def test_removal_without_a_file_reports_not_saved(container, monkeypatch):
+    _app, runtime = container
+    assert not runtime.exists()
+    assert settings_mod.remove_runtime_settings_keys(["LLM_BASE_URL"]) == {
+        "LLM_BASE_URL": "not_saved"
+    }
+    assert not runtime.exists()
+    monkeypatch.delenv("NYMERIA_SETTINGS_FILE")
+    assert settings_mod.remove_runtime_settings_keys(["LLM_BASE_URL"]) == {
+        "LLM_BASE_URL": "not_saved"
+    }

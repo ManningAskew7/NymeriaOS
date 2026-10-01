@@ -1140,6 +1140,44 @@ def test_the_connection_step_refuses_to_carry_a_gateway_key_elsewhere():
     assert ok is True
 
 
+def test_the_wizard_and_the_container_judge_shared_slots_with_one_rule():
+    # #435 moved the value predicates to the config layer so the container's
+    # settings-file report can use them without the wizard package; the
+    # wizard's names are the same functions, and every direct-slot map agrees.
+    from nymeria.config import vendor_keys
+    from nymeria.config.secret_keys import DIRECT_KEY_SLOTS
+    from nymeria.setup import tool_keys
+
+    assert tool_keys.route_feeds_gateway is vendor_keys.route_feeds_gateway
+    assert tool_keys.slot_holds_vendor_key is vendor_keys.slot_holds_vendor_key
+    assert tool_keys.slot_holds_gateway_key is vendor_keys.slot_holds_gateway_key
+    for slot, entry in vendor_keys.VENDOR_KEY_SLOTS.items():
+        assert tool_keys._DIRECT_MEDIA_SLOTS[slot].env_var == entry.direct
+        assert DIRECT_KEY_SLOTS[slot] == entry.direct
+        assert tool_keys.direct_slot_vendor(slot) == entry.vendor
+
+
+@pytest.mark.parametrize(
+    "provider,base_url,shape",
+    [
+        # The app's own LiteLLM route: the key only works there.
+        ("openai", "http://litellm.example:4000/v1", "gateway"),
+        ("openai", "https://api.openai.com/v1", "vendor"),
+        ("openai", "", "vendor"),
+        # A different provider's route never reads the slot.
+        ("anthropic", "http://litellm.example:4000/v1", "vendor"),
+    ],
+)
+def test_a_shared_slot_shape_follows_the_route_beside_it(provider, base_url, shape):
+    from nymeria.config.vendor_keys import shared_slot_shape
+
+    got = shared_slot_shape("OPENAI_API_KEY", REAL_KEY, provider=provider, base_url=base_url)
+    assert got == shape
+    assert shared_slot_shape("OPENAI_API_KEY", GATEKEEPER, provider=provider, base_url=base_url) == "gatekeeper"
+    assert shared_slot_shape("OPENAI_API_KEY", "", provider=provider, base_url=base_url) is None
+    assert shared_slot_shape("ANTHROPIC_API_KEY", REAL_KEY, provider=provider, base_url=base_url) is None
+
+
 def test_the_keys_step_counts_a_new_route_key_typed_this_run():
     """Leaving LiteLLM for openai direct WITH a new key: that key serves
     image generation, so the keys step does not ask for it again."""

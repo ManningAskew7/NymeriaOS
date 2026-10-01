@@ -14,6 +14,7 @@ import pytest
 from dotenv import dotenv_values
 
 from nymeria.config.env_file import (
+    env_line_key,
     format_env_value,
     is_env_key_name,
     merge_env_lines,
@@ -197,6 +198,28 @@ def test_write_env_file_merge_refuses_a_file_it_cannot_read(tmp_path: Path, monk
     monkeypatch.undo()
     assert path.read_text(encoding="utf-8") == original
     assert [p.name for p in tmp_path.iterdir()] == ["settings.env"]  # no temp left
+
+
+@pytest.mark.parametrize(
+    "line, key",
+    [
+        ("OPENAI_API_KEY=x", "OPENAI_API_KEY"),
+        ("  LLM_MODEL = y", "LLM_MODEL"),
+        ("EMPTY=", "EMPTY"),
+        ("export OPENAI_API_KEY=x", "export OPENAI_API_KEY"),  # not a key name
+        ("# OPENAI_API_KEY=x", None),
+        ("   ", None),
+        ("NO_EQUALS", None),
+    ],
+)
+def test_env_line_key_reads_lines_as_the_merge_does(line: str, key: str | None):
+    # #435: the removal's "can the writer drop this line" check and the
+    # writer share this parse; an export line names no droppable key.
+    assert env_line_key(line) == key
+    if key is not None and is_env_key_name(key):
+        assert merge_env_lines([line], [], drop=[key]) == []
+    elif key is not None:
+        assert merge_env_lines([line], [], drop=[key.split()[-1]]) == [line]
 
 
 @pytest.mark.parametrize(

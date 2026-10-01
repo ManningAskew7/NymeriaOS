@@ -75,6 +75,22 @@ def parse_env_value(raw: str) -> str:
     return raw
 
 
+def env_line_key(raw_line: str) -> str | None:
+    """The key a dotenv line sets, as the merge below reads it; None for none.
+
+    Comments, blank lines and lines without ``=`` set nothing. The line is
+    split on its first ``=`` and stripped, so ``  KEY = value`` names ``KEY``
+    while ``export KEY=value`` names ``export KEY``, which is not a key: that
+    is the line shape the writer cannot replace or drop, and the one callers
+    (#434 clear, #435 wizard) refuse to claim removed. One parse for both, so
+    the check and the write cannot disagree.
+    """
+    stripped = raw_line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    return stripped.split("=", 1)[0].strip()
+
+
 def merge_env_lines(
     existing_lines: Sequence[str],
     produced: Sequence[tuple[str, str]],
@@ -114,9 +130,8 @@ def merge_env_lines(
     collapsed: dict[str, int] = {}
     out: list[str] = []
     for raw_line in existing_lines:
-        stripped = raw_line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
+        key = env_line_key(raw_line)
+        if key is not None:
             if key in produced_map:
                 if key in seen:
                     collapsed[key] = collapsed.get(key, 0) + 1
@@ -201,6 +216,7 @@ def write_env_file(
 
 
 __all__ = [
+    "env_line_key",
     "is_env_key_name",
     "format_env_value",
     "parse_env_value",

@@ -912,6 +912,7 @@ def clear_server_setting(
     from ...config.secret_keys import direct_key_slot
     from ...config.settings import (
         CONTAINER_PINNED_KEYS,
+        remove_runtime_settings_keys,
         restore_runtime_settings_baseline,
         runtime_settings_file,
     )
@@ -987,13 +988,14 @@ def clear_server_setting(
             ),
         ) from exc
 
+    # The file half is the config layer's, shared with the wizard's
+    # in-container clear (#435), so the two cannot drift.
     try:
-        write_env_file(runtime, [], merge=True, drop=[env_name])
-        still_saved = _saved_in_file()
+        removal = remove_runtime_settings_keys([env_name])[env_name]
     except BaseException:
         _rollback()
         raise
-    if still_saved:
+    if removal == "unparsable":
         # A line the shared writer does not parse (`export KEY=...`, written
         # by hand on the host): saying "cleared" here would be a lie.
         _rollback()

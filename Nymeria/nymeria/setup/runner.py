@@ -230,6 +230,19 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
             "--no-print-creds to suppress, --print-creds to force."
         ),
     )
+    parser.add_argument(
+        "--clear-app-overrides",
+        dest="clear_app_overrides",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "When a Docker reconfigure changes or removes a route or credential "
+            "key that settings saved in the app (/data/settings.env) also set, "
+            "remove the app's copy so this setup's value takes effect (a real "
+            "OpenAI or Gemini key moves to its direct slot). Default: ask in the "
+            "interactive wizard, warn only with --non-interactive."
+        ),
+    )
     parser.add_argument("--embedding-api-key", default=None)
     parser.add_argument("--openai-api-key", default=None)
     parser.add_argument("--gemini-api-key", default=None)
@@ -637,6 +650,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         run_doctor=bool(getattr(args, "run_doctor", False) or getattr(args, "full_doctor", False)),
         full_doctor=bool(getattr(args, "full_doctor", False)),
         print_credentials=print_credentials,
+        clear_app_overrides=getattr(args, "clear_app_overrides", None),
     )
 
 

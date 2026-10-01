@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from ..config.llm_providers import LLMProviderSpec, get_llm_provider_spec
 
 if TYPE_CHECKING:
+    from .app_settings_shadow import ShadowRun
     from .environment import EnvironmentReport
 from ..onboarding import (
     DockerStack,
@@ -148,6 +149,12 @@ class WizardState:
     # --non-interactive (see runner._build_state) so a token never lands in
     # captured stdout. The start-now step exposes it as a toggle.
     print_credentials: bool = True
+    # Docker reconfigure (#435): what to do with an app-saved copy
+    # (/data/settings.env) of a route or credential key this run changes.
+    # None asks in the interactive wizard and warns with --non-interactive;
+    # True removes every such copy without asking; False never removes one
+    # (--clear-app-overrides / --no-clear-app-overrides).
+    clear_app_overrides: bool | None = None
     skip_llm_test: bool = False
     force: bool = False
     run_doctor: bool = False
@@ -189,6 +196,10 @@ class WizardState:
     # skill nor a known kit (installed or written later). A profile-pick update
     # used to drop them, since it rewrites the whole list from the kit picks.
     unmanaged_skills: list[str] = field(default_factory=list)
+    # Finalize's record of the #435 pre-start check (what this run changed,
+    # whether the container answered, which app copies it removed), read by
+    # the post-start note so it never names a copy this run cleared.
+    app_settings_run: ShadowRun | None = None
 
     def resolved_api_port(self) -> int:
         """The chosen API port with the default applied."""
