@@ -6,6 +6,7 @@ import {
   isProvisionalScope,
   normalizeBackendUrl,
   provisionalScope,
+  resumedScope,
   sameIdentityScope,
   scopedStorageKey,
   type ScopeStorage,
@@ -89,6 +90,25 @@ describe('scope identity and keys', () => {
     const key = scopedStorageKey('nymeria-thread-folders', identityScope(A, 'default'));
     expect(key).not.toBe('nymeria-thread-folders-default');
     expect(key.startsWith('nymeria-thread-folders-')).toBe(true);
+  });
+});
+
+describe('resumedScope: the scope a persisted config boots on (delta review LOW-3)', () => {
+  it('a resolved account resumes its own backend + account scope', () => {
+    expect(resumedScope('http://LocalHost:8097/', 'default', true)).toEqual({ backend: A, accountId: 'default' });
+    expect(resumedScope(A, 'default', false)).toEqual({ backend: A, accountId: 'default' });
+  });
+
+  it('signed in with no account (relaunched while a switch was parked) resumes the provisional scope', () => {
+    expect(resumedScope(`${B}/`, null, true)).toEqual({ backend: B, accountId: '' });
+    expect(resumedScope(B, undefined, true)).toEqual({ backend: B, accountId: '' });
+    expect(resumedScope(B, '', true)).toEqual({ backend: B, accountId: '' });
+  });
+
+  it('signed out, or no backend at all, is unscoped: the legacy keys', () => {
+    expect(resumedScope(B, null, false)).toBeNull();
+    expect(resumedScope('', null, true)).toBeNull();
+    expect(resumedScope('   ', 'default', true)).toBeNull();
   });
 });
 

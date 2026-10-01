@@ -12,6 +12,7 @@ import {
   identityScope,
   normalizeBackendUrl,
   provisionalScope,
+  resumedScope,
   sameIdentityScope,
   scopedStorageKey,
   type IdentityScope
@@ -79,11 +80,12 @@ async function detectBackendOrigin(): Promise<string | null> {
 // and Docker bootstrap names its owner `default`, so an id-only key made two
 // backends share one namespace. A connection switch parks on the target
 // backend's provisional scope (`<base>-@<backend_url>`) until /me names the
-// account; with no identity at all (first run, signed out) the unscoped
-// legacy keys (`nymeria-threads`, etc.) are used. The first resolve of a
-// scope carries older-format data into it, once, as a move (the provisional
-// key, else the account-only key, else the unscoped one), and drops the
-// leftovers once the scope holds data.
+// account, and a signed-in session with no account stays there (relaunched
+// mid-switch, or a sign-in whose /me failed). Only signed out (or first run)
+// are the unscoped legacy keys (`nymeria-threads`, etc.) used. The first
+// resolve of a scope carries older-format data into it, once, as a move (the
+// provisional key, else the account-only key, else the unscoped one), and
+// drops the leftovers once the scope holds data.
 //
 // Keys that should NEVER be namespaced live in NON_SCOPED_KEYS: the config
 // store itself (loads before identity exists) and saved-connections (picking
@@ -243,11 +245,17 @@ function createConfigStore() {
   // Seed the module-level scope with whatever identity is persisted so stores
   // that load before refreshIdentity() runs still pick the right keys. The
   // carry-forward runs here too: those stores read the scoped keys at
-  // construction, which happens right after this module evaluates.
-  if (initial.identity && initial.apiUrl) {
-    currentScope = identityScope(initial.apiUrl, initial.identity.id);
-    carryForwardScopedKeys(currentScope);
-  }
+  // construction, which happens right after this module evaluates. A
+  // signed-in config with no identity was relaunched while parked on a
+  // backend's provisional scope and resumes there (#242 delta review). The
+  // token hydrates from the keychain asynchronously, so `setupCompleted` is
+  // the synchronous signed-in signal (a sign-out clears it).
+  currentScope = resumedScope(
+    initial.apiUrl ?? '',
+    initial.identity?.id,
+    initial.setupCompleted === true
+  );
+  if (currentScope) carryForwardScopedKeys(currentScope);
 
   // Apply theme on initial load (client-side only)
   if (typeof document !== 'undefined') {
@@ -369,11 +377,15 @@ function createConfigStore() {
    * to keeps it (a focus refresh during a network hiccup must not wipe the
    * app). After the backend moved, or on a forced switch, the previous scope
    * must not stay live: park on the new backend and reset, so it starts from
-   * empty caches instead of showing (and writing back) the old one's.
+   * empty caches instead of showing (and writing back) the old one's. A
+   * signed-in session with no scope at all (a sign-in whose /me failed)
+   * parks too: the unscoped keys are the signed-out path only, and the next
+   * backend to resolve would adopt them.
    */
-  function settleUnresolvedIdentity(url: string, forceReload: boolean): void {
+  function settleUnresolvedIdentity(url: string, forceReload: boolean, signedIn: boolean): void {
     const backendMoved = currentScope !== null && currentScope.backend !== normalizeBackendUrl(url);
-    if (!forceReload && !backendMoved) return;
+    const unscopedSession = currentScope === null && signedIn && url.trim().length > 0;
+    if (!forceReload && !backendMoved && !unscopedSession) return;
     parkOnBackend(url, 'unresolved identity');
   }
 
@@ -410,7 +422,7 @@ function createConfigStore() {
     const key = apiKey;
     const connectionMoved = () => apiUrl !== url || apiKey !== key;
     if (!url || !key) {
-      settleUnresolvedIdentity(url, forceReload);
+      settleUnresolvedIdentity(url, forceReload, false);
       return null;
     }
     try {
@@ -429,7 +441,7 @@ function createConfigStore() {
           // will all fail with 401s.
           clearAuthSession('refreshIdentity auth failure');
         } else {
-          settleUnresolvedIdentity(url, forceReload);
+          settleUnresolvedIdentity(url, forceReload, true);
         }
         return null;
       }
@@ -439,7 +451,7 @@ function createConfigStore() {
       return data;
     } catch (e) {
       console.error('refreshIdentity failed:', e);
-      if (!connectionMoved()) settleUnresolvedIdentity(url, forceReload);
+      if (!connectionMoved()) settleUnresolvedIdentity(url, forceReload, true);
       return null;
     }
   }

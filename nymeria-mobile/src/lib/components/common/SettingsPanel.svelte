@@ -326,8 +326,11 @@
     );
   }
 
+  // Waits for /me to name the account: a connection switch drops the
+  // snapshot before the repoint and again once /me answers, so a load in
+  // between would only run twice (#242 delta review).
   $effect(() => {
-    if (open && configStore.isConfigured && !serverSettings && !loadingSettings && !settingsLoadFailed) {
+    if (open && configStore.isConfigured && configStore.identity && !serverSettings && !loadingSettings && !settingsLoadFailed) {
       untrack(() => loadServerSettings());
     }
   });

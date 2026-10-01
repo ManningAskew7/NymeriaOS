@@ -5,6 +5,7 @@ import {
   identityScope,
   normalizeBackendUrl,
   provisionalScope,
+  resumedScope,
   sameIdentityScope,
   scopedStorageKey,
   type IdentityScope
@@ -20,10 +21,11 @@ const STORAGE_KEY = 'nymeria-config';
 // has resolved (`utils/identityScope.ts` owns the format, #242): the scope is
 // the backend PLUS the account, because every backend names its owner
 // `default`. A connection switch parks on the target backend's provisional
-// scope (`<base>-@<backend_url>`) until /me names the account; with no
-// identity at all the unscoped legacy keys are used. The first resolve of a
-// scope carries older-format data into it, once, as a move, and drops the
-// leftovers once the scope holds data.
+// scope (`<base>-@<backend_url>`) until /me names the account, and a
+// signed-in session with no account stays there (relaunched mid-switch, or a
+// sign-in whose /me failed); only signed out are the unscoped legacy keys
+// used. The first resolve of a scope carries older-format data into it,
+// once, as a move, and drops the leftovers once the scope holds data.
 
 const NON_SCOPED_KEYS = new Set<string>([
   'nymeria-config',
@@ -148,11 +150,15 @@ function createConfigStore() {
   let identity = $state<AccountIdentity | null>(initial.identity ?? null);
 
   // Seed the scope from the persisted identity before the other stores
-  // construct and read their scoped keys (they import this module).
-  if (identity && apiUrl) {
-    currentScope = identityScope(apiUrl, identity.id);
-    carryForwardScopedKeys(currentScope);
-  }
+  // construct and read their scoped keys (they import this module). A
+  // signed-in config with no identity was relaunched while parked on a
+  // backend's provisional scope and resumes there (#242 delta review).
+  currentScope = resumedScope(
+    initial.apiUrl ?? '',
+    initial.identity?.id,
+    (initial.apiKey ?? '').trim().length > 0
+  );
+  if (currentScope) carryForwardScopedKeys(currentScope);
 
   // Apply theme on initial load
   if (typeof document !== 'undefined') {
@@ -181,7 +187,11 @@ function createConfigStore() {
     showAutonomousPrompts = config.showAutonomousPrompts ?? true;
     describeToolCalls = config.describeToolCalls ?? true;
     identity = config.identity ?? null;
-    currentScope = identity && apiUrl ? identityScope(apiUrl, identity.id) : null;
+    currentScope = resumedScope(
+      config.apiUrl ?? '',
+      config.identity?.id,
+      (config.apiKey ?? '').trim().length > 0
+    );
     applyTheme(theme);
   }
 
@@ -240,11 +250,14 @@ function createConfigStore() {
    * to keeps it; after the backend moved, or on a forced switch, the previous
    * scope must not stay live: park on the new backend and reset, so it
    * starts from empty caches instead of showing (and writing back) the old
-   * one's.
+   * one's. A signed-in session with no scope at all (a sign-in whose /me
+   * failed) parks too: the unscoped keys are the signed-out path only, and
+   * the next backend to resolve would adopt them.
    */
-  function settleUnresolvedIdentity(url: string, forceReload: boolean): void {
+  function settleUnresolvedIdentity(url: string, forceReload: boolean, signedIn: boolean): void {
     const backendMoved = currentScope !== null && currentScope.backend !== normalizeBackendUrl(url);
-    if (!forceReload && !backendMoved) return;
+    const unscopedSession = currentScope === null && signedIn && url.trim().length > 0;
+    if (!forceReload && !backendMoved && !unscopedSession) return;
     parkOnBackend(url, 'unresolved identity');
   }
 
@@ -275,7 +288,7 @@ function createConfigStore() {
     const key = apiKey;
     const connectionMoved = () => apiUrl !== url || apiKey !== key;
     if (!url || !key) {
-      settleUnresolvedIdentity(url, forceReload);
+      settleUnresolvedIdentity(url, forceReload, false);
       return null;
     }
     try {
@@ -294,7 +307,7 @@ function createConfigStore() {
           // will all fail with 401s.
           clearAuthSession('refreshIdentity auth failure');
         } else {
-          settleUnresolvedIdentity(url, forceReload);
+          settleUnresolvedIdentity(url, forceReload, true);
         }
         return null;
       }
@@ -304,7 +317,7 @@ function createConfigStore() {
       return data;
     } catch (e) {
       console.error('refreshIdentity failed:', e);
-      if (!connectionMoved()) settleUnresolvedIdentity(url, forceReload);
+      if (!connectionMoved()) settleUnresolvedIdentity(url, forceReload, true);
       return null;
     }
   }

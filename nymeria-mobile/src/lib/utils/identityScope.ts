@@ -64,6 +64,23 @@ export function provisionalScope(apiUrl: string): IdentityScope {
   return identityScope(apiUrl, '');
 }
 
+/**
+ * The scope a persisted config resumes on (boot, and mobile's Preferences
+ * restore): the resolved backend + account; for a signed-in config with no
+ * account (relaunched while a switch was parked on /me), that backend's
+ * provisional scope, so writes keep landing on its waiting key; null only
+ * when signed out or with no backend, the unscoped legacy keys.
+ */
+export function resumedScope(
+  apiUrl: string,
+  accountId: string | null | undefined,
+  signedIn: boolean
+): IdentityScope | null {
+  if (!apiUrl.trim()) return null;
+  if (accountId) return identityScope(apiUrl, accountId);
+  return signedIn ? provisionalScope(apiUrl) : null;
+}
+
 export function isProvisionalScope(scope: IdentityScope): boolean {
   return scope.accountId === '';
 }

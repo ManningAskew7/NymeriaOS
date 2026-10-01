@@ -157,7 +157,18 @@ on the new backend's provisional scope and still fires the hooks, so the new
 backend starts empty instead of showing the old one's state, and writes made
 meanwhile stay on that backend's own keys (never on the unscoped ones another
 backend would adopt); a network blip on an unchanged connection keeps the scope.
+A signed-in session with no resolved account (relaunched while parked, or a
+sign-in whose `/me` failed) boots on, or parks on, that backend's provisional
+scope too: the unscoped keys belong to the signed-out path only.
 A `/me` answer for a connection that changed while it was in flight is dropped.
+
+The effects that keep the header stores and the settings snapshot loaded wait
+for an identity, so a switch loads each once, after `/me`, instead of asking
+the new backend with no account first and again once it resolves. The default
+tool set is saved whole, so `defaultToolsStore.save()` and
+`toggleDefaultTool()` refuse until this backend's list has loaded, and the
+desktop Tools and MCP panels reseed their selection whenever a fresh list
+lands after a switch or a failed load.
 
 Carry-forward: on the first resolve under a scope, the same backend's
 provisional key, else the account-only key (`{base_key}-{user_id}`, the format

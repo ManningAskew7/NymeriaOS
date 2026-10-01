@@ -64,11 +64,14 @@
   // identity switch (defaultTools/triggers latch `loaded = true` even on a
   // failed fetch; serverSettings latches `forbidden` or `error` instead,
   // and `settled` covers all three, so a non-admin's 403 or a failing
-  // endpoint never re-drives this effect, #381). The load calls run
-  // untracked so a load's own `loading` flip can never re-trigger this
-  // effect.
+  // endpoint never re-drives this effect, #381). Nothing loads until /me
+  // names the account (tracked): a connection switch resets these stores
+  // before the repoint and again once /me answers, and loads run in between
+  // asked the new backend with no account, failed, and ran twice (#242
+  // delta review). The load calls run untracked so a load's own `loading`
+  // flip can never re-trigger this effect.
   $effect(() => {
-    if (!configStore.isConfigured) return;
+    if (!configStore.isConfigured || !configStore.identity) return;
     void threadsStore.currentThreadId;
     void defaultToolsStore.loaded;
     void triggersStore.loaded;

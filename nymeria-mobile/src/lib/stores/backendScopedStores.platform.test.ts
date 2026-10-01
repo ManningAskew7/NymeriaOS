@@ -172,6 +172,33 @@ describe('default-tool toggles save the whole list, so only a list loaded from t
     expect(api.setDefaultTools).toHaveBeenLastCalledWith(['mcp__gh__issues'], undefined);
   });
 
+  it('a whole-list save() refuses the same way: a selection built before a switch, or on a failed load, never reaches B (delta review LOW-2)', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(list(['a_1', 'a_2']));
+    await defaultToolsStore.load();
+    switchBackend();
+
+    // A settings panel's selection seeded from A's list, saved after the switch.
+    expect(await defaultToolsStore.save(['a_1'])).toBe(false);
+    // B's first load fails: the list is empty, `loaded` latches, and a
+    // selection seeded from it would PUT a subset over B's whole set.
+    (api.getDefaultTools as Mock).mockRejectedValueOnce(new Error('Not signed in'));
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.loaded).toBe(true);
+    expect(await defaultToolsStore.save(['mcp__gh__issues'])).toBe(false);
+    expect(api.setDefaultTools).not.toHaveBeenCalled();
+    expect(defaultToolsStore.saving).toBe(false);
+    expect(defaultToolsStore.defaultToolNames).toEqual([]);
+
+    // Once B's list has landed, a selection seeded from it saves.
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(list(['b_1', 'b_2']));
+    defaultToolsStore.resetLoaded();
+    await defaultToolsStore.load();
+    expect(await defaultToolsStore.save(['b_1'])).toBe(true);
+    expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['b_1'], undefined);
+    expect(defaultToolsStore.defaultToolNames).toEqual(['b_1']);
+  });
+
   it('a failed load latches `loaded` (no effect loop) but never unlocks the toggle', async () => {
     (api.getDefaultTools as Mock).mockRejectedValueOnce(new Error('503'));
     await defaultToolsStore.load();

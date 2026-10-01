@@ -102,8 +102,19 @@
     }
   });
 
-  // Initialize selection from loaded data
+  // Seed the selection from the saved list once it lands. Save sends the
+  // selection whole, so while the store cannot vouch for its list (a
+  // connection switch reset it, or a load failed) the selection mirrors the
+  // saved list and the seed re-arms: B's list reseeds it when it lands, and
+  // nothing seeded before a switch, or from an empty failed load, survives
+  // into it (#242 delta review). A reload that keeps the list trusted (after
+  // an MCP server change) leaves unsaved picks alone.
   $effect(() => {
+    if (!defaultToolsStore.listReady) {
+      selectedTools = new Set(defaultToolsStore.defaultToolNames);
+      initialized = false;
+      return;
+    }
     if (defaultToolsStore.loaded && !initialized) {
       selectedTools = new Set(defaultToolsStore.defaultToolNames);
       initialized = true;

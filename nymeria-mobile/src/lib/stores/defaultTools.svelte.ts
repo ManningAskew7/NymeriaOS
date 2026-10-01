@@ -83,8 +83,13 @@ function createDefaultToolsStore() {
     resetLoaded() { loaded = false; },
 
     // A save or reset that a connection switch overtook lands nothing here:
-    // its list belongs to the backend it was sent to.
+    // its list belongs to the backend it was sent to. `toolNames` replaces the
+    // whole default set, so like toggleDefaultTool it is refused (no request,
+    // false) unless this backend's list has loaded: a settings panel's
+    // selection seeded before a switch, or from a failed load's empty list,
+    // would PUT a subset over the new backend's set (#242 delta review).
     async save(toolNames: string[], userId?: string): Promise<boolean> {
+      if (!listReady) return false;
       const requestGeneration = identityGeneration;
       saving = true;
       error = null;

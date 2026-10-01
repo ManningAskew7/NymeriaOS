@@ -33,7 +33,16 @@
     defaultToolsStore.load();
   });
 
+  // Seeded from the saved list once it lands, and re-armed whenever the
+  // store cannot vouch for that list (a connection switch, a failed load):
+  // Save sends the selection whole (#242 delta review; ToolManagementPanel
+  // carries the same effect).
   $effect(() => {
+    if (!defaultToolsStore.listReady) {
+      selectedTools = new Set(defaultToolsStore.defaultToolNames);
+      initialized = false;
+      return;
+    }
     if (defaultToolsStore.loaded && !initialized) {
       selectedTools = new Set(defaultToolsStore.defaultToolNames);
       initialized = true;

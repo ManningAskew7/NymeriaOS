@@ -7,7 +7,11 @@
  * identity reload hook drops its values and its loaded flag, #242), so the
  * header reloads the new backend's values on its own. It used to track only
  * `isConfigured`, which a switch never flips, and the badges stayed blank
- * until Thread Settings happened to open. Every load latches on failure
+ * until Thread Settings happened to open. The identity is tracked too, and
+ * nothing loads without one: a switch resets the stores BEFORE /me names the
+ * account, and loads run in that window asked the new backend with no
+ * account, failed, then ran again once the hooks fired a second time. Now
+ * each runs once, after /me (#242 delta review). Every load latches on failure
  * (`loaded`, `settled`, `enabledGlobalLoaded` turn true with the error), so a
  * failing endpoint is asked once, never in a loop (#381). The loads run
  * untracked so their own `loading` flips cannot re-trigger the effect.
@@ -25,7 +29,7 @@ import { skillsStore } from './skills.svelte';
 
 export function keepHeaderStoresLoaded(): void {
   $effect(() => {
-    if (!configStore.isConfigured) return;
+    if (!configStore.isConfigured || !configStore.identity) return;
     void defaultToolsStore.loaded;
     void serverSettingsStore.settled;
     void triggersStore.loaded;

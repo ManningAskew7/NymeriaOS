@@ -65,6 +65,14 @@ function seedConfig(apiUrl: string, accountId: string | null, apiKey = 'nym_toke
   );
 }
 
+/** A signed-out (or first-run) blob: no token, setup not completed, no identity. */
+function seedSignedOut(apiUrl: string) {
+  storage.setItem(
+    'nymeria-config',
+    JSON.stringify({ apiUrl, apiKey: '', setupCompleted: false, theme: 'light', identity: null }),
+  );
+}
+
 async function loadStore() {
   vi.resetModules();
   const mod = await import('./config.svelte');
@@ -333,15 +341,76 @@ describe('backend-qualified storage scope', () => {
   });
 
   it('the first resolve after a sign-in carries unscoped pre-identity data into the scope', async () => {
-    seedConfig(A, null);
+    seedSignedOut(A);
     storage.setItem('nymeria-thread-sort-mode', 'alphabetical');
     const { configStore, scopedKey } = await loadStore();
     expect(scopedKey('nymeria-thread-sort-mode')).toBe('nymeria-thread-sort-mode');
 
+    // The sign-in surface's sequence (onboarding ConnectSection.adopt).
+    configStore.apiUrl = A;
+    configStore.apiKey = 'nym_token';
+    configStore.completeSetup();
     fetchMock.mockResolvedValueOnce(meOk('default'));
     await configStore.refreshIdentity();
 
     expect(storage.getItem(scopedKey('nymeria-thread-sort-mode'))).toBe('alphabetical');
     expect(storage.getItem('nymeria-thread-sort-mode')).toBeNull();
+  });
+});
+
+describe('a relaunch while parked stays on the backend`s provisional scope (delta review LOW-3)', () => {
+  it('boots on B`s provisional keys, keeps them through a /me blip, and carries them once B resolves', async () => {
+    // Persisted by a switch whose /me never answered: B, signed in, no account.
+    seedConfig(B, null);
+    storage.setItem(`nymeria-thread-folders-@${B}`, '[{"id":"b","name":"Made on B"}]');
+    storage.setItem('nymeria-thread-folders', '[{"id":"u","name":"Signed-out folder"}]');
+    const { configStore, hooks, currentIdentityScope, scopedKey } = await loadStore();
+
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: '' });
+    expect(scopedKey('nymeria-thread-folders')).toBe(`nymeria-thread-folders-@${B}`);
+
+    // The boot /me fails: still B's waiting room, nothing reset.
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await configStore.refreshIdentity();
+    expect(hooks).toEqual([]);
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: '' });
+
+    fetchMock.mockResolvedValueOnce(meOk('default'));
+    await configStore.refreshIdentity();
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: 'default' });
+    expect(hooks).toEqual(['fired']);
+    expect(storage.getItem(scopedKey('nymeria-thread-folders'))).toBe('[{"id":"b","name":"Made on B"}]');
+    expect(storage.getItem(`nymeria-thread-folders-@${B}`)).toBeNull();
+  });
+
+  it('a signed-out blob still boots on the unscoped legacy keys', async () => {
+    seedSignedOut(B);
+    const { currentIdentityScope, scopedKey } = await loadStore();
+    expect(currentIdentityScope()).toBeNull();
+    expect(scopedKey('nymeria-thread-folders')).toBe('nymeria-thread-folders');
+  });
+
+  it('a sign-in whose /me fails parks on that backend instead of writing unscoped', async () => {
+    seedSignedOut(A);
+    const { configStore, hooks, currentIdentityScope, scopedKey } = await loadStore();
+    configStore.apiUrl = A;
+    configStore.apiKey = 'nym_token';
+    configStore.completeSetup();
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 503 }));
+    await configStore.refreshIdentity();
+
+    expect(hooks).toEqual(['fired']);
+    expect(currentIdentityScope()).toEqual({ backend: A, accountId: '' });
+    expect(scopedKey('nymeria-thread-folders')).toBe(`nymeria-thread-folders-@${A}`);
+    expect(configStore.apiKey).toBe('nym_token');
+  });
+
+  it('with no token there is nothing to park: a blank refresh leaves a signed-out session unscoped', async () => {
+    seedSignedOut(A);
+    const { configStore, hooks, currentIdentityScope } = await loadStore();
+    await configStore.refreshIdentity();
+    expect(hooks).toEqual([]);
+    expect(currentIdentityScope()).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

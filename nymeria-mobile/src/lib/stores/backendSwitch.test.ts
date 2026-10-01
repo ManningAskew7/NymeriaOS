@@ -98,7 +98,7 @@ vi.mock('./notifications.svelte', () => ({
 vi.mock('$lib/utils/lifecycle', () => ({ backupToPreferences: vi.fn().mockResolvedValue(undefined) }));
 
 import { saveConnection, saveOutcomeMessage, testConnection, type SaveOutcome } from './backendSwitch.svelte';
-import { configStore, currentIdentityScope } from './config.svelte';
+import { configStore, currentIdentityScope, scopedKey } from './config.svelte';
 import { serverSettingsStore } from './serverSettings.svelte';
 import { threadsStore } from './threads.svelte';
 import { chatStore } from './chat.svelte';
@@ -294,6 +294,10 @@ describe('the Save message reports how the switch landed (review S-LOW-5)', () =
     expect(saveOutcomeMessage(outcome).message).not.toMatch(/connected/i);
     expect(configStore.apiUrl).toBe(B);
     expect(configStore.identity).toBeNull();
+    // Parked on B's provisional keys (backend known, account not yet), never
+    // A's scope and never the unscoped keys the next backend would adopt.
+    expect(currentIdentityScope()).toEqual({ backend: B, accountId: '' });
+    expect(scopedKey('nymeria-thread-folders')).toBe(`nymeria-thread-folders-@${B}`);
     expect(serverSettingsStore.model).toBeNull();
   });
 
