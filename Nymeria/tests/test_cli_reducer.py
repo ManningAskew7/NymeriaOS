@@ -726,6 +726,39 @@ def test_provider_fallback_refusal_copy_is_distinct() -> None:
     assert "until reverted" in notice.content
 
 
+def test_fallback_hold_reclaimed_reduces_to_one_status_line() -> None:
+    """A primary reclaim (#439) renders the shared bot/CLI copy as a
+    provider_status line, never an unknown-event diagnostic."""
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=0.1)
+    for outcome in ("ended", "offered"):
+        state = reduce_stream_event(
+            state,
+            {
+                "type": "fallback_hold_reclaimed",
+                "outcome": outcome,
+                "from_model": "claude-haiku-4-5-20251001",
+                "to_model": "claude-fable-5",
+                "permanent": True,
+            },
+            now=1.0,
+        )
+
+    notices = [
+        message.content
+        for message in state.messages
+        if isinstance(message, SystemMessage) and message.kind == "provider_status"
+    ]
+    assert notices == [
+        "claude-fable-5 is answering again: the fallback hold ended and this "
+        "thread is back on it (was on claude-haiku-4-5-20251001).",
+        "claude-fable-5 is answering again. This thread stays on "
+        "claude-haiku-4-5-20251001 until reverted; switch back with "
+        "/fallback revert.",
+    ]
+    assert not state.diagnostics
+
+
 def test_provider_fallback_rewound_notice_flags_superseded_output() -> None:
     # The mid-stream recovery shape rolls the turn back and re-drives it; the
     # CLI transcript keeps the already-rendered partial text, so the notice

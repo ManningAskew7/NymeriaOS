@@ -63,6 +63,21 @@ def _config_response(
 ) -> dict[str, Any]:
     result = config.model_dump(mode="json")
     result["has_customizations"] = config.has_customizations()
+    if config.active_llm_fallback is not None:
+        # Derived, never persisted: what the primary reclaim (#439) knows
+        # about this hold. Computed here, in the API process that owns the
+        # in-memory probe state, so both command client shapes (and the
+        # GUIs) read it through this one payload.
+        from ...core.fallback_reclaim import reclaim_status
+
+        settings = getattr(agent, "settings", None)
+        if settings is None:
+            from ...config import get_settings
+
+            settings = get_settings()
+        result["fallback_reclaim"] = reclaim_status(
+            config.thread_id, config.active_llm_fallback, settings
+        )
     # callable_team_name is deprecated on the config (backlog #100): clients
     # keep receiving it, DERIVED from the team entity store, falling back to
     # a surviving legacy config value and then the raw id.

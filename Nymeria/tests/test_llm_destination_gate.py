@@ -27,6 +27,7 @@ after widening it mailed a live third-party key to Anthropic.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1079,3 +1080,81 @@ def test_a_thread_that_names_no_destination_is_untouched(thread_base_url):
 
     tc = agent.thread_config_manager.get_config.return_value
     assert getattr(tc, "rejected_llm_base_url", None) is None
+
+
+
+# --- the primary-reclaim probe route (#439) ----------------------------------
+
+
+def _held(expired: bool = False):
+    from datetime import timedelta
+
+    from nymeria.core.thread_config import ActiveLLMFallback
+    from nymeria.core.time_utils import utc_now
+
+    now = utc_now()
+    return ActiveLLMFallback(
+        provider="anthropic",
+        model="claude-haiku-4-5-20251001",
+        source_provider="openai",
+        source_model="gpt-5.5",
+        hold_seconds=3600,
+        activated_at=now - timedelta(minutes=30),
+        expires_at=now + timedelta(minutes=-5 if expired else 30),
+        reason="provider_server_error",
+    )
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_the_reclaim_route_resolves_the_primary_gated_and_writes_nothing(expired):
+    """The probe resolves the CONFIGURED primary with the hold ignored, off
+    the turn lock: the destination gate still decides (a caller-named address
+    never gets the operator key, probe or not), and the read is pure: no
+    eviction, no rejected-destination latch, no callbacks."""
+    from nymeria.core.agent_llm_config import get_llm_config_for_thread
+
+    agent, patcher = _make_agent(thread_base_url=_ATTACKER)
+    manager = cast(MagicMock, agent.thread_config_manager)
+    tc = manager.get_config.return_value
+    tc.active_llm_fallback = _held(expired=expired)
+    try:
+        config = get_llm_config_for_thread(
+            agent, "thread-1", ignore_active_fallback=True
+        )
+    finally:
+        patcher.stop()
+
+    assert (config.provider, config.model) == ("openai", "gpt-5.5")
+    assert config.base_url == _CLIPROXY
+    assert _ATTACKER not in str(config.base_url or "")
+    assert config.fallback_activation_callback is None
+    assert config.fallback_decision_callback is None
+    manager.save_config.assert_not_called()
+    manager.delete_config.assert_not_called()
+    assert tc.rejected_llm_base_url is None
+    assert tc.pending_fallback_note is None
+    assert tc.active_llm_fallback is not None
+
+
+def test_the_turn_route_still_resolves_the_hold_and_latches_the_refusal():
+    """The differential legs: the default path runs the hold, and with no
+    hold the same refused destination writes the once-only notice, so the
+    pure read above is a real difference, not a fixture that never wrote."""
+    from nymeria.core.agent_llm_config import get_llm_config_for_thread
+
+    agent, patcher = _make_agent(thread_base_url=_ATTACKER)
+    manager = cast(MagicMock, agent.thread_config_manager)
+    tc = manager.get_config.return_value
+    tc.active_llm_fallback = _held()
+    try:
+        held = get_llm_config_for_thread(agent, "thread-1")
+        tc.active_llm_fallback = None
+        primary = get_llm_config_for_thread(agent, "thread-1")
+    finally:
+        patcher.stop()
+
+    assert held.model == "claude-haiku-4-5-20251001"
+    assert held.fallback_activation_callback is not None
+    assert primary.base_url == _CLIPROXY
+    manager.save_config.assert_called()
+    assert tc.rejected_llm_base_url is not None

@@ -1682,6 +1682,21 @@ class Settings(BaseSettings):
             "prompt times out; a consented switch may choose its own hold."
         ),
     )
+    llm_fallback_reclaim_interval_seconds: int = Field(
+        default=600,
+        ge=0,
+        le=86400,
+        description=(
+            "Primary reclaim for a fallback hold (#439). A held thread whose "
+            "hold is at least this old sends one tiny probe to its configured "
+            "primary at the start of a turn (in the background; the verdict "
+            "applies at the next turn start). When the primary answers, an "
+            "'auto' switch mode ends a timed hold; 'ask' mode and permanent "
+            "holds get one offer to revert instead. Also the base of the probe "
+            "backoff (doubling, capped at max(interval, 1 hour)). 0 disables "
+            "probing. Refusal and invalid-request holds are never probed."
+        ),
+    )
     llm_fallback_switch_mode: Literal["auto", "ask"] = Field(
         default="auto",
         description=(

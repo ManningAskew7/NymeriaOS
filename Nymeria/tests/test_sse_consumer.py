@@ -796,3 +796,80 @@ def test_parse_sse_data_line_preserves_falsy_non_null_payloads():
     assert parse_sse_data_line("data: false") is False
     assert parse_sse_data_line("data: 0") == 0
     assert parse_sse_data_line('data: ""') == ""
+
+
+# ---------------------------------------------------------------------------
+# fallback_hold_reclaimed (#439 primary reclaim)
+# ---------------------------------------------------------------------------
+
+
+def _reclaim_event(**overrides: Any) -> Dict[str, Any]:
+    event: Dict[str, Any] = {
+        "type": "fallback_hold_reclaimed",
+        "thread_id": "t1",
+        "outcome": "ended",
+        "reason": "recovered",
+        "from_provider": "anthropic",
+        "from_model": "claude-haiku-4-5-20251001",
+        "to_provider": "anthropic",
+        "to_model": "claude-fable-5",
+        "expires_at": "2026-10-01T14:30:00+00:00",
+        "permanent": False,
+    }
+    event.update(overrides)
+    return event
+
+
+def test_reclaim_message_copy_per_outcome():
+    from nymeria.triggers.sse_consumer import format_fallback_hold_reclaimed_message
+
+    assert format_fallback_hold_reclaimed_message(_reclaim_event()) == (
+        "claude-fable-5 is answering again: the fallback hold ended and this "
+        "thread is back on it (was on claude-haiku-4-5-20251001)."
+    )
+    assert format_fallback_hold_reclaimed_message(
+        _reclaim_event(outcome="offered")
+    ) == (
+        "claude-fable-5 is answering again. This thread stays on "
+        "claude-haiku-4-5-20251001 until 14:30 UTC; switch back with "
+        "/fallback revert."
+    )
+    assert format_fallback_hold_reclaimed_message(
+        _reclaim_event(outcome="offered", permanent=True, expires_at=None)
+    ) == (
+        "claude-fable-5 is answering again. This thread stays on "
+        "claude-haiku-4-5-20251001 until reverted; switch back with "
+        "/fallback revert."
+    )
+    # A missing or garbled expiry degrades to a phrase, never a crash.
+    assert "until its hold ends" in format_fallback_hold_reclaimed_message(
+        _reclaim_event(outcome="offered", expires_at="not a time")
+    )
+
+
+def test_dispatch_reclaim_defaults_to_the_plain_notice():
+    from nymeria.triggers.sse_consumer import format_fallback_hold_reclaimed_message
+
+    h = RecordingHandler()
+    event = _reclaim_event(outcome="offered")
+    asyncio.run(dispatch_event(event, h, 3))
+    assert h.calls == [
+        ("flush_text", {"final": True}),
+        ("on_response_chunk", {"content": format_fallback_hold_reclaimed_message(event)}),
+        ("flush_text", {"final": True}),
+    ]
+
+
+def test_dispatch_reclaim_prefers_the_handler_callback():
+    h = RecordingHandler()
+    seen: List[Dict[str, Any]] = []
+
+    async def on_fallback_hold_reclaimed(event: Dict[str, Any]) -> None:
+        seen.append(event)
+
+    h.on_fallback_hold_reclaimed = on_fallback_hold_reclaimed  # type: ignore[attr-defined]
+    event = _reclaim_event()
+    count = asyncio.run(dispatch_event(event, h, 3))
+    assert count == 3
+    assert seen == [event]
+    assert h.calls == [("flush_text", {"final": True})]

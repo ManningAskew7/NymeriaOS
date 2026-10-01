@@ -660,6 +660,21 @@ def _llm_retry_reason(exc: BaseException) -> str:
     return "transient_provider_error"
 
 
+def llm_failure_reason(exc: BaseException) -> str:
+    """Public alias of the provider-failure classifier (the reason strings a
+    hold persists). Host code imports it function-locally, the same
+    host-imports-vendor direction as the note helpers: the primary-reclaim
+    probe (``core/fallback_reclaim.py``, #439) classifies its own failures
+    with the exact taxonomy the retry ladder used to create the hold."""
+    return _llm_retry_reason(exc)
+
+
+def llm_error_status_code(exc: BaseException) -> Optional[int]:
+    """Public alias of the HTTP status extractor over an exception chain
+    (SDK status attributes, ``response.status_code``, google ``code``)."""
+    return _extract_status_code(exc)
+
+
 def _llm_retry_payload(
     llm_config: Optional[LLMConfig],
     candidate_index: int,
@@ -956,6 +971,15 @@ def fallback_note_text(payload: dict[str, Any], *, kind: str, phase: str = "swap
                 "[System info]: The fallback hold on this thread ended because "
                 f"the thread's model was changed; the thread is now on {to_model}. "
                 f"{from_model} handled the conversation since the switch."
+            )
+        if payload.get("reason") == "recovered":
+            # The primary answered a reclaim probe (#439): the hold ended
+            # early, so the model learns WHY it is back, not just that it is.
+            return (
+                "[System info]: The fallback hold on this thread ended because "
+                "the primary model is answering again; the thread is back on "
+                f"its primary model ({to_model}). {from_model} handled the "
+                "conversation since the switch."
             )
         ended = (
             "was manually reverted"

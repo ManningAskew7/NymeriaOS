@@ -43,6 +43,7 @@ from .sse_consumer import (
     fallback_hold_phrase,
     format_fallback_prompt_message,
     format_hook_approval_message,
+    format_fallback_hold_reclaimed_message,
     format_provider_fallback_message,
     parse_attach_paths,
 )
@@ -762,6 +763,12 @@ class NymeriaDiscordBot(_BotBase):
         async def on_provider_fallback(self, event: Dict[str, Any]) -> None:
             # Applied model swap mid-turn: notice + Revert button.
             await self._bot._send_fallback_swap_notice(
+                self._channel, self._thread_id, event
+            )
+
+        async def on_fallback_hold_reclaimed(self, event: Dict[str, Any]) -> None:
+            # Primary reclaim (#439): an offer carries Revert, an end does not.
+            await self._bot._send_fallback_reclaim_notice(
                 self._channel, self._thread_id, event
             )
 
@@ -1558,6 +1565,13 @@ class NymeriaDiscordBot(_BotBase):
                 self._channel, thread_id, event
             )
 
+        async def on_fallback_hold_reclaimed(self, event: Dict[str, Any]) -> None:
+            # Primary reclaim on an autonomous/attached turn (#439).
+            thread_id = str(event.get("thread_id") or self._thread_id or "")
+            await self._bot._send_fallback_reclaim_notice(
+                self._channel, thread_id, event
+            )
+
         async def on_done(self, tool_call_count: int) -> None:
             pass  # autonomous uses task_completed, not done
 
@@ -2070,14 +2084,36 @@ class NymeriaDiscordBot(_BotBase):
         except Exception as e:  # noqa: BLE001
             logger.debug("Failed to edit fallback prompt message: %s", e)
 
-    async def _send_fallback_swap_notice(
+    async def _send_fallback_reclaim_notice(
         self, channel: Any, thread_id: str, event: Dict[str, Any]
+    ) -> None:
+        """Send a primary-reclaim notice (``fallback_hold_reclaimed``, #439).
+
+        An OFFER (the hold stays) carries the same Revert view as a swap
+        notice; an ENDED hold needs none."""
+        text = format_fallback_hold_reclaimed_message(event)
+        if str(event.get("outcome") or "") != "offered":
+            try:
+                await channel.send(text[:2000])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to send fallback reclaim notice: %s", e)
+            return
+        await self._send_fallback_swap_notice(channel, thread_id, event, text=text)
+
+    async def _send_fallback_swap_notice(
+        self,
+        channel: Any,
+        thread_id: str,
+        event: Dict[str, Any],
+        *,
+        text: Optional[str] = None,
     ) -> None:
         """Send an applied model-swap notice with a Revert button.
 
         Shared by the interactive and autonomous handlers'
         ``on_provider_fallback`` callbacks; the text body keeps ``/fallback
-        revert`` as the buttonless management path.
+        revert`` as the buttonless management path. The reclaim offer
+        passes its own ``text``.
         """
         # On a dispatched turn (@mention routing, /quick) the wire chunks are
         # stamped with the ORIGINATING thread id while the hold is activated
@@ -2090,7 +2126,7 @@ class NymeriaDiscordBot(_BotBase):
             else ""
         ) or thread_id
         view = self._make_fallback_revert_view(hold_thread) if hold_thread else None
-        text = format_provider_fallback_message(event)
+        text = text or format_provider_fallback_message(event)
         try:
             message = await channel.send(text[:2000], view=view)
             if view is not None:

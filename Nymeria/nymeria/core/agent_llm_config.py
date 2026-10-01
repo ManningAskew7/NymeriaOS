@@ -316,8 +316,9 @@ def end_active_fallback_in_place(
     ``tc``. Never saves: the caller's own save persists both mutations (a
     route that saved here would be clobbered by its later save).
 
-    ``reason`` is "expired", "reverted" or "changed". The note names the
-    model the thread is configured to run AFTER the caller's write (F5).
+    ``reason`` is "expired", "reverted", "changed" or "recovered" (the
+    primary answered a reclaim probe, #439). The note names the model the
+    thread is configured to run AFTER the caller's write (F5).
     Returns the cleared hold, or None when there was none: an earlier,
     still-unconsumed end note is then left untouched.
     """
@@ -538,22 +539,36 @@ def clear_active_llm_fallback(
     thread_id: str,
     *,
     reason: str,
+    expected_activated_at: Any = None,
 ):
     """Clear a thread's active fallback hold and latch the model-facing end note.
 
     The load-and-save wrapper over :func:`end_active_fallback_in_place` for a
-    clear that is not part of a config write (the expiry sweep). Stamps
+    clear that is not part of a config write (the expiry sweep, the turn-start
+    eviction and the primary reclaim, #439). Stamps
     ``ThreadConfig.pending_fallback_note`` so the next turn (any source) tells
     the model which model it is on now (persisted-context principle; the
     latch shape is the ``fallback_note`` message stamp). ``reason`` is
-    "expired", "reverted" or "changed". Returns the cleared
-    ``ActiveLLMFallback`` record, or None when there was nothing to clear or
-    the save failed.
+    "expired", "reverted", "changed" or "recovered".
+
+    ``expected_activated_at`` pins the clear to ONE hold: when given and the
+    hold on disk was activated at a different time (a revert and a new hold
+    landed between the caller's read and this one), nothing is cleared.
+    Returns the cleared ``ActiveLLMFallback`` record, or None when there was
+    nothing to clear or the save failed.
     """
     if not thread_id:
         return None
     tc = host.thread_config_manager.get_config(thread_id)
     if tc is None:
+        return None
+    current = tc.active_llm_fallback
+    if (
+        expected_activated_at is not None
+        and current is not None
+        and ensure_aware_utc(current.activated_at)
+        != ensure_aware_utc(expected_activated_at)
+    ):
         return None
     active = end_active_fallback_in_place(
         tc, reason=reason, settings=getattr(host, "settings", None)
@@ -716,6 +731,8 @@ def get_llm_config_for_thread(
     host: LLMConfigHost,
     thread_id: str = "",
     acting_user_id: str | None = None,
+    *,
+    ignore_active_fallback: bool = False,
 ) -> LLMConfig:
     """Build LLMConfig with per-thread overrides applied on top of global settings.
 
@@ -726,8 +743,16 @@ def get_llm_config_for_thread(
     lookup narrows to system-owned credentials, silently diverging from the
     interactive path whenever the LLM credential is a user-owned vault
     record. An existing owner row always wins over the acting user.
+
+    ``ignore_active_fallback`` resolves the CONFIGURED primary as if no hold
+    existed: the route a reclaim probe must test (#439). That path is a pure
+    read, because it runs off the turn lock, in the background: it evicts
+    nothing, latches or clears no rejected-destination note, and builds no
+    activation or consent callback. The E10-01 destination gate still
+    decides the destination, exactly as for a turn: a probe never carries
+    the operator's key to an address the deployment is not configured for.
     """
-    if thread_id:
+    if thread_id and not ignore_active_fallback:
         clear_expired_llm_fallback_if_idle(host, thread_id)
 
     tc_obj = None
@@ -737,7 +762,8 @@ def get_llm_config_for_thread(
         tc_obj = host.thread_config_manager.get_config(thread_id)
         if tc_obj:
             tc = tc_obj.llm_config
-            active_fallback = tc_obj.active_llm_fallback
+            if not ignore_active_fallback:
+                active_fallback = tc_obj.active_llm_fallback
 
     def resolve(attr: str, global_value: Any) -> Any:
         thread_value = getattr(tc, attr, None) if tc else None
@@ -1004,7 +1030,11 @@ def get_llm_config_for_thread(
             include_default=False,
         )
 
-    if rejected_destination is not None:
+    if ignore_active_fallback:
+        # A pure read (see the docstring): the refusal above already chose
+        # the configured destination; the note bookkeeping is the turn's job.
+        pass
+    elif rejected_destination is not None:
         _latch_rejected_destination_note(host, thread_id, tc_obj, rejected_destination)
     else:
         # Unconditional, not just when a destination was accepted: removing the
@@ -1186,7 +1216,7 @@ def get_llm_config_for_thread(
         host.settings, "llm_fallback_prompt_timeout_seconds", 180
     )
     decision_callback = None
-    if thread_id:
+    if thread_id and not ignore_active_fallback:
         from .fallback_approvals import make_fallback_decision_callback
 
         decision_callback = make_fallback_decision_callback(
@@ -1227,7 +1257,7 @@ def get_llm_config_for_thread(
         fallbacks=fallbacks,
         fallback_activation_callback=(
             (lambda payload: activate_temporary_llm_fallback(host, thread_id, payload))
-            if thread_id
+            if thread_id and not ignore_active_fallback
             else None
         ),
         fallback_decision_callback=decision_callback,

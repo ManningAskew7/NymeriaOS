@@ -114,8 +114,13 @@ class ActiveLLMFallback(BaseModel):
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     reason: Optional[str] = None
     http_status: Optional[int] = None
+    # Primary reclaim (#439): when the configured primary answered a probe
+    # while this hold stayed (ask mode, or a permanent hold), the user was
+    # offered the revert once, at this time. A stamped hold is never probed
+    # or offered again; a new hold starts unstamped.
+    reclaim_offered_at: Optional[datetime] = None
 
-    @field_validator("activated_at", "expires_at")
+    @field_validator("activated_at", "expires_at", "reclaim_offered_at")
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
         # expires_at is None for a permanent hold; leave it untouched.

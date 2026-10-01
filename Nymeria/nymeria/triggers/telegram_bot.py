@@ -65,6 +65,7 @@ from .sse_consumer import (
     format_auth_prompt_message,
     format_fallback_prompt_message,
     format_hook_approval_message,
+    format_fallback_hold_reclaimed_message,
     format_provider_fallback_message,
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -1769,6 +1770,12 @@ class NymeriaTelegramBot:
         async def on_provider_fallback(self, event: Dict[str, Any]) -> None:
             # Applied model swap mid-turn: notice + inline Revert button.
             await self._bot._send_fallback_swap_notice(
+                self._chat_id, self._thread_id, event
+            )
+
+        async def on_fallback_hold_reclaimed(self, event: Dict[str, Any]) -> None:
+            # Primary reclaim (#439): an offer carries Revert, an end does not.
+            await self._bot._send_fallback_reclaim_notice(
                 self._chat_id, self._thread_id, event
             )
 
@@ -3595,6 +3602,13 @@ class NymeriaTelegramBot:
                 self._chat_id, thread_id, event
             )
 
+        async def on_fallback_hold_reclaimed(self, event: Dict[str, Any]) -> None:
+            # Primary reclaim on an autonomous/attached turn (#439).
+            thread_id = str(event.get("thread_id") or self._thread_id or "")
+            await self._bot._send_fallback_reclaim_notice(
+                self._chat_id, thread_id, event
+            )
+
         async def on_error(self, content: str) -> None:
             self._error_seen = True
             try:
@@ -3950,15 +3964,38 @@ class NymeriaTelegramBot:
             [InlineKeyboardButton("↩️ Revert", callback_data=f"fbrv:{token}")]
         ])
 
-    async def _send_fallback_swap_notice(
+    async def _send_fallback_reclaim_notice(
         self, chat_id: int, thread_id: str, event: Dict[str, Any]
+    ) -> None:
+        """Send a primary-reclaim notice (``fallback_hold_reclaimed``, #439).
+
+        An OFFER (the hold stays) carries the same inline Revert as a swap
+        notice; an ENDED hold needs none (the thread is already back on its
+        primary)."""
+        text = format_fallback_hold_reclaimed_message(event)
+        if str(event.get("outcome") or "") != "offered":
+            try:
+                await self._send_html(chat_id, escape_html(text))
+            except Exception as e:
+                logger.warning(f"Failed to send fallback reclaim notice: {e}")
+            return
+        await self._send_fallback_swap_notice(chat_id, thread_id, event, text=text)
+
+    async def _send_fallback_swap_notice(
+        self,
+        chat_id: int,
+        thread_id: str,
+        event: Dict[str, Any],
+        *,
+        text: Optional[str] = None,
     ) -> None:
         """Send an applied model-swap notice with an inline Revert button.
 
         Shared by the interactive and autonomous SSE handlers'
         ``on_provider_fallback`` callbacks (locked decision: bots with
         buttons get notice + Revert; the text body keeps ``/fallback
-        revert`` as the buttonless management path).
+        revert`` as the buttonless management path), and by the reclaim
+        offer, which passes its own ``text``.
         """
         self._prune_fallback_tokens()
         # On a dispatched turn (@mention routing, /quick) the wire chunks are
@@ -3979,7 +4016,7 @@ class NymeriaTelegramBot:
         try:
             await self._send_html(
                 chat_id,
-                escape_html(format_provider_fallback_message(event)),
+                escape_html(text or format_provider_fallback_message(event)),
                 reply_markup=reply_markup,
             )
         except Exception as e:

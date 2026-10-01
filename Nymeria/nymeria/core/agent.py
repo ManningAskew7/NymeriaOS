@@ -1721,6 +1721,23 @@ class NymeriaAgent:
         from .agent_llm_config import clear_expired_llm_fallback_if_idle
         return clear_expired_llm_fallback_if_idle(self, thread_id)
 
+    def _settle_fallback_hold_at_turn_start(
+        self, thread_id: str, user_id: str, *, streaming: bool
+    ) -> Optional[Dict[str, Any]]:
+        """The turn-start seam for a fallback hold (#439): evict an expired
+        hold, apply a recorded primary-reclaim verdict (returns the
+        ``fallback_hold_reclaimed`` event), or start one background probe.
+
+        Called by the LOCK HOLDER, once per turn start, BEFORE the graph
+        lookup, so a cleared hold rebuilds this turn against the primary and
+        ``prepare_astream_input`` folds the end note into this turn's prompt.
+        Never from ``_get_graph_for_user_shared``: mid-turn rebuilds pass
+        there, and a model must never change mid-turn. ``streaming=False``
+        (``chat()``) defers an offer to the next streaming turn. Never raises.
+        """
+        from .fallback_reclaim import settle_hold_at_turn_start
+        return settle_hold_at_turn_start(self, thread_id, user_id, offers=streaming)
+
     def _get_team_scoped_callable_threads(
         self,
         *,
@@ -2408,6 +2425,14 @@ class NymeriaAgent:
                 is_self_invoke=_is_self_invoke,
                 resumed=_resume_halted_turn,
             )
+
+            # Fallback hold at the turn start (#439), BEFORE the graph lookup
+            # (see the astream twin). Not on a resume: it adds no prompt, so
+            # an end note would have nowhere to ride.
+            if not _resume_halted_turn:
+                self._settle_fallback_hold_at_turn_start(
+                    thread_id, user_id, streaming=False
+                )
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             graph = self._get_graph_for_user(
@@ -3287,6 +3312,19 @@ class NymeriaAgent:
                     logger.debug(
                         "[ASTREAM] _on_turn_started callback failed", exc_info=True
                     )
+
+            # Fallback hold at the turn start (#439): AFTER _on_turn_started
+            # (the turn stream buffer tees what is yielded here) and BEFORE
+            # the graph lookup, so an ended hold builds this turn against
+            # the primary and its end note rides this turn's prompt. Not on
+            # a resume: it adds no prompt, so a note would have nowhere to
+            # ride.
+            if not _resume_halted_turn:
+                reclaim_event = self._settle_fallback_hold_at_turn_start(
+                    thread_id, user_id, streaming=True
+                )
+                if reclaim_event:
+                    yield reclaim_event
 
             _stream_start = time.monotonic()
             # Guards the error path against re-recording a turn the success

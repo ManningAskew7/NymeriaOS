@@ -350,6 +350,49 @@ def format_provider_fallback_message(event: Dict[str, Any]) -> str:
     )
 
 
+def format_fallback_hold_reclaimed_message(event: Dict[str, Any]) -> str:
+    """Render a primary-reclaim notice (``fallback_hold_reclaimed``, #439)
+    for text chat surfaces: the bots and the CLI reducer share it.
+
+    ``ended``: the primary answered a probe and the hold ended at this turn
+    start, so this turn already runs the primary. ``offered``: the primary
+    answered but the hold stays (ask mode, or a permanent hold the user
+    chose); the user is offered the revert once, with ``/fallback revert``
+    as the path on surfaces without a Revert button.
+    """
+    primary = str(event.get("to_model") or "The primary model")
+    held = str(event.get("from_model") or "the fallback model")
+    if str(event.get("outcome") or "") == "ended":
+        return (
+            f"{primary} is answering again: the fallback hold ended and this "
+            f"thread is back on it (was on {held})."
+        )
+    if event.get("permanent"):
+        stays = "until reverted"
+    else:
+        expiry = _format_hold_expiry(event.get("expires_at"))
+        stays = f"until {expiry}" if expiry else "until its hold ends"
+    return (
+        f"{primary} is answering again. This thread stays on {held} {stays}; "
+        "switch back with /fallback revert."
+    )
+
+
+def _format_hold_expiry(value: Any) -> str:
+    """``HH:MM UTC`` for an ISO hold expiry, or "" when absent/unparseable."""
+    if not value:
+        return ""
+    try:
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).strftime("%H:%M UTC")
+    except (TypeError, ValueError):
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Handler protocol
 # ---------------------------------------------------------------------------
@@ -512,6 +555,22 @@ async def dispatch_event(
                 await result
         else:
             await handler.on_response_chunk(format_provider_fallback_message(event))
+            await handler.flush_text(final=True)
+
+    elif etype == "fallback_hold_reclaimed":
+        # The primary answered a reclaim probe (#439). Bots with inline
+        # buttons attach Revert to an OFFER (the hold stays); an ended hold
+        # needs none. The default is the plain notice.
+        await handler.flush_text(final=True)
+        callback = getattr(handler, "on_fallback_hold_reclaimed", None)
+        if callable(callback):
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+        else:
+            await handler.on_response_chunk(
+                format_fallback_hold_reclaimed_message(event)
+            )
             await handler.flush_text(final=True)
 
     elif etype == "reply_suppressed":

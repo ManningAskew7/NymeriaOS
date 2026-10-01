@@ -620,6 +620,11 @@ turn in `ask` mode parks exactly like a GUI turn instead of auto-swapping.
   respects the autonomous delivery-mode gate. The consent prompt pair
   bypasses `full`/`notify_only`/`off` (muting a thread must not silently
   cost the user their say).
+- When the primary model answers again (`fallback_hold_reclaimed`, see
+  `LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS`), an ended hold posts a plain
+  notice; an `ask`-mode or permanent hold that stays posts the one-time
+  revert offer with the same Revert button. Both respect the delivery-mode
+  gate like the swap notice.
 - `/fallback` (status, revert, approvals, approve, deny) is forwarded to the
   backend command service like `/hook`.
 

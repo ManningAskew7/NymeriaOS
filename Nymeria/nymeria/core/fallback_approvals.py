@@ -690,6 +690,24 @@ def make_fallback_decision_callback(
     return decide
 
 
+def reclaim_action(*, switch_mode: Optional[str], permanent: bool) -> str:
+    """What a healthy primary does to a live hold (#439): "end" or "offer".
+
+    The return trip belongs to the same consent layer as the swap, keyed on
+    the thread's EFFECTIVE ``fallback_switch_mode`` (the knob that governed
+    the swap). "auto" (the default) ends a TIMED hold: nobody chose it, so
+    the degradation should last no longer than the outage. "ask" reads as
+    "ask me about model switches", the trip back included, and a permanent
+    hold is always a human's explicit choice: both keep the hold and get ONE
+    offer to revert. A reclaim never parks a turn (parking a turn START for
+    good news is worse than the hold it would end; the existing Revert
+    affordances already answer "switch back?").
+    """
+    if permanent:
+        return "offer"
+    return "end" if str(switch_mode or "auto").lower() == "auto" else "offer"
+
+
 __all__ = [
     "DEFAULT_PROMPT_WINDOW_SECONDS",
     "HOLD_PRESET_SECONDS",
@@ -711,5 +729,6 @@ __all__ = [
     "make_fallback_decision_callback",
     "public_entry",
     "publish_resolved_event",
+    "reclaim_action",
     "sweep_stale_records",
 ]

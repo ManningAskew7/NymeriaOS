@@ -7,6 +7,7 @@ import os
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -68,6 +69,7 @@ class FakeSettings:
     llm_stream_retry_initial_delay: float = 1.0
     llm_stream_retry_max_delay: float = 8.0
     llm_fallback_hold_seconds: int = 7200
+    llm_fallback_reclaim_interval_seconds: int = 600
     llm_fallback_switch_mode: str = "auto"
     llm_fallback_prompt_timeout_seconds: int = 180
     llm_refusal_swap_mode: str = "ask"
@@ -295,6 +297,10 @@ class FakeSettingsProvider:
             compact_threshold_tokens=env_int(
                 "COMPACT_THRESHOLD_TOKENS",
                 self.settings.compact_threshold_tokens,
+            ),
+            llm_fallback_reclaim_interval_seconds=env_int(
+                "LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS",
+                self.settings.llm_fallback_reclaim_interval_seconds,
             ),
             llm_context_length=env_optional_int(
                 "LLM_CONTEXT_LENGTH",
@@ -1805,6 +1811,77 @@ def test_patch_settings_hot_reloads_compact_token_threshold(
     assert agent.settings.compact_threshold_tokens == 250000
     assert agent.settings.compact_threshold == 0.5
     assert agent.graph_rebuilds == []
+
+
+def test_get_settings_reports_the_reclaim_interval(tmp_path: Path, monkeypatch):
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        llm_fallback_reclaim_interval_seconds=900,
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path, settings=settings)
+
+    body = client.get("/settings", headers=_auth(token)).json()
+
+    assert body["llm_fallback_reclaim_interval_seconds"] == 900
+
+
+@pytest.mark.parametrize("value", [0, 1800, 86400])
+def test_patch_settings_reclaim_interval_round_trips_without_a_rebuild(
+    tmp_path: Path, monkeypatch, value: int
+):
+    # Read per turn start (#439), never baked into a graph: no rebuild.
+    (tmp_path / ".env").write_text("LLM_MODEL=m\n", encoding="utf-8")
+    client, agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_fallback_reclaim_interval_seconds": value},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["llm_fallback_reclaim_interval_seconds"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert f"LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS={value}" in env_text
+    assert agent.settings.llm_fallback_reclaim_interval_seconds == value
+    assert client.get("/settings", headers=_auth(token)).json()[
+        "llm_fallback_reclaim_interval_seconds"
+    ] == value
+    assert agent.graph_rebuilds == []
+
+
+@pytest.mark.parametrize("value", [-1, 86401, "soon"])
+def test_patch_settings_rejects_an_out_of_range_reclaim_interval(
+    tmp_path: Path, monkeypatch, value: Any
+):
+    (tmp_path / ".env").write_text("LLM_MODEL=m\n", encoding="utf-8")
+    client, _agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_fallback_reclaim_interval_seconds": value},
+    )
+
+    assert response.status_code == 422
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == "LLM_MODEL=m\n"
+    assert provider.cache_clear_count == 0
+    assert provider.settings.llm_fallback_reclaim_interval_seconds == 600
+
+
+def test_real_settings_reclaim_interval_default_bounds_and_env(monkeypatch):
+    from pydantic import ValidationError
+
+    from nymeria.config.settings import Settings
+
+    monkeypatch.delenv("LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS", raising=False)
+    assert Settings().llm_fallback_reclaim_interval_seconds == 600
+    monkeypatch.setenv("LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS", "0")
+    assert Settings().llm_fallback_reclaim_interval_seconds == 0
+    monkeypatch.setenv("LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS", "86401")
+    with pytest.raises(ValidationError):
+        Settings()
 
 
 def test_patch_settings_hot_reloads_memory_char_limit(

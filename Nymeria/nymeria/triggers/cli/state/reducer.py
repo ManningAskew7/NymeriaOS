@@ -14,6 +14,7 @@ from ..events import (
     CompactedEvent,
     ContextAttachedEvent,
     DiagnosticEvent,
+    FallbackHoldReclaimedEvent,
     ProviderFallbackEvent,
     ProviderRetryEvent,
     DispatchedEvent,
@@ -195,6 +196,8 @@ def reduce_stream_event(
         return _reduce_dispatched(state, normalized, timestamp)
     if isinstance(normalized, ProviderFallbackEvent):
         return _reduce_provider_fallback(state, normalized, timestamp)
+    if isinstance(normalized, FallbackHoldReclaimedEvent):
+        return _reduce_fallback_hold_reclaimed(state, normalized, timestamp)
     if isinstance(normalized, ProviderRetryEvent):
         return _reduce_provider_retry(state, normalized, timestamp)
     if isinstance(normalized, ErrorEvent):
@@ -730,6 +733,31 @@ def _reduce_provider_fallback(
         "reason": event.reason,
         "http_status": event.http_status,
         "rewound": event.rewound,
+    })
+    notice = SystemMessage(
+        id=_new_id("system"),
+        kind="provider_status",
+        content=content,
+        timestamp=timestamp,
+    )
+    return replace(state, messages=state.messages + (notice,), updated_at=timestamp)
+
+
+def _reduce_fallback_hold_reclaimed(
+    state: CLIUIState,
+    event: FallbackHoldReclaimedEvent,
+    timestamp: float,
+) -> CLIUIState:
+    """One transcript line per primary reclaim (#439), in the shared bot/CLI
+    copy (``sse_consumer``), fed from the NORMALIZED fields."""
+    from ...sse_consumer import format_fallback_hold_reclaimed_message
+
+    content = format_fallback_hold_reclaimed_message({
+        "outcome": event.outcome,
+        "from_model": event.from_model,
+        "to_model": event.to_model,
+        "expires_at": event.expires_at,
+        "permanent": event.permanent,
     })
     notice = SystemMessage(
         id=_new_id("system"),

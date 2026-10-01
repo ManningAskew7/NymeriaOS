@@ -486,7 +486,70 @@ class LLMCommandsMixin:
                     "This thread: on "
                     + self._hold_summary(hold, include_origin=True)
                 )
+                reclaim = self._reclaim_line(
+                    (thread_config or {}).get("fallback_reclaim"), hold
+                )
+                if reclaim:
+                    lines.append(reclaim)
         return "Fallback status\n" + "\n".join(lines)
+
+    def _reclaim_line(
+        self, reclaim: Any, hold: Mapping[str, Any]
+    ) -> str | None:
+        """The primary-reclaim line under a live hold (#439), from the
+        derived ``fallback_reclaim`` block of the thread-config payload
+        (computed in the API process, so both command client shapes see the
+        same probe state). None when the payload carries no block (an older
+        server)."""
+        if not isinstance(reclaim, Mapping):
+            return None
+        state = str(reclaim.get("state") or "")
+        reason = str(hold.get("reason") or "?")
+
+        def at(value: Any) -> str:
+            parsed = _parse_hold_expiry(value) if value else None
+            return (
+                parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M") + " UTC"
+                if parsed is not None
+                else "?"
+            )
+
+        revert = (
+            "the user can revert with /fallback revert"
+            if getattr(self, "actor", "user") == "agent"
+            else "revert: /fallback revert"
+        )
+        if state == "offered":
+            return (
+                "Reclaim: the primary answered again at "
+                f"{at(reclaim.get('offered_at'))}; the hold stays ({revert})."
+            )
+        if state == "off":
+            return "Reclaim: off (LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS is 0)."
+        if state == "excluded":
+            return f"Reclaim: not checked for a {reason} hold."
+        if state == "stopped":
+            return (
+                "Reclaim: stopped for this hold (the primary rejected the probe "
+                "request itself)."
+            )
+        if state == "checking":
+            return "Reclaim: checking the primary now."
+        if state == "recovered":
+            return (
+                "Reclaim: the primary answered a probe; this applies at the "
+                "next turn start."
+            )
+        if state == "expired":
+            return "Reclaim: the hold expired; it ends at the next turn start."
+        line = (
+            "Reclaim: next check at the first turn after "
+            f"{at(reclaim.get('next_check_at'))}"
+        )
+        verdict = reclaim.get("last_verdict")
+        if verdict:
+            line += f" (last: {verdict} at {at(reclaim.get('last_checked_at'))})"
+        return line + "."
 
     async def _fallback_revert_markdown(self) -> str | CommandOutput:
         """Clear the active thread's fallback hold (permanent or timed)."""

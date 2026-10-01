@@ -888,3 +888,103 @@ def test_the_in_process_field_whitelist_is_a_subset_of_the_patch_schema():
     default), which is the asymmetry #236 removed."""
     unknown = _IN_PROCESS_THREAD_CONFIG_FIELDS - set(ThreadConfigUpdateRequest.model_fields)
     assert unknown == set()
+
+
+
+# -- /fallback status carries the primary-reclaim line (#439, D7) -------------------
+
+
+def _utc_minute(value: Any) -> str:
+    from datetime import timezone
+
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M") + " UTC"
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_fallback_status_names_the_next_reclaim_check(harness, shape):
+    hold = _hold()
+    harness.seed(active_llm_fallback=hold)
+
+    result, _api = harness.command(shape, "/fallback status")
+
+    lines = result.markdown.splitlines()
+    first_check = hold.activated_at + timedelta(seconds=600)
+    assert (
+        f"Reclaim: next check at the first turn after {_utc_minute(first_check)}."
+        in lines
+    )
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_fallback_status_shows_an_offered_reclaim(harness, shape):
+    hold = _hold(permanent=True)
+    offered_at = utc_now() - timedelta(minutes=3)
+    hold.reclaim_offered_at = offered_at
+    harness.seed(active_llm_fallback=hold)
+
+    result, _api = harness.command(shape, "/fallback status")
+
+    assert (
+        f"Reclaim: the primary answered again at {_utc_minute(offered_at)}; the "
+        "hold stays (revert: /fallback revert)."
+    ) in result.markdown.splitlines()
+
+
+def test_fallback_status_reclaim_line_for_the_agent_names_the_users_revert(harness):
+    hold = _hold()
+    hold.reclaim_offered_at = utc_now()
+    harness.seed(active_llm_fallback=hold)
+
+    result, _api = harness.command(
+        "in_process", "/fallback status", actor="agent", surface="agent"
+    )
+
+    assert "the hold stays (the user can revert with /fallback revert)." in result.markdown
+
+
+def test_fallback_status_says_a_refusal_hold_is_not_checked(harness):
+    hold = _hold()
+    hold.reason = "refusal"
+    harness.seed(active_llm_fallback=hold)
+
+    result, _api = harness.command("http", "/fallback status")
+
+    assert "Reclaim: not checked for a refusal hold." in result.markdown.splitlines()
+
+
+def test_fallback_status_without_a_hold_has_no_reclaim_line(harness):
+    harness.seed(instructions="x")
+
+    result, _api = harness.command("in_process", "/fallback status")
+
+    assert "This thread: no fallback hold active." in result.markdown
+    assert "Reclaim" not in result.markdown
+
+
+def test_the_reclaim_line_renders_the_last_verdict_from_the_payload():
+    from test_command_service import FakeCommandApi, _status_ctx
+
+    api = FakeCommandApi()
+    expires = (utc_now() + timedelta(hours=1)).isoformat()
+    api.thread_config = {
+        "active_llm_fallback": {
+            "provider": HELD_PROVIDER,
+            "model": HELD_MODEL,
+            "source_model": GLOBAL_MODEL,
+            "reason": "rate_limited",
+            "expires_at": expires,
+        },
+        "fallback_reclaim": {
+            "state": "scheduled",
+            "next_check_at": "2026-10-01T15:00:00+00:00",
+            "last_verdict": "rate_limited",
+            "last_checked_at": "2026-10-01T14:00:00+00:00",
+        },
+    }
+
+    result = run(CommandService().execute(_status_ctx(), "/fallback status", api=api))
+
+    assert (
+        "Reclaim: next check at the first turn after 2026-10-01 15:00 UTC "
+        "(last: rate_limited at 2026-10-01 14:00 UTC)."
+    ) in result.markdown.splitlines()

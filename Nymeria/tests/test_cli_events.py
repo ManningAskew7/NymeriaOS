@@ -24,6 +24,7 @@ from nymeria.triggers.cli.events import (
     ThinkingEvent,
     ToolCallDeltaEvent,
     ToolCallEvent,
+    FallbackHoldReclaimedEvent,
     ProviderFallbackEvent,
     ProviderRetryEvent,
     ToolReloadEvent,
@@ -644,3 +645,44 @@ def test_normalize_async_stream_events_handles_api_streams() -> None:
         ResponseEvent(thread_id="thread-a", content="answer"),
         DoneEvent(thread_id="thread-a"),
     ]
+
+
+def test_fallback_hold_reclaimed_normalizes_api_and_local_shapes() -> None:
+    expected = FallbackHoldReclaimedEvent(
+        thread_id="thread-a",
+        outcome="offered",
+        from_provider="anthropic",
+        from_model="claude-haiku-4-5-20251001",
+        to_provider="anthropic",
+        to_model="claude-fable-5",
+        expires_at="2026-10-01T14:30:00+00:00",
+        permanent=False,
+    )
+    local = normalize_stream_event(
+        {
+            "type": "fallback_hold_reclaimed",
+            "outcome": "offered",
+            "reason": "recovered",
+            "from_provider": "anthropic",
+            "from_model": "claude-haiku-4-5-20251001",
+            "to_provider": "anthropic",
+            "to_model": "claude-fable-5",
+            "expires_at": "2026-10-01T14:30:00+00:00",
+            "permanent": False,
+        },
+        default_thread_id="thread-a",
+    )
+    camel = normalize_stream_event(
+        {
+            "type": "fallback_hold_reclaimed",
+            "thread_id": "thread-a",
+            "outcome": "offered",
+            "fromProvider": "anthropic",
+            "fromModel": "claude-haiku-4-5-20251001",
+            "toProvider": "anthropic",
+            "toModel": "claude-fable-5",
+            "expiresAt": "2026-10-01T14:30:00+00:00",
+        },
+    )
+    assert local == expected
+    assert camel == expected

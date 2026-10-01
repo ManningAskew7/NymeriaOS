@@ -402,7 +402,7 @@ Telegram, the GUIs, the agent).
 | `/triggers resume <trigger_id>` | Restart a trigger auto-paused after repeated failures, clearing its failure history. Does not change whether it is enabled. |
 | `/triggers delete <trigger_id>` | Delete a trigger. |
 | `/triggers history [trigger_id]` | Show recent trigger firings. |
-| `/fallback status` | Show consent state: switch mode, holds, and this channel's active swap. |
+| `/fallback status` | Show consent state: switch mode, holds, and this channel's active swap with its reclaim state (when the primary is next checked, or that it recovered). |
 | `/fallback revert` | End an active fallback hold on this channel. |
 | `/fallback approvals` | List pending model-swap consent prompts. |
 | `/fallback approve <record_id> [hold]` | Approve a pending model swap. |
@@ -590,6 +590,10 @@ parks exactly like a GUI turn instead of auto-swapping.
   standard thread-config PATCH as the clicker.
 - Applied swaps (`provider_fallback`, any consent mode) post a short notice
   with the same Revert button.
+- When the primary model answers again (`fallback_hold_reclaimed`, see
+  `LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS`), an ended hold posts a plain
+  notice; an `ask`-mode or permanent hold that stays posts the one-time
+  revert offer with the same Revert button.
 - The `/fallback` slash-command group (status, revert, approvals, approve,
   deny) forwards to the backend command service (`FallbackCog`).
 

@@ -234,6 +234,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_STREAM_RETRY_INITIAL_DELAY` | `1.0` | 0 - 60 | Initial retry backoff delay in seconds |
 | `LLM_STREAM_RETRY_MAX_DELAY` | `8.0` | 0 - 300 | Maximum retry backoff delay in seconds |
 | `LLM_FALLBACK_HOLD_SECONDS` | `7200` | 0 - 604800 | Seconds to keep a fallback provider/model active for a thread after primary retries are exhausted. `0` disables the timed hold. Default hold for auto-applied or timed-out switches; a consented switch may pick its own hold (including permanent). |
+| `LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS` | `600` | 0 - 86400 | How often a held thread checks whether its primary model answers again. At the start of a turn on a thread whose hold is at least this old, one tiny completion probe runs in the background against the thread's configured primary (one request, no retries, 10 second timeout, sent the same way as a real request so a CLIProxy route stays cloaked); the verdict applies at the next turn start. On recovery an `auto`-mode timed hold ends (end-note reason `recovered`); an `ask`-mode or permanent hold stays and is offered a revert once. Failed probes back off (doubling, capped at the larger of this interval and one hour; 429/401/403 go straight to the cap); a 400/422 probe stops checking that hold. Refusal and invalid-request holds are never probed. `0` turns reclaim off. Global only. |
 | `LLM_FALLBACK_SWITCH_MODE` | `auto` | `auto`, `ask` | How an automatic fallback switch is applied. `auto` swaps silently (unchanged behavior). `ask` pauses a consent-capable interactive turn to ask swap-vs-fail, auto-swapping on timeout. Autonomous/background turns and non-interactive channels always auto-swap. Per-thread overridable. |
 | `LLM_FALLBACK_PROMPT_TIMEOUT_SECONDS` | `180` | 10 - 600 | How long an `ask`-mode consent prompt waits before auto-swapping. |
 | `LLM_REFUSAL_SWAP_MODE` | `ask` | `off`, `ask`, `auto` | Whether an EMPTY provider refusal (the safety classifier ended the response before any text or tool call, e.g. Fable 5's `stop_reason="refusal"`) discards the refused response and re-runs the call on the next fallback model. `ask` (default since the consent card shipped) pauses a consent-capable interactive turn (timeout auto-swaps); autonomous turns and non-interactive channels auto-swap immediately. `auto` swaps silently everywhere. `off` disables swapping and keeps the rewind-and-restore recovery. Partial-output refusals are never swapped. Per-thread overridable. |
@@ -253,8 +254,12 @@ backoff delay and a `rewound` flag when replay was needed. If retries are
 exhausted, Nymeria emits
 `provider_fallback`, switches to the next configured fallback, and keeps that
 fallback active for the thread for `LLM_FALLBACK_HOLD_SECONDS` seconds
-(default: 2 hours). Expiry is lazy: if the hold expires during an active turn,
-the fallback is cleared after the turn releases the thread lock. A hold also
+(default: 2 hours). Expiry is lazy: a hold that expired between turns ends
+at the next turn start (that turn already runs the configured model), and one
+that expires during an active turn is cleared after the turn releases the
+thread lock. A hold also ends early when the primary answers again
+(`LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS`; in `ask` mode, or for a permanent
+hold, the user is offered the revert instead). A hold also
 ends on `/fallback revert` (or the GUI and bot Revert buttons) and when the
 user picks the thread's model or provider (`/model <name> thread`,
 `/provider switch <p> thread`, `/fast`, `/smart`, or a model change in the

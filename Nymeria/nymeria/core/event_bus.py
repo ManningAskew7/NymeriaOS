@@ -368,6 +368,10 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     "reply_suppressed",
     "provider_retry",
     "provider_fallback",
+    # A held thread's primary answered a reclaim probe (#439): the hold ended
+    # at this turn start ("ended") or stays with a once-only revert offer
+    # ("offered"). Mirrored so autonomous turns reach bots and watchers.
+    "fallback_hold_reclaimed",
     # A model rejected image/PDF input; the backend stripped the attachment and
     # retried once. Mirrored so autonomous/relayed turns surface the drop too.
     "image_input_unsupported",

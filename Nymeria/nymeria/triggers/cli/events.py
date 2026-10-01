@@ -31,6 +31,7 @@ KnownEventType: TypeAlias = Literal[
     "fallback_prompt",
     "fallback_prompt_resolved",
     "provider_fallback",
+    "fallback_hold_reclaimed",
     "provider_retry",
     "cli_config",
     "error",
@@ -313,6 +314,22 @@ class ProviderFallbackEvent(CLIStreamEvent):
     # re-drove it: partial text already rendered was superseded, not
     # continued (the GUIs trim their transcript on this flag).
     rewound: bool = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FallbackHoldReclaimedEvent(CLIStreamEvent):
+    """A held thread's primary answered a reclaim probe (#439): the hold
+    ended at this turn start (``outcome="ended"``) or stays with a
+    once-only revert offer (``outcome="offered"``)."""
+
+    type: Literal["fallback_hold_reclaimed"] = "fallback_hold_reclaimed"
+    outcome: str = ""
+    from_provider: str = ""
+    from_model: str = ""
+    to_provider: str = ""
+    to_model: str = ""
+    expires_at: str = ""
+    permanent: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -755,6 +772,23 @@ def normalize_stream_event(
             raw=raw,
         )
 
+    if event_type == "fallback_hold_reclaimed":
+        return FallbackHoldReclaimedEvent(
+            thread_id=thread_id,
+            outcome=_text(_first(payload, "outcome"), default=""),
+            from_provider=_text(
+                _first(payload, "from_provider", "fromProvider"), default=""
+            ),
+            from_model=_text(_first(payload, "from_model", "fromModel"), default=""),
+            to_provider=_text(
+                _first(payload, "to_provider", "toProvider"), default=""
+            ),
+            to_model=_text(_first(payload, "to_model", "toModel"), default=""),
+            expires_at=_text(_first(payload, "expires_at", "expiresAt"), default=""),
+            permanent=_bool(_first(payload, "permanent"), default=False),
+            raw=raw,
+        )
+
     if event_type == "provider_retry":
         return ProviderRetryEvent(
             thread_id=thread_id,
@@ -1006,6 +1040,7 @@ __all__ = [
     "FallbackPromptEvent",
     "FallbackPromptResolvedEvent",
     "ProviderFallbackEvent",
+    "FallbackHoldReclaimedEvent",
     "ProviderRetryEvent",
     "CLIConfigEvent",
     "ErrorEvent",

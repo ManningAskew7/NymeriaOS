@@ -616,7 +616,7 @@ subscribers using the same `client_id` can suppress their own echoes.
 | `user_id` | string | No | `"default"` | Legacy compatibility field. The backend ignores client-claimed user IDs and uses the bearer token or admin `X-Nymeria-Act-As` as the effective user. |
 | `attachments` | array | No | - | Optional multimodal attachments (images/documents). An image over the model's `max_image_dimension` or `max_image_bytes` is downscaled server-side before it enters history, an unsupported format (bmp/tiff) is converted, and one that cannot be decoded (empty or corrupt) is dropped; each case appends a one-line note to the persisted user message naming the file and its saved path. Turns never fail over an image. |
 | `force_unsupported_attachments` | bool | No | `false` | Send request even if model modality checks fail |
-| `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `provider_retry`, `provider_fallback`, `image_input_unsupported`, `output_truncated`, `response_refused`, `turn_rewound`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `turn_resumed`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the Docker worker's relayed autonomous turns; gated by the same Bearer-auth check as any `/chat` call. |
+| `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `provider_retry`, `provider_fallback`, `image_input_unsupported`, `output_truncated`, `response_refused`, `turn_rewound`, `fallback_hold_reclaimed`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `turn_resumed`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the Docker worker's relayed autonomous turns; gated by the same Bearer-auth check as any `/chat` call. |
 | `trigger_override` | string | No | - | Label for autonomous invocations (e.g. `"watchdog"`, `"ticker"`). Becomes part of `task_id` and the `source` field on emitted autonomous events. |
 | `trigger_id` | string | No | - | Trigger row ID for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed` for frontend/bot classification. |
 | `trigger_name` | string | No | - | Human-readable trigger name for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed`. |
@@ -1531,6 +1531,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `hook_approval_resolved` | A held tool call was resolved from any surface (or timed out, or its turn was aborted); every client retracts its approval prompt | `record_id`, `tool_call_id`, `tool_name`, `outcome` (`approved`/`denied`/`timeout`/`aborted`/`stale`), `resolved_by`, `note` |
 | `fallback_prompt` | An `ask`-mode model switch parked the turn for the user's decision: swap to the fallback model or not (resolve via `POST /llm/fallback-approvals/{record_id}/resolve`, `/fallback approve\|deny`, the GUI/CLI consent cards, or the Telegram/Discord Swap buttons). `kind: transport` means the primary exhausted its retries on a provider error (decline fails the turn); `kind: refusal` means an empty provider refusal can re-run on the fallback (decline falls back to the rewind-and-restore path). No answer by `expires_at` AUTO-SWAPS (a fallback is a resilience action; the inverse of hook-approval timeout). Only a turn a human is watching parks (interactive source, holder kind `user`, an async streaming surface): autonomous turns, callable/handoff child turns, and `/chat/sync` callers swap immediately. Bot-origin turns park only on platforms whose bot renders inline consent buttons (Telegram, Discord); other bot platforms swap immediately, with `/fallback` as the management path | `record_id`, `kind`, `thread_id`, `from_provider`, `from_model`, `to_provider`, `to_model`, `reason`, optional `http_status`, `timeout_seconds`, `hold_options`, `allow_permanent`, `default_hold_seconds`, `is_autonomous`, `created_at`, `expires_at` |
 | `fallback_prompt_resolved` | A parked model switch was resolved from any surface (or timed out, or its turn was aborted); every client retracts its consent prompt. `approved` carries the chosen hold when one was picked | `record_id`, `kind`, `outcome` (`approved`/`declined`/`timeout`/`aborted`/`stale`), `resolved_by`, optional `hold_seconds`, `hold_permanent`, `note` |
+| `fallback_hold_reclaimed` | A held thread's primary model answers again: a background probe started at an earlier turn start said so (`LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS`), and this turn start applied the verdict. At most once per hold, before the turn's first LLM call. `outcome: ended`: an `auto`-mode timed hold ended and this turn runs the primary (the model sees an end note with reason `recovered`). `outcome: offered`: an `ask`-mode or permanent hold stays and the user is offered a revert once (`/fallback revert`, or the thread-config `clear_active_fallback` PATCH); the Telegram and Discord bots render it with a Revert button. A `/chat/sync` turn ends holds silently but never spends the offer (the next streaming turn carries it). Clients that do not know the event can ignore it | `thread_id`, `outcome` (`ended`/`offered`), `reason` (`recovered`), `from_provider`, `from_model` (the hold), `to_provider`, `to_model` (the configured primary), `expires_at` (null when permanent), `permanent` |
 | `workflow_approval` | A workflow run suspended on `nym.approve`, awaiting the owner's decision (resolve via `POST /workflows/approvals/{record_id}/resolve`) | `record_id`, `workflow_id`, `prompt`, `expires_at` |
 | `workflow_approval_resolved` | A suspended workflow run was approved, declined, or expired; the continuation ran (or was refused) | `record_id`, `workflow_id`, `approved`, `note`, `run_id` |
 | `workflow_step` | One completed `nym.*` verb dispatch in a running workflow (live progress; best-effort and unordered, sort by `step`). Lean by design: args/result summaries live in the persisted run record, not on the wire | `workflow_id`, `run_id`, `step`, `verb`, `status`, `duration_ms`, optional `error_kind` |
@@ -2076,6 +2077,7 @@ this.
 | `output_truncated` | The turn hit its output-token cap; `produced_output: false` means reasoning consumed the whole budget and the turn emitted no text or tool call | `reason`, `produced_output`, `output_tokens`, `model` |
 | `response_refused` | The provider ended the response with a refusal; `produced_output: false` means it fired before any text or tool call. `swapped: true` = the refusal-swap is re-running on the next fallback model; `swapped: false` = a visible note was attached to the message (or the rewind removed the exchange) | `produced_output`, `output_tokens`, `model`, `swapped` |
 | `turn_rewound` | A pre-output refusal was rewound server-side (only prompt-plus-refusal exchanges; tool activity gates the rewind and the notice arrives as a trailing `response` chunk instead); truncate locally from `to_message_id`, restore `prompt` to the composer (controlled clients), or deliver `content` as reply text (bots) | `reason`, `removed`, `to_message_id`, `prompt`, `model`, `content` |
+| `fallback_hold_reclaimed` | Mirrored from an autonomous turn's start: the held thread's primary answers again; `outcome: ended` means the hold ended and the turn runs the primary, `outcome: offered` means the hold stays and a revert is offered once | `thread_id`, `outcome` (`ended`/`offered`), `reason` (`recovered`), `from_provider`, `from_model` (the hold), `to_provider`, `to_model` (the configured primary), `expires_at` (null when permanent), `permanent` |
 | `response` | Response text chunks | `content` |
 | `context_attached` | Previous context summary attached to this autonomous prompt | `summary` |
 | `compacting` | Context summary generation has started after the compaction path passes its start checks | `message` |
@@ -2226,7 +2228,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, the model tier settings `llm_fast_model`, `llm_smart_model`, `llm_background_model`, and `llm_background_base_url` (each with a read-only `*_resolved` companion giving the effective `provider:model`), `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, `llm_fallback_hold_seconds`, and the fallback-consent settings `llm_fallback_switch_mode`, `llm_fallback_prompt_timeout_seconds`, and `llm_refusal_swap_mode`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`; plus RAG engine settings such as `embedding_provider`, `embedding_model`, `embedding_dimensions`, `rag_retrieval_mode`, `rag_rerank_enabled`, `rag_rerank_provider`, `rag_rerank_model`, and `rag_embed_tool_results`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, the model tier settings `llm_fast_model`, `llm_smart_model`, `llm_background_model`, and `llm_background_base_url` (each with a read-only `*_resolved` companion giving the effective `provider:model`), `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, `llm_fallback_hold_seconds`, `llm_fallback_reclaim_interval_seconds`, and the fallback-consent settings `llm_fallback_switch_mode`, `llm_fallback_prompt_timeout_seconds`, and `llm_refusal_swap_mode`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`; plus RAG engine settings such as `embedding_provider`, `embedding_model`, `embedding_dimensions`, `rag_retrieval_mode`, `rag_rerank_enabled`, `rag_rerank_provider`, `rag_rerank_model`, and `rag_embed_tool_results`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user. Provider and capability API keys are not included in this response.
 
@@ -2435,6 +2437,7 @@ Authorization: Bearer <admin-token>
   "llm_stream_retry_initial_delay": 1.0,
   "llm_stream_retry_max_delay": 8.0,
   "llm_fallback_hold_seconds": 7200,
+  "llm_fallback_reclaim_interval_seconds": 600,
   "tool_output_max_chars": 100000
 }
 ```
@@ -2473,6 +2476,7 @@ Authorization: Bearer <admin-token>
 | `llm_stream_retry_initial_delay` | float | 0-60 | Initial LLM retry backoff delay in seconds |
 | `llm_stream_retry_max_delay` | float | 0-300 | Maximum LLM retry backoff delay in seconds |
 | `llm_fallback_hold_seconds` | int | 0-604800 | Seconds to keep a fallback provider/model active for the thread after retries are exhausted. Default is 7200. |
+| `llm_fallback_reclaim_interval_seconds` | int | 0-86400 | How old a fallback hold must be (and how often after that) before a turn start probes the thread's primary model in the background; a healthy verdict ends an `auto`-mode timed hold at the next turn start or offers a revert once (`ask` mode, permanent holds). Default 600; `0` turns reclaim off. Read per turn, so a PATCH needs no graph rebuild. Global only. |
 | `llm_fallback_switch_mode` | string | `auto`/`ask` | How a transport fallback (primary exhausted retries) is applied. `auto` (default) swaps silently; `ask` parks a consent-capable interactive turn on a `fallback_prompt` (timeout auto-swaps). Per-thread overridable via `llm_config.fallback_switch_mode`. |
 | `llm_fallback_prompt_timeout_seconds` | int | 10-600 | How long an `ask`-mode consent prompt waits before auto-swapping. Default is 180. |
 | `llm_refusal_swap_mode` | string | `off`/`ask`/`auto` | Whether an EMPTY provider refusal discards the refused response and re-runs the call on the next fallback model. Default `ask` (parks a consent-capable interactive turn; other turns auto-swap); `auto` swaps silently everywhere; `off` keeps the rewind-and-restore recovery only. Per-thread overridable via `llm_config.refusal_swap_mode`. |
@@ -4080,6 +4084,8 @@ Authorization: Bearer <token>
 
 Returns per-thread configuration including callable settings, custom instructions, LLM overrides, and tool enablement.
 
+A thread riding a fallback hold carries `active_llm_fallback` (the held `provider`/`model`, the `source_provider`/`source_model` it switched from, `hold_seconds`, `activated_at`, `expires_at` (null = permanent), `reason`, optional `http_status`, and `reclaim_offered_at` once the primary recovered and a revert was offered) plus a DERIVED, read-only `fallback_reclaim` block (absent without a hold, never persisted): `state` (`scheduled`, `checking`, `recovered` (applies at the next turn start), `offered`, `expired`, `stopped` (the primary rejected the probe request itself), `off` (interval 0) or `excluded` (refusal and invalid-request holds)), `interval_seconds`, `next_check_at` (the earliest turn start that checks), `last_verdict`, `last_checked_at`, `offered_at`. `/fallback status` renders it as its Reclaim line.
+
 Use `GET /threads/{thread_id}/overview` when a caller needs resolved status,
 effective LLM/tool/skill counts, TODO/trigger/chat-app summaries, or a compact
 dashboard/header read model. Use `/config` when editing or exporting the
@@ -5415,8 +5421,8 @@ Every applied swap also leaves a model-facing note IN the conversation
 (persisted, never repeated): mid-turn it is appended to the last tool result,
 on a first-call switch to the prompt message itself, and when a hold ends
 (expiry, any revert surface, or a route change) the next turn carries a note
-naming the model the thread runs now (reason `expired`, `reverted`, or
-`changed`).
+naming the model the thread runs now (reason `expired`, `reverted`,
+`changed`, or `recovered`).
 History renders these as `fallback_notice` system entries (see Conversation
 History).
 
@@ -5459,7 +5465,9 @@ rarer stale shape: the record still exists but no waiter is parked on it
 (typically a crash orphan surviving a restart); stale records are cleaned up
 on the spot. Every resolution publishes `fallback_prompt_resolved`. An active hold is inspectable via
 `/fallback status`, bare `/fallback`, bare `/model` and `/status`, and ends
-on expiry (never, for a permanent hold), `/fallback revert`, or a user's
+on expiry (never, for a permanent hold), when the primary answers again
+(`auto` mode, timed holds; `ask` mode and permanent holds get a one-time
+revert offer instead: `fallback_hold_reclaimed`), `/fallback revert`, or a user's
 thread route command (`/model <name> thread`, `/provider switch <p> thread`,
 `/fast`/`/smart`). An agent's model command (or any non-user writer's)
 saves its configuration but keeps the hold. A thread-scope CLIProxy

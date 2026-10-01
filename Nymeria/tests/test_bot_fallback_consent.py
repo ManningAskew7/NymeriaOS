@@ -855,3 +855,118 @@ def test_discord_interactive_handler_sends_swap_notice():
     assert api.config_patches == [
         ("discord_123_456", "clicker-user", {"clear_active_fallback": True})
     ]
+
+
+
+# ---------------------------------------------------------------------------
+# Primary reclaim notices (fallback_hold_reclaimed, #439)
+# ---------------------------------------------------------------------------
+
+
+def _reclaim_event(**overrides) -> dict:
+    event = {
+        "type": "fallback_hold_reclaimed",
+        "thread_id": "telegram_123",
+        "outcome": "offered",
+        "reason": "recovered",
+        "from_provider": "anthropic",
+        "from_model": "claude-haiku-4-5-20251001",
+        "to_provider": "anthropic",
+        "to_model": "claude-fable-5",
+        "expires_at": None,
+        "permanent": True,
+    }
+    event.update(overrides)
+    return event
+
+
+def test_telegram_reclaim_offer_carries_a_working_revert_button():
+    api = _FakeAPI(mode="full")
+    bot, fake = _make_tg_bot(api=api)
+    _link(bot, "clicker-user")
+
+    asyncio.run(bot._handle_sse_event(_reclaim_event()))
+
+    assert len(fake.sent) == 1
+    sent = fake.sent[0]
+    assert sent["text"] == (
+        "claude-fable-5 is answering again. This thread stays on "
+        "claude-haiku-4-5-20251001 until reverted; switch back with "
+        "/fallback revert."
+    )
+    buttons = _buttons(sent["reply_markup"])
+    assert len(buttons) == 1 and buttons[0][1].startswith("fbrv:")
+    query = _FakeQuery(buttons[0][1])
+    asyncio.run(bot._on_fallback_revert_button(_update_for(query), None))
+    assert api.config_patches == [
+        ("telegram_123", "clicker-user", {"clear_active_fallback": True})
+    ]
+
+
+def test_telegram_ended_reclaim_has_no_button():
+    bot, fake = _make_tg_bot(api=_FakeAPI(mode="full"))
+
+    asyncio.run(bot._handle_sse_event(_reclaim_event(outcome="ended")))
+
+    assert len(fake.sent) == 1
+    assert fake.sent[0]["text"].startswith("claude-fable-5 is answering again:")
+    assert fake.sent[0].get("reply_markup") is None
+    assert bot._fallback_tokens == {}
+
+
+def test_telegram_reclaim_notice_respects_delivery_gate():
+    bot, fake = _make_tg_bot(api=_FakeAPI(mode="off"))
+    asyncio.run(bot._handle_sse_event(_reclaim_event()))
+    assert fake.sent == []
+
+
+def test_telegram_interactive_handler_sends_the_reclaim_offer():
+    bot, fake = _make_tg_bot(api=_FakeAPI(mode="off"))
+
+    async def _run() -> None:
+        handler = bot._ChatSSEHandler(
+            bot, 123, "telegram_123", "owner-user", 42, SimpleNamespace(bot=fake)
+        )
+        try:
+            await handler.on_fallback_hold_reclaimed(_reclaim_event(thread_id=""))
+        finally:
+            handler.cleanup()
+
+    asyncio.run(_run())
+    assert len(fake.sent) == 1
+    assert _buttons(fake.sent[0]["reply_markup"])[0][1].startswith("fbrv:")
+
+
+def test_discord_reclaim_offer_carries_a_revert_view_and_end_does_not():
+    channel = _FakeDiscordChannel()
+    api = _FakeAPI()
+    bot = _make_discord_bot(channel, api=api)
+    _link_discord(bot, "clicker-user")
+
+    asyncio.run(bot._handle_sse_event(_reclaim_event(thread_id="discord_123_456")))
+    asyncio.run(bot._handle_sse_event(
+        _reclaim_event(thread_id="discord_123_456", outcome="ended")
+    ))
+
+    offer, ended = channel.messages
+    assert "switch back with /fallback revert" in offer.content
+    assert [child.label for child in offer.view.children] == ["Revert"]
+    assert ended.content.startswith("claude-fable-5 is answering again:")
+    assert ended.view is None
+    interaction = _fake_interaction(message=offer)
+    asyncio.run(offer.view.revert.callback(interaction))
+    assert api.config_patches == [
+        ("discord_123_456", "clicker-user", {"clear_active_fallback": True})
+    ]
+
+
+def test_discord_interactive_handler_sends_the_reclaim_offer():
+    channel = _FakeDiscordChannel()
+    bot = _make_discord_bot(channel)
+
+    async def _first_send(content: str, **kwargs):
+        return await channel.send(content, **kwargs)
+
+    handler = bot._InteractiveChatHandler(bot, channel, _first_send, "discord_123_456")
+    asyncio.run(handler.on_fallback_hold_reclaimed(_reclaim_event(thread_id="")))
+    assert [child.label for child in channel.messages[0].view.children] == ["Revert"]
