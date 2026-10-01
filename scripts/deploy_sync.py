@@ -43,45 +43,49 @@ each gate here exists for one concrete hazard:
                     HTTP error, malformed payload) fails safe: cannot verify
                     idleness, do not restart.
   verify            After a restart the target's /health must answer within
-                    the deadline AND the target must report the code it was
-                    restarted onto (#423): the commit it booted from must be
-                    the desired commit, and the digest of its boot-time file
-                    fingerprint must equal the same digest computed over the
-                    host checkout just before the restart. A bare "it
-                    answers" proves nothing: a stale editable install, a
-                    stray process on the port, or a container that lost its
-                    bind mount (the image bakes a full copy) all answer.
-                    The API reports both on /status/turns to an admin token
-                    (Docker reports no commit: its mounts carry no .git, so
-                    its files decide); the runner's /health reports the
-                    commit. A field a target does not report is not checked,
-                    and one reporting neither (an older API) is accepted on
-                    /health alone, said so in its line. Failure to the
-                    deadline does NOT advance the marker, and a failure stamp
-                    blocks further retries FOR THAT COMMIT (no 5-minute
-                    restart storm into a broken boot or a wrong install; the
-                    run exits non-zero for the journal). A newer commit, or
-                    --mark-deployed after manual recovery, re-arms it. A
-                    mismatch the checkout itself explains (HEAD moved,
-                    tracked files dirtied, or package files changed during
-                    the restart) is "unverified" instead: no marker, no
-                    stamp, and the next clean tick restarts and verifies.
+                    the deadline (wall-clock) AND the target must report the
+                    code it was restarted onto (#423): the commit it booted
+                    from must be the desired commit, and the digest of its
+                    boot-time file fingerprint must equal the same digest
+                    computed over the host checkout's package
+                    (<repo>/Nymeria/nymeria plus its run.py) just before the
+                    restart. A bare "it answers" proves nothing: a stale
+                    editable install, a stray process on the port, or a
+                    container that lost its bind mount (the image bakes a
+                    full copy) all answer. The API reports both on
+                    /status/turns to an admin token (Docker reports no
+                    commit: its mounts carry no .git, so its files decide);
+                    the runner's /health reports the commit. A field a
+                    target does not report, or the host cannot read, is not
+                    checked, and one reporting neither (an older API) is
+                    accepted on /health alone, said so in its line. A match
+                    is "verified" only if the checkout is STILL at the clean
+                    desired commit with the same files when the answer comes
+                    in. Failure to the deadline does NOT advance the marker,
+                    and a failure stamp blocks further retries FOR THAT
+                    COMMIT (no 5-minute restart storm into a broken boot or a
+                    wrong install; the run exits non-zero for the journal).
+                    A newer commit, or --mark-deployed after manual recovery,
+                    re-arms it. A mismatch the checkout itself explains (HEAD
+                    moved, tracked files dirtied, or package files changed
+                    during the restart), and a match the checkout no longer
+                    backs, is "unverified" instead: no marker, and the next
+                    clean tick restarts and verifies. Only once per commit:
+                    a second unverified restart of the same commit means
+                    something keeps changing the checkout during boots, and
+                    it is failed and held like any other failure.
 
-State: one marker file per target (last deployed commit) plus a once-per-commit
-escalation stamp, under --state-dir. A missing marker initializes to the
-current desired commit WITHOUT restarting (fresh install is presumed current),
-unless the target reports the commit it booted from: then the marker starts
-there, so a stale target restarts on the same tick.
+State: one marker file per target (last deployed commit) plus once-per-commit
+escalation, failure and unverified stamps, under --state-dir. A missing marker
+initializes to the current desired commit WITHOUT restarting (fresh install is
+presumed current), unless the target reports the commit it booted from: then
+the marker starts there, so a stale target restarts on the same tick.
 One flock serializes overlapping runs; a busy peer exits 0 quietly.
 
 Config (JSON, see --config): {"repo": path, "clean_paths": [...],
 "escalation_globs": [...], "targets": [{"name", "health_url", "turns_url",
 "token" ({"file": path} or {"env_file": path, "key": VAR}), "restart" (argv),
-optional "restart_cwd", "restart_env", "extra_restart_containers",
-"package_dir" (the package the target imports; default
-<repo>/Nymeria/nymeria, its run.py beside it), "verify_files" (default
-true; false skips the file check, for a mount that does not preserve
-stat)}]}.
+optional "restart_cwd", "restart_env", "extra_restart_containers"}]}.
 A target with no "turns_url" (the Claude Code runner unit) is idle-probed
 through its unauthenticated "health_url" instead, on the "active_jobs"
 count it reports (#335); it needs no "token", and its identity is the
@@ -95,9 +99,10 @@ Usage:
     python3 scripts/deploy_sync.py --config ... --check          # read-only
     python3 scripts/deploy_sync.py --config ... --mark-deployed [TARGET ...]
 
---check restarts, fetches and writes nothing: per target it prints the
-reported identity against the checkout and the marker, and exits 1 when any
-target runs other code or cannot be probed.
+--check restarts, fetches and writes nothing (not even the state dir or the
+lock file): per target it prints the reported identity against the checkout
+and the marker, and exits 1 when any target runs other code or cannot be
+probed.
 
 Nothing runs this by default; each host schedules it (the reference dev host
 uses a 5-minute systemd user timer; pause with
@@ -114,6 +119,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -136,6 +142,8 @@ HEALTH_DEADLINE_SECONDS = 90
 HEALTH_POLL_SECONDS = 3
 HTTP_TIMEOUT_SECONDS = 10
 
+# The one shape of a commit id here: markers, stamps, HEAD and a target's
+# reported commit all go through it (a sha256 repository is backlog #461).
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 FILES_DIGEST_RE = re.compile(r"[0-9a-f]{16}")
 
@@ -157,6 +165,27 @@ def exclusive_lock(lock_path: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+@contextmanager
+def reader_lock(lock_path: Path):
+    """--check's side of the sync lock: refuse while a run holds it, but
+    create nothing (no state dir, no lock file). A lock file that does not
+    exist is held by no one: every run creates it before locking."""
+    try:
+        handle = open(lock_path, "rb")
+    except FileNotFoundError:
+        yield
+        return
+    with handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SyncBusy(f"another sync holds {lock_path}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 # ---------------------------------------------------------------------------
 # Seams. Tests inject fakes for these (and for checkout_fingerprint below);
 # production uses them.
@@ -167,8 +196,6 @@ def run_command(
     cwd: Optional[str] = None,
     env_extra: Optional[dict[str, str]] = None,
 ) -> tuple[int, str]:
-    import os
-
     env = None
     if env_extra:
         env = {**os.environ, **env_extra}
@@ -222,8 +249,6 @@ def is_connection_refused(exc: OSError) -> bool:
 
 
 def sleep_seconds(seconds: float) -> None:
-    import time
-
     time.sleep(seconds)
 
 
@@ -420,6 +445,11 @@ def health_idle_verdict(
 # Code identity (#423): which code a target booted from, against the checkout.
 
 
+class PackageUnreadable(Exception):
+    """Part of the checkout's package cannot be read by this user; the
+    message is the path."""
+
+
 def checkout_fingerprint(package_dir: Path) -> Optional[str]:
     """Digest of the package's files exactly as ``nymeria/_provenance.py``
     computes it for a process's boot record, or None (no files found).
@@ -431,11 +461,20 @@ def checkout_fingerprint(package_dir: Path) -> Optional[str]:
     mtime_ns, summed sizes) over every file but ``__pycache__``, plus the
     ``run.py`` beside the package; a bind mount preserves all three, so the
     host and a container see the same digest.
+
+    Raises ``PackageUnreadable`` (naming the path) where the server copy
+    reports no fingerprint: anything it cannot list or stat but a vanished
+    file. The host user and a container's user can differ, and a count
+    short on one side only would read as different code.
     """
     package_dir = Path(package_dir)
 
+    def walk_error(err: OSError) -> None:
+        if not isinstance(err, FileNotFoundError):
+            raise err
+
     def paths():
-        for root, dirs, names in os.walk(package_dir):
+        for root, dirs, names in os.walk(package_dir, onerror=walk_error):
             dirs[:] = [d for d in dirs if d != "__pycache__"]
             for name in names:
                 yield os.path.join(root, name)
@@ -446,33 +485,33 @@ def checkout_fingerprint(package_dir: Path) -> Optional[str]:
         for path in paths():
             try:
                 st = os.stat(path)
-            except OSError:
-                continue
+            except FileNotFoundError:
+                continue  # vanished mid-walk, or a dangling link: same on every side
             files += 1
             mtime_sum += st.st_mtime_ns
             size_sum += st.st_size
-    except OSError:
-        return None
+    except OSError as exc:
+        raise PackageUnreadable(exc.filename or str(package_dir)) from exc
     if not files:
         return None
     raw = f"{files}:{mtime_sum}:{size_sum}"
     return hashlib.sha256(raw.encode("ascii")).hexdigest()[:16]
 
 
-def target_package_dir(config: dict[str, Any], target: dict[str, Any]) -> Path:
-    """The package directory this target imports (its run.py beside it)."""
-    if target.get("package_dir"):
-        return Path(target["package_dir"])
-    return Path(config["repo"]) / "Nymeria" / "nymeria"
-
-
 def host_files(
-    config: dict[str, Any], target: dict[str, Any], fingerprint: Callable
-) -> Optional[str]:
-    """The checkout-side files digest for a target, None when it opts out."""
-    if target.get("verify_files", True) is False:
-        return None
-    return fingerprint(target_package_dir(config, target))
+    config: dict[str, Any], fingerprint: Callable
+) -> tuple[Optional[str], Optional[str]]:
+    """(the checkout package's files digest, why there is none)."""
+    package = Path(config["repo"]) / "Nymeria" / "nymeria"
+    try:
+        digest = fingerprint(package)
+    except PackageUnreadable as exc:
+        return None, (
+            f"cannot read {exc} in the checkout as this user; fix its permissions"
+        )
+    if digest is None:
+        return None, f"no package files under {package}"
+    return digest, None
 
 
 class Identity(NamedTuple):
@@ -547,15 +586,41 @@ def compare_identity(
     return proven, mismatched
 
 
-def describe_proof(identity: Identity, proven: list[str]) -> str:
-    """What a matching answer proved, for the journal line."""
-    if proven:
-        return "verified " + "+".join(proven)
+def _short(value: Optional[str]) -> str:
+    return value[:12] if value else "none"
+
+
+def describe_proof(
+    identity: Identity, proven: list[str], files_note: Optional[str] = None
+) -> str:
+    """What a matching answer proved, for the journal line. ``files_note``
+    says why the checkout had no files digest to compare (``host_files``)."""
     if identity.commit is None and identity.files is None:
         if not identity.reported:
             return "unverified (old API or non-admin token: no code identity reported)"
-        return "unverified (target reports no code identity)"
-    return "unverified (no checkout value to compare: verify_files off or package_dir unreadable)"
+        return (
+            "unverified (target reports no code identity: no git metadata, and "
+            "no boot file fingerprint, e.g. a package directory it could not read)"
+        )
+    unchecked = (
+        f" (files not checked: {files_note})"
+        if files_note and identity.files is not None
+        else ""
+    )
+    if proven:
+        return "verified " + "+".join(proven) + unchecked
+    return "unverified" + (unchecked or " (nothing the checkout can compare)")
+
+
+def identity_facts(
+    identity: Identity, want_commit: Optional[str], want_files: Optional[str]
+) -> str:
+    """What a target reported against what the checkout held, no guesses."""
+    return (
+        f"it reported commit {_short(identity.commit)} files "
+        f"{_short(identity.files)}, the checkout held {_short(want_commit)} "
+        f"files {_short(want_files)} before it"
+    )
 
 
 def describe_mismatch(
@@ -614,6 +679,17 @@ def describe_mismatch(
 
 
 MISMATCH_REMEDY = "fix it, restart, then --mark-deployed"
+# /health up but the identity never readable: a 401/403 there is the
+# service token (expired, rotated, or not admin), reachable when the idle
+# gate passed on "target down" and so never tested the token first.
+TOKEN_REMEDY = "the service token is expired or not admin: rotate it, then --mark-deployed"
+PROBE_REMEDY = "check the target's log, fix it, restart, then --mark-deployed"
+
+
+def _probe_remedy(error: str) -> str:
+    if error == "token unavailable" or error.endswith(("answered 401", "answered 403")):
+        return TOKEN_REMEDY
+    return PROBE_REMEDY
 
 
 def restart_target(
@@ -624,17 +700,20 @@ def restart_target(
     expected_version: Optional[str] = None,
     expected_files: Optional[str] = None,
     previous_version: Optional[str] = None,
-) -> tuple[str, str]:
+    files_note: Optional[str] = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[str, str, Optional[Identity]]:
     """Run the target's restart argv, then wait until it answers /health
     AND reports the code it was restarted onto.
 
-    Returns (outcome, detail): "ok" (detail says what was proven),
-    "mismatch" (it kept answering on other code to the deadline; detail is
-    the cause), or "failed". Every answer before the deadline is polled
-    through rather than judged: a slow boot answers 503 first, and the old
-    process can answer during its shutdown. Accepting the first 200 would
-    advance the marker over a stale install, a stray process on the port,
-    or a container that lost its bind mount (#335, #423).
+    Returns (outcome, detail, identity): "ok" (detail says what was
+    proven), "mismatch" (it kept answering on other code to the deadline;
+    detail is the cause), or "failed"; identity is the last one it reported
+    (None when failed). Every answer before the deadline is polled through
+    rather than judged: a slow boot answers 503 first, and the old process
+    can answer during its shutdown. Accepting the first 200 would advance
+    the marker over a stale install, a stray process on the port, or a
+    container that lost its bind mount (#335, #423).
     """
     rc, out = runner(
         list(target["restart"]),
@@ -642,7 +721,11 @@ def restart_target(
         env_extra=target.get("restart_env"),
     )
     if rc != 0:
-        return "failed", f"restart command failed rc={rc}: {out.splitlines()[-1] if out else ''}"
+        return (
+            "failed",
+            f"restart command failed rc={rc}: {out.splitlines()[-1] if out else ''}",
+            None,
+        )
 
     # Profile-gated sidecar containers (bots) run the same bind-mounted code
     # but are not in the base restart line; restart the ones actually running.
@@ -654,11 +737,17 @@ def restart_target(
             if container in running:
                 runner(["docker", "restart", container])
 
+    # The deadline is wall-clock time: each poll is two probes that can
+    # each wait out HTTP_TIMEOUT_SECONDS, and counting only the sleeps once
+    # stretched "90s" past ten minutes on a hanging target, holding the
+    # sync lock throughout. ``waited`` still counts the sleeps, so a no-op
+    # sleep (the tests) cannot spin on a real clock.
+    deadline = clock() + HEALTH_DEADLINE_SECONDS
     waited = 0.0
     # The LATEST observation decides the verdict at the deadline.
     last_mismatch: Optional[Identity] = None
     last_error: Optional[str] = None
-    while waited <= HEALTH_DEADLINE_SECONDS:
+    while True:
         try:
             status, payload = http_get(target["health_url"], {})
         except OSError:
@@ -676,10 +765,12 @@ def restart_target(
                     identity, expected_version, expected_files
                 )
                 if not mismatched:
-                    return "ok", describe_proof(identity, proven)
+                    return "ok", describe_proof(identity, proven, files_note), identity
                 last_mismatch, last_error = identity, None
         else:
             last_mismatch = last_error = None
+        if waited >= HEALTH_DEADLINE_SECONDS or clock() >= deadline:
+            break
         sleep(HEALTH_POLL_SECONDS)
         waited += HEALTH_POLL_SECONDS
     if last_mismatch is not None:
@@ -688,32 +779,34 @@ def restart_target(
                 last_mismatch, expected_version, expected_files, previous_version
             )
             + f", for {HEALTH_DEADLINE_SECONDS}s"
-        )
+        ), last_mismatch
     if last_error is not None:
         return "failed", (
             f"health answered but the code identity probe did not "
-            f"({last_error}) within {HEALTH_DEADLINE_SECONDS}s"
-        )
-    return "failed", f"health check did not pass within {HEALTH_DEADLINE_SECONDS}s"
+            f"({last_error}) within {HEALTH_DEADLINE_SECONDS}s; "
+            f"{_probe_remedy(last_error)}"
+        ), None
+    return "failed", f"health check did not pass within {HEALTH_DEADLINE_SECONDS}s", None
 
 
 def transient_cause(
     config: dict[str, Any],
-    target: dict[str, Any],
     desired: str,
     files_before: Optional[str],
     runner: Callable = run_command,
     fingerprint: Callable = checkout_fingerprint,
 ) -> Optional[str]:
-    """Why a post-restart mismatch may be the checkout's doing, or None.
+    """Why the checkout no longer backs what the target booted, or None.
 
     The host digest and the desired commit were taken BEFORE the restart; a
     parallel session committing, editing a tracked file or adding one to the
-    package while the target booted makes the target load newer files than
-    that, a real but self-healing mismatch. Those are retried by the next
-    clean tick, never stamped: a held target needs a human. When in doubt
-    this says transient (the cost is one extra restart next tick, which
-    stamps if the mismatch was real after all).
+    package while the target booted makes the target load other files than
+    that. Asked after EVERY answer: a mismatch it explains is real but
+    self-healing (retried by the next clean tick, not stamped on the first
+    occurrence: a held target needs a human), and a match it explains is
+    not proof the target runs the desired commit's code, so it is never
+    called verified. When in doubt this says unverified (the cost is one
+    extra restart next tick; a second for the same commit is held).
     """
     repo = config["repo"]
     rc, head = git(repo, "rev-parse", "HEAD", runner=runner)
@@ -724,7 +817,7 @@ def transient_cause(
     clean_paths = config.get("clean_paths", DEFAULT_CLEAN_PATHS)
     if dirty_tracked_paths(repo, clean_paths, runner=runner):
         return "tracked files were modified"
-    if files_before is not None and host_files(config, target, fingerprint) != files_before:
+    if files_before is not None and host_files(config, fingerprint)[0] != files_before:
         return "files under the package changed"
     return None
 
@@ -745,6 +838,11 @@ def failure_stamp_path(state_dir: Path, name: str) -> Path:
     return state_dir / f"{name}.failed"
 
 
+def unverified_stamp_path(state_dir: Path, name: str) -> Path:
+    """The commit whose last restart ended unverified (the cap's count)."""
+    return state_dir / f"{name}.unverified"
+
+
 def read_state_file(path: Path) -> Optional[str]:
     try:
         value = path.read_text(encoding="utf-8").strip() or None
@@ -754,7 +852,7 @@ def read_state_file(path: Path) -> Optional[str]:
     # value must read as absent (marker: re-initialize; stamp: re-arm), not
     # flow into `git diff` where it wedges every future tick on the
     # diff-failed escalation sentinel.
-    if value is not None and not re.fullmatch(r"[0-9a-f]{40}", value):
+    if value is not None and not COMMIT_RE.fullmatch(value):
         return None
     return value
 
@@ -778,6 +876,7 @@ def sync(
     http_get: Callable = http_get_json,
     sleep: Callable = sleep_seconds,
     fingerprint: Callable = checkout_fingerprint,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """One tick. Returns {"repo": {...}, "targets": {name: {action, detail}}}."""
     repo = config["repo"]
@@ -964,8 +1063,8 @@ def sync(
 
         # The checkout's side of the identity check, taken just before the
         # restart so it describes the tree the target is about to load.
-        files_before = host_files(config, target, fingerprint)
-        outcome, detail = restart_target(
+        files_before, files_note = host_files(config, fingerprint)
+        outcome, detail, booted = restart_target(
             target,
             runner=runner,
             http_get=http_get,
@@ -973,32 +1072,53 @@ def sync(
             expected_version=desired,
             expected_files=files_before,
             previous_version=marker,
+            files_note=files_note,
+            clock=clock,
         )
         state_dir.mkdir(parents=True, exist_ok=True)
+        unverified_stamp = unverified_stamp_path(state_dir, name)
+        # Whatever the target answered, it is evidence about the checkout
+        # as it stood before the restart: if that moved since, neither a
+        # match nor a mismatch says what the desired commit runs like.
+        cause = None
+        if booted is not None:
+            cause = transient_cause(
+                config, desired, files_before, runner=runner, fingerprint=fingerprint
+            )
+        if cause:
+            facts = identity_facts(booted or Identity(), desired, files_before)
+            if read_state_file(unverified_stamp) != desired:
+                write_state_file(unverified_stamp, desired)
+                summary["targets"][name] = {
+                    "action": "unverified",
+                    "detail": (
+                        f"{marker[:12]} -> {desired[:12]} not confirmed: "
+                        f"{cause} during the restart ({facts}); not held: "
+                        "the next clean tick restarts and verifies"
+                    ),
+                }
+                continue
+            # The second unverified restart of this commit: whatever keeps
+            # changing the checkout during boots will do it again, and an
+            # exit-0 restart every 5 minutes is invisible. Hold it.
+            unverified_stamp.unlink(missing_ok=True)
+            outcome, detail = "failed", (
+                f"{cause} during a second restart for {desired[:12]}: "
+                "something keeps changing the checkout while the target "
+                "boots (files written into the package?); stop it, restart, "
+                f"then --mark-deployed ({facts})"
+            )
         if outcome == "ok":
             write_state_file(marker_file, desired)
             escalation_stamp_path(state_dir, name).unlink(missing_ok=True)
             failure_stamp.unlink(missing_ok=True)
+            unverified_stamp.unlink(missing_ok=True)
             summary["targets"][name] = {
                 "action": "restarted",
                 "detail": f"{marker[:12]} -> {desired[:12]}, {detail}",
             }
             continue
         if outcome == "mismatch":
-            cause = transient_cause(
-                config, target, desired, files_before,
-                runner=runner, fingerprint=fingerprint,
-            )
-            if cause:
-                summary["targets"][name] = {
-                    "action": "unverified",
-                    "detail": (
-                        f"{marker[:12]} -> {desired[:12]} not confirmed: "
-                        f"{detail}; {cause} during the restart, so not "
-                        "held: the next clean tick restarts and verifies"
-                    ),
-                }
-                continue
             detail = f"{detail}; {MISMATCH_REMEDY}"
         write_state_file(failure_stamp, desired)
         summary["targets"][name] = {"action": "failed", "detail": detail}
@@ -1019,7 +1139,7 @@ def verify_running(
     warning; the restart verify uses the same predicate.
     """
     identity = probe_identity(target, http_get=http_get)
-    files = host_files(config, target, fingerprint)
+    files, files_note = host_files(config, fingerprint)
     result: dict[str, Any] = {"identity": identity, "checkout_files": files}
     if identity.error:
         result.update(verdict="unreachable", detail=f"could not verify ({identity.error})")
@@ -1034,17 +1154,20 @@ def verify_running(
     else:
         result.update(
             verdict="verified" if proven else "unverified",
-            detail=describe_proof(identity, proven),
+            detail=describe_proof(identity, proven, files_note),
         )
     return result
 
 
-def resolve_head(config: dict[str, Any], runner: Callable = run_command) -> str:
-    """The checkout's HEAD as it is (no fetch), or SystemExit."""
+def resolve_head(
+    config: dict[str, Any], runner: Callable = run_command, consequence: str = ""
+) -> str:
+    """The checkout's HEAD as it is (no fetch), or SystemExit naming the
+    ``consequence`` (what the caller therefore did not do)."""
     rc, head = git(config["repo"], "rev-parse", "HEAD", runner=runner)
     if rc != 0 or not COMMIT_RE.fullmatch(head):
         raise SystemExit(
-            "deploy_sync: cannot resolve HEAD "
+            f"deploy_sync: cannot resolve HEAD{'; ' + consequence if consequence else ''} "
             f"({head.splitlines()[0] if head else 'rev-parse failed'})"
         )
     return head
@@ -1069,10 +1192,6 @@ def check(
         result["marker"] = read_state_file(marker_path(state_dir, target["name"]))
         results[target["name"]] = result
     return results
-
-
-def _short(value: Optional[str]) -> str:
-    return value[:12] if value else "none"
 
 
 def format_check_line(name: str, result: dict[str, Any]) -> str:
@@ -1103,12 +1222,7 @@ def mark_deployed(
     disk, and saying otherwise here would mark commits as deployed that
     never were.
     """
-    rc, head = git(config["repo"], "rev-parse", "HEAD", runner=runner)
-    if rc != 0 or not re.fullmatch(r"[0-9a-f]{40}", head):
-        raise SystemExit(
-            "deploy_sync: cannot resolve HEAD; nothing marked "
-            f"({head.splitlines()[0] if head else 'rev-parse failed'})"
-        )
+    head = resolve_head(config, runner=runner, consequence="nothing marked")
     selected = {t["name"] for t in config["targets"]}
     if names:
         unknown = set(names) - selected
@@ -1123,6 +1237,7 @@ def mark_deployed(
         write_state_file(marker_path(state_dir, name), head)
         escalation_stamp_path(state_dir, name).unlink(missing_ok=True)
         failure_stamp_path(state_dir, name).unlink(missing_ok=True)
+        unverified_stamp_path(state_dir, name).unlink(missing_ok=True)
         result[name] = head
     return result
 
@@ -1181,16 +1296,26 @@ def main(
         print(f"deploy_sync: cannot read config {args.config}: {exc}", file=sys.stderr)
         return 1
 
-    args.state_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        with exclusive_lock(args.state_dir / LOCK_NAME):
-            if args.check:
+    if args.check:
+        try:
+            with reader_lock(args.state_dir / LOCK_NAME):
                 return _print_check(
                     check(
                         config, args.state_dir,
                         runner=runner, http_get=http_get, fingerprint=fingerprint,
                     )
                 )
+        except SyncBusy:
+            print(
+                "deploy_sync: another run is active (it may be restarting "
+                "targets); --check cannot answer now, try again shortly",
+                file=sys.stderr,
+            )
+            return 1
+
+    args.state_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with exclusive_lock(args.state_dir / LOCK_NAME):
             if args.mark_deployed is not None:
                 marked = mark_deployed(
                     config, args.state_dir, args.mark_deployed, runner=runner
@@ -1219,13 +1344,6 @@ def main(
                 fingerprint=fingerprint,
             )
     except SyncBusy:
-        if args.check:
-            print(
-                "deploy_sync: another run is active (it may be restarting "
-                "targets); --check cannot answer now, try again shortly",
-                file=sys.stderr,
-            )
-            return 1
         print("deploy_sync: another run is active, nothing to do")
         return 0
 

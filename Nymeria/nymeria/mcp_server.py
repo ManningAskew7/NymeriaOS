@@ -223,7 +223,11 @@ async def nymeria_turn_status(
     ``claude_code_jobs``). Its
     ``busy_threads`` detail is cross-user metadata and arrives populated only
     for an admin identity, so an empty list from a non-admin means "not visible
-    to you" rather than "nothing running".
+    to you" rather than "nothing running". An admin identity also gets
+    ``code_version`` (the commit the API booted from; null without git
+    metadata, as in Docker) and ``code_fingerprint`` (a digest of the files it
+    booted), which answer "did the deployment pick up the commit" before a
+    live check; other identities get neither key.
     """
     if thread_id:
         return await _json_call(

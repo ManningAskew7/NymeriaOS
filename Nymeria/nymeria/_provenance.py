@@ -146,8 +146,15 @@ def checkout_commit(package_dir: Path = _PACKAGE_DIR) -> Optional[str]:
     return None
 
 
+def _walk_error(err: OSError) -> None:
+    # A directory that vanished mid-walk is skipped; one this user cannot
+    # list aborts the walk (below), never shortens the count.
+    if not isinstance(err, FileNotFoundError):
+        raise err
+
+
 def _stat_paths(package_dir: Path):
-    for root, dirs, names in os.walk(package_dir):
+    for root, dirs, names in os.walk(package_dir, onerror=_walk_error):
         dirs[:] = [d for d in dirs if d != "__pycache__"]
         for name in names:
             yield os.path.join(root, name)
@@ -157,13 +164,18 @@ def _stat_paths(package_dir: Path):
 
 
 def source_fingerprint(package_dir: Path = _PACKAGE_DIR) -> Optional[Fingerprint]:
-    """None when the package has no files (gone from disk) or cannot be read."""
+    """None when the package has no files (gone from disk) or any part of
+    it cannot be listed or stat'ed. Skipping the unreadable part instead
+    would fingerprint a different tree for each user: deploy-sync compares
+    this process's digest with one the HOST user computes over the same
+    files (a bind mount), and a count short on one side only reads as
+    different code (#423). A vanished file is skipped, as on every side."""
     files = mtime_sum = size_sum = 0
     try:
         for path in _stat_paths(package_dir):
             try:
                 st = os.stat(path)
-            except OSError:
+            except FileNotFoundError:
                 continue
             files += 1
             mtime_sum += st.st_mtime_ns
@@ -254,6 +266,10 @@ def drift(record: BootRecord, package_dir: Path = _PACKAGE_DIR) -> Optional[str]
         if record.fingerprint is not None:
             now_print = source_fingerprint(package_dir)
             if now_print is None:
+                if package_dir.is_dir():
+                    # A permissions change, not newer code; a restart
+                    # would not even be able to fingerprint it.
+                    return "part of the package became unreadable since this process started"
                 # Uninstalled or moved: the next start will not find it.
                 return "the package's files are gone from disk since this process started"
             if now_print == record.fingerprint:

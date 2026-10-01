@@ -132,15 +132,33 @@ class FakeHttp:
 
 
 class FakeFingerprint:
-    """The host-checkout digest seam (``checkout_fingerprint``)."""
+    """The host-checkout digest seam (``checkout_fingerprint``). An
+    exception as the value is raised, the way the real walk raises
+    ``PackageUnreadable``."""
 
-    def __init__(self, value: str | None):
+    def __init__(self, value):
         self.value = value
         self.paths: list[str] = []
 
     def __call__(self, package_dir):
         self.paths.append(str(package_dir))
+        if isinstance(self.value, Exception):
+            raise self.value
         return self.value
+
+
+class FakeClock:
+    """A monotonic clock that only moves when told: ``sleep`` advances it,
+    and a test can make each probe cost time too."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
 
 
 @pytest.fixture
@@ -445,6 +463,7 @@ def test_mark_deployed_advances_markers_and_clears_stamps(world):
     for name in ("slim", "docker"):
         (world.state_dir / f"{name}.escalated").write_text(SHA_OLD, encoding="utf-8")
         (world.state_dir / f"{name}.failed").write_text(SHA_OLD, encoding="utf-8")
+        (world.state_dir / f"{name}.unverified").write_text(SHA_OLD, encoding="utf-8")
 
     marked = deploy_sync.mark_deployed(
         world.config, world.state_dir, None, runner=world.runner
@@ -455,6 +474,7 @@ def test_mark_deployed_advances_markers_and_clears_stamps(world):
         assert marker(world, name) == SHA_LOCAL
         assert not (world.state_dir / f"{name}.escalated").exists()
         assert not (world.state_dir / f"{name}.failed").exists()
+        assert not (world.state_dir / f"{name}.unverified").exists()
     assert ("restart-slim",) not in world.runner.commands()
     # Escalation dead-end regression: after the ack, the next tick is a
     # plain noop instead of re-escalating forever.
@@ -931,7 +951,7 @@ def test_empty_token_file_fails_safe(world, tmp_path):
 def test_mark_deployed_refuses_an_unresolvable_head(world):
     world.head_rc = 1
     world.head = "fatal: ambiguous argument 'HEAD'"
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="cannot resolve HEAD; nothing marked"):
         deploy_sync.mark_deployed(
             world.config, world.state_dir, None, runner=world.runner
         )
@@ -944,8 +964,8 @@ def test_mark_deployed_refuses_an_unresolvable_head(world):
 # booted commit and a digest of its boot-time file fingerprint on
 # /status/turns (admin token); the host digest is the ``fingerprint`` seam
 # (FILES_HOST unless a test changes it). Edges skipped on purpose: a sha256
-# repository (reads as "no identity", filed as a follow-up) and a
-# non-POSIX mount (the per-target verify_files opt-out covers it).
+# repository (nothing deploys there at all, a pre-existing gap filed as a
+# follow-up) and a mount that does not preserve stat (no target has one).
 
 
 def _idle(**identity):
@@ -1083,27 +1103,52 @@ def test_matching_files_verify_a_target_that_reports_no_commit(world):
     assert _stamp(world, "docker") is None
 
 
-def test_package_dir_and_verify_files_are_per_target(world):
-    """A target can name the package it imports, and opt out of the file
-    check (a mount that does not preserve stat): an unchecked field is
-    never held against it, and the line says nothing was proven."""
+UNREADABLE = "/repo/Nymeria/nymeria/core/locked"
+UNREADABLE_NOTE = (
+    f"files not checked: cannot read {UNREADABLE} in the checkout as this "
+    "user; fix its permissions"
+)
+
+
+def test_an_unreadable_checkout_directory_is_unverified_not_a_mismatch(
+    world, tmp_path, capsys
+):
+    """S-LOW-3: deploy-sync runs as the host user and a container may not;
+    a package directory only one of them can read used to shorten one
+    count, which read as "booted files differ (stale image, missing bind
+    mount ...)" and held the target. Now the walk refuses to digest and the
+    line says which path to fix; the commit still verifies slim."""
     _local_commit(world)
-    world.config["targets"][0]["package_dir"] = "/srv/other/nymeria"
-    world.config["targets"][1]["verify_files"] = False
+    world.fingerprint.value = deploy_sync.PackageUnreadable(UNREADABLE)
     world.http.routes["http://docker/status/turns"] = _idle(
         code_version=None, code_fingerprint=FILES_OTHER
     )
     world.http.routes["http://slim/status/turns"] = _phased(
         world, "slim",
-        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
-        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_HOST),
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_OTHER),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_OTHER),
     )
+
     summary = run_sync(world)
-    assert world.fingerprint.paths == ["/srv/other/nymeria"]
-    docker = summary["targets"]["docker"]
+
+    docker, slim = summary["targets"]["docker"], summary["targets"]["slim"]
     assert docker["action"] == "restarted"
-    assert "unverified" in docker["detail"] and "verify_files off" in docker["detail"]
-    assert summary["targets"]["slim"]["detail"].endswith("verified commit+files")
+    assert docker["detail"] == (
+        f"{SHA_OLD[:12]} -> {SHA_LOCAL[:12]}, unverified ({UNREADABLE_NOTE})"
+    )
+    assert slim["action"] == "restarted"
+    assert slim["detail"] == (
+        f"{SHA_OLD[:12]} -> {SHA_LOCAL[:12]}, verified commit ({UNREADABLE_NOTE})"
+    )
+    assert _stamp(world, "docker") is None and _stamp(world, "slim") is None
+    # The host digest describes the checkout's own package.
+    assert set(world.fingerprint.paths) == {"/repo/Nymeria/nymeria"}
+
+    # --check says the same, read-only, and passes (nothing is wrong with
+    # the code, only with what this user can read).
+    rc, out, err = _run_main(world, tmp_path, capsys, "--check")
+    assert rc == 0, err
+    assert f"deploy_sync: check: docker: unverified ({UNREADABLE_NOTE}) [" in out
 
 
 def _move_head(world):
@@ -1118,6 +1163,15 @@ def _add_package_file(world):
     world.fingerprint.value = FILES_OTHER  # an untracked file appeared
 
 
+def _lose_head(world):
+    world.head_rc = 1  # a ref being rewritten, a lock file mid-update
+
+
+def _unverified_stamp(world, name):
+    path = world.state_dir / f"{name}.unverified"
+    return path.read_text(encoding="utf-8").strip() if path.exists() else None
+
+
 @pytest.mark.parametrize(
     "during_restart, booted, cause",
     [
@@ -1127,8 +1181,10 @@ def _add_package_file(world):
          "tracked files were modified"),
         (_add_package_file, {"code_version": SHA_LOCAL, "code_fingerprint": FILES_OTHER},
          "files under the package changed"),
+        (_lose_head, {"code_version": SHA_THIRD, "code_fingerprint": FILES_HOST},
+         "HEAD became unreadable"),
     ],
-    ids=["head-moved", "tree-dirtied", "package-file-added"],
+    ids=["head-moved", "tree-dirtied", "package-file-added", "head-unreadable"],
 )
 def test_a_mismatch_the_checkout_explains_is_unverified_and_retried(
     world, tmp_path, capsys, during_restart, booted, cause
@@ -1136,7 +1192,9 @@ def test_a_mismatch_the_checkout_explains_is_unverified_and_retried(
     """V7: a parallel session committing or editing while the target boots
     makes it load newer files than the pre-restart digest: a real but
     self-healing mismatch. No marker, no failure stamp, exit 0; the next
-    clean tick restarts and verifies."""
+    clean tick restarts and verifies. The line LEADS with what the checkout
+    did, then the facts, never the after-restart wiring guesses (a lost
+    bind mount, another tree) that would send a reader the wrong way."""
     _local_commit(world)
     world.on_restart["restart-slim"] = lambda: during_restart(world)
     world.http.routes["http://slim/status/turns"] = _phased(
@@ -1148,16 +1206,24 @@ def test_a_mismatch_the_checkout_explains_is_unverified_and_retried(
     rc, out, err = _run_main(world, tmp_path, capsys)
 
     assert rc == 0
-    assert "deploy_sync: slim: unverified (" in out
-    assert cause in out
+    line = next(x for x in out.splitlines() if x.startswith("deploy_sync: slim: "))
+    assert line.startswith(
+        f"deploy_sync: slim: unverified ({SHA_OLD[:12]} -> {SHA_LOCAL[:12]} "
+        f"not confirmed: {cause} during the restart (it reported commit "
+        f"{booted['code_version'][:12]} files {booted['code_fingerprint'][:12]}, "
+        f"the checkout held {SHA_LOCAL[:12]} files {FILES_HOST[:12]} before it)"
+    )
+    assert "another tree" not in line and "bind mount" not in line
     assert "slim" not in err
     assert marker(world, "slim") == SHA_OLD
     assert _stamp(world, "slim") is None
+    assert _unverified_stamp(world, "slim") == SHA_LOCAL
 
     # Next tick: the tree is clean again and the target reports exactly
     # what the checkout holds now.
     world.on_restart.clear()
     world.status_out = ""
+    world.head_rc = 0
     world.http.routes["http://slim/status/turns"] = _idle(
         code_version=world.head, code_fingerprint=world.fingerprint.value
     )
@@ -1167,6 +1233,117 @@ def test_a_mismatch_the_checkout_explains_is_unverified_and_retried(
     assert summary["targets"]["slim"]["detail"].endswith("verified commit+files")
     assert world.runner.commands().count(("restart-slim",)) == restarts + 1
     assert marker(world, "slim") == world.head
+    assert _unverified_stamp(world, "slim") is None  # success clears the count
+
+
+def test_a_checkout_that_changes_during_every_boot_is_held_on_the_second_try(
+    world, tmp_path, capsys
+):
+    """S-MED-1: something writing into the package during every boot (an
+    agent's scratch modules, say) made every tick an exit-0 "unverified"
+    restart of the target, every 5 minutes, forever. The second consecutive
+    unverified restart for the SAME commit is failed then held, naming the
+    likely cause and the remedy."""
+    _local_commit(world)
+    churn = iter(f"{i:016x}" for i in range(1, 100))
+
+    def write_into_the_package():
+        world.fingerprint.value = next(churn)
+
+    def turns():
+        if ("restart-slim",) not in world.runner.commands():
+            return _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST)
+        # It boots whatever the churn left on disk.
+        return _idle(code_version=SHA_LOCAL, code_fingerprint=world.fingerprint.value)
+
+    world.on_restart["restart-slim"] = write_into_the_package
+    world.http.routes["http://slim/status/turns"] = turns
+
+    rc, out, _ = _run_main(world, tmp_path, capsys)
+    assert rc == 0
+    assert "deploy_sync: slim: unverified (" in out
+    assert _stamp(world, "slim") is None
+
+    rc, out, err = _run_main(world, tmp_path, capsys)
+    assert rc == 1
+    line = next(x for x in err.splitlines() if x.startswith("deploy_sync: slim: "))
+    assert line.startswith(
+        "deploy_sync: slim: failed (files under the package changed during a "
+        f"second restart for {SHA_LOCAL[:12]}: something keeps changing the "
+        "checkout while the target boots (files written into the package?); "
+        "stop it, restart, then --mark-deployed"
+    )
+    assert marker(world, "slim") == SHA_OLD
+    assert _stamp(world, "slim") == SHA_LOCAL
+    assert _unverified_stamp(world, "slim") is None
+
+    # Held: no third restart into the churn.
+    restarts = world.runner.commands().count(("restart-slim",))
+    assert run_sync(world)["targets"]["slim"]["action"] == "held"
+    assert world.runner.commands().count(("restart-slim",)) == restarts
+
+
+def test_an_unverified_count_is_per_commit(world, tmp_path, capsys):
+    """The cap counts restarts of one commit: a new commit landing during
+    a restart is the ordinary case (every commit moves HEAD), so a stale
+    count from the previous commit never turns the next one into a held
+    target."""
+    _local_commit(world)
+    (world.state_dir / "slim.unverified").write_text(SHA_OLD, encoding="utf-8")
+    world.on_restart["restart-slim"] = lambda: _dirty_tree(world)
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_OTHER),
+    )
+    summary = run_sync(world)
+    assert summary["targets"]["slim"]["action"] == "unverified"
+    assert _unverified_stamp(world, "slim") == SHA_LOCAL
+    assert _stamp(world, "slim") is None
+
+
+@pytest.mark.parametrize(
+    "during_restart, cause",
+    [
+        (_dirty_tree, "tracked files were modified"),
+        (_move_head, f"HEAD moved to {SHA_NEW[:12]}"),
+    ],
+    ids=["tree-dirtied", "head-moved"],
+)
+def test_a_match_while_the_checkout_moved_is_never_called_verified(
+    world, during_restart, cause
+):
+    """C-LOW-1: "verified" claims the target runs the desired commit's
+    code. An edit or a commit landing while slim boots is booted by slim
+    AND by docker after it, and each then reports exactly the files the
+    host digested just before ITS restart, so the digests agree. With the
+    checkout no longer at the clean desired commit when the answer comes
+    in, neither line may say verified, advance its marker, or stamp it."""
+    _local_commit(world)
+    world.on_restart["restart-slim"] = lambda: during_restart(world)
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_HOST),
+    )
+    world.http.routes["http://docker/status/turns"] = _phased(
+        world, "docker",
+        _idle(code_version=None, code_fingerprint=FILES_HOST),
+        _idle(code_version=None, code_fingerprint=FILES_HOST),
+    )
+
+    summary = run_sync(world)
+
+    for name in ("slim", "docker"):
+        result = summary["targets"][name]
+        assert result["action"] == "unverified"
+        assert result["detail"].startswith(
+            f"{SHA_OLD[:12]} -> {SHA_LOCAL[:12]} not confirmed: {cause} "
+            "during the restart"
+        )
+        assert "verified" not in result["detail"].replace("unverified", "")
+        assert marker(world, name) == SHA_OLD
+        assert _stamp(world, name) is None
 
 
 def test_a_slow_boot_is_polled_through_not_judged_early(world):
@@ -1192,18 +1369,126 @@ def test_a_slow_boot_is_polled_through_not_judged_early(world):
     assert _stamp(world, "slim") is None
 
 
-def test_an_identity_probe_that_never_answers_fails_the_restart(world):
-    """/health answers but /status/turns never does (503 to the deadline):
-    nothing proved the new code is serving, so it is not marked."""
+@pytest.mark.parametrize(
+    "before, status, remedy",
+    [
+        # The agent never finished building: the API's own fault.
+        (_idle(code_version=SHA_OLD), 503,
+         "; check the target's log, fix it, restart, then --mark-deployed"),
+        # Down at the idle gate (a reboot), so the token was never tested
+        # before the restart: an expired or non-admin token shows up here.
+        (refused(), 401,
+         "; the service token is expired or not admin: rotate it, then "
+         "--mark-deployed"),
+        (refused(), 403,
+         "; the service token is expired or not admin: rotate it, then "
+         "--mark-deployed"),
+    ],
+    ids=["503", "401", "403"],
+)
+def test_an_identity_probe_that_never_answers_fails_the_restart(
+    world, before, status, remedy
+):
+    """/health answers but /status/turns never does to the deadline:
+    nothing proved the new code is serving, so it is not marked. That is
+    `failed`, not `unverified`, ON PURPOSE: the stamp holds the target
+    (loud, exit 1 every tick) instead of a restart every 5 minutes, and
+    the line names the remedy for the likely cause."""
     _local_commit(world)
     world.http.routes["http://slim/status/turns"] = _phased(
-        world, "slim", _idle(code_version=SHA_OLD), (503, None)
+        world, "slim", before, (status, None)
     )
     summary = run_sync(world)
     slim = summary["targets"]["slim"]
     assert slim["action"] == "failed"
-    assert "identity probe did not (identity probe answered 503)" in slim["detail"]
+    assert slim["detail"] == (
+        "health answered but the code identity probe did not (identity probe "
+        f"answered {status}) within {deploy_sync.HEALTH_DEADLINE_SECONDS}s{remedy}"
+    )
     assert marker(world, "slim") == SHA_OLD
+    assert _stamp(world, "slim") == SHA_LOCAL
+    # Held from here on: no 5-minute restart storm while it stays broken.
+    restarts = world.runner.commands().count(("restart-slim",))
+    assert run_sync(world)["targets"]["slim"]["action"] == "held"
+    assert world.runner.commands().count(("restart-slim",)) == restarts
+
+
+def test_the_verify_deadline_is_wall_clock_time(world):
+    """C-NIT: each poll makes two probes that may each wait out their 10 s
+    timeout, so counting only the 3 s sleeps stretched "within 90s" to
+    over ten minutes on a hanging target, all of it holding the sync
+    lock. The deadline is wall-clock time now: the target gives up at 90 s
+    plus at most the poll in flight."""
+    _local_commit(world)
+    clock = FakeClock()
+
+    def hangs_to_its_timeout(answer):
+        def route():
+            clock.now += deploy_sync.HTTP_TIMEOUT_SECONDS
+            return answer
+        return route
+
+    world.http.routes["http://slim/health"] = hangs_to_its_timeout((200, {"status": "ok"}))
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim", _idle(code_version=SHA_OLD),
+        TimeoutError("timed out"),
+    )
+    plain_turns = world.http.routes["http://slim/status/turns"]
+
+    def turns():
+        if ("restart-slim",) in world.runner.commands():
+            clock.now += deploy_sync.HTTP_TIMEOUT_SECONDS
+        return plain_turns()
+
+    world.http.routes["http://slim/status/turns"] = turns
+
+    summary = deploy_sync.sync(
+        world.config, world.state_dir, runner=world.runner,
+        http_get=world.http, sleep=clock.sleep, fingerprint=world.fingerprint,
+        clock=clock,
+    )
+
+    slim = summary["targets"]["slim"]
+    assert slim["action"] == "failed"
+    assert "(probe failed: TimeoutError) within 90s" in slim["detail"]
+    one_poll = 2 * deploy_sync.HTTP_TIMEOUT_SECONDS + deploy_sync.HEALTH_POLL_SECONDS
+    # Wall time spent on slim: from its first probe after the restart
+    # (the idle probe before it costs nothing here) to giving up.
+    assert clock.now <= deploy_sync.HEALTH_DEADLINE_SECONDS + one_poll
+
+
+def test_the_latest_observation_decides_at_the_deadline(world):
+    """A mismatch seen early, then a target that stops answering through
+    the deadline (it crashed after booting the wrong code): the verdict is
+    what is true at the end, "health check did not pass", not the stale
+    mismatch, so the line never blames wiring for a crash."""
+    _local_commit(world)
+    answers = iter([(200, {"status": "ok"})] * 3)
+
+    def health():
+        if ("restart-slim",) not in world.runner.commands():
+            return (200, {"status": "ok"})
+        return next(answers, refused())
+
+    world.http.routes["http://slim/health"] = health
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD),
+        _idle(code_version=SHA_THIRD, code_fingerprint=FILES_HOST),
+    )
+    summary = run_sync(world)
+    slim = summary["targets"]["slim"]
+    assert slim["action"] == "failed"
+    assert slim["detail"] == (
+        f"health check did not pass within {deploy_sync.HEALTH_DEADLINE_SECONDS}s"
+    )
+    assert _stamp(world, "slim") == SHA_LOCAL
+
+
+NO_IDENTITY = (
+    "unverified (target reports no code identity: no git metadata, and no "
+    "boot file fingerprint, e.g. a package directory it could not read)"
+)
 
 
 @pytest.mark.parametrize(
@@ -1211,12 +1496,11 @@ def test_an_identity_probe_that_never_answers_fails_the_restart(world):
     [
         # An API predating #423 (or a non-admin token): no identity keys.
         ({}, "unverified (old API or non-admin token: no code identity reported)"),
-        # A current API whose boot record was unreadable: keys, both null.
-        ({"code_version": None, "code_fingerprint": None},
-         "unverified (target reports no code identity)"),
+        # A current API with no git metadata whose boot walk failed (a
+        # package directory it could not read): keys, both null.
+        ({"code_version": None, "code_fingerprint": None}, NO_IDENTITY),
         # Malformed values are no identity, never a mismatch.
-        ({"code_version": "abc", "code_fingerprint": "XYZ"},
-         "unverified (target reports no code identity)"),
+        ({"code_version": "abc", "code_fingerprint": "XYZ"}, NO_IDENTITY),
     ],
     ids=["old-api", "nulls", "malformed"],
 )
@@ -1296,17 +1580,17 @@ def _all_current(world):
 
 
 def _state_snapshot(world):
+    # The lock file included: read-only means --check creates nothing.
     return {
         p.name: (p.read_bytes(), p.stat().st_mtime_ns)
         for p in world.state_dir.iterdir()
-        if p.name != deploy_sync.LOCK_NAME
     }
 
 
 def test_check_reports_each_target_and_changes_nothing(world, tmp_path, capsys):
-    """V12: read-only. No fetch, pull or restart; no state written; one
-    line per target naming what it reports against the checkout and the
-    marker; exit 0 when everything matches."""
+    """V12: read-only. No fetch, pull or restart; no state written, not
+    even the lock file; one line per target naming what it reports against
+    the checkout and the marker; exit 0 when everything matches."""
     _all_current(world)
     before = _state_snapshot(world)
 
@@ -1380,6 +1664,20 @@ def test_check_on_a_target_reporting_nothing_says_so_and_passes(
         "deploy_sync: check: docker: unverified (old API or non-admin token: "
         "no code identity reported)"
     ) in out
+
+
+def test_check_on_a_host_that_never_ran_a_tick_creates_no_state(
+    world, tmp_path, capsys
+):
+    """No state dir yet (a fresh host, or a mistyped --state-dir): --check
+    still answers, and leaves nothing behind (S-NIT)."""
+    _all_current(world)
+    world.state_dir = tmp_path / "never-created"
+    rc, out, err = _run_main(world, tmp_path, capsys, "--check")
+    assert rc == 0, err
+    assert "deploy_sync: check: slim: verified commit+files [" in out
+    assert "marker none" in out
+    assert not world.state_dir.exists()
 
 
 def test_check_never_answers_mid_tick(world, tmp_path, capsys):

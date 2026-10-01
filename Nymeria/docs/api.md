@@ -165,7 +165,7 @@ it expects rather than merely that something answers:
 | Field | Meaning |
 | --- | --- |
 | `code_version` | The git commit the process started from, or `null` when its source tree has no git metadata (a Docker container's bind mount, an installed package). |
-| `code_fingerprint` | A 16-hex digest of the boot-time file fingerprint: file count, summed modification times (ns) and summed sizes over the package (minus `__pycache__`) plus the `run.py` beside it. `null` when unavailable. A bind mount preserves all three, so the host computes the same digest over its checkout. |
+| `code_fingerprint` | A 16-hex digest of the boot-time file fingerprint: file count, summed modification times (ns) and summed sizes over the package (minus `__pycache__`) plus the `run.py` beside it. `null` when unavailable, including when the process could not list or stat part of the package (a count short on one side would read as different code). A bind mount preserves all three, so the host computes the same digest over its checkout. |
 
 Both come from the record taken at startup, never a fresh read: editing a
 file after boot does not change them. When that record cannot be read, both
@@ -173,7 +173,7 @@ are `null` and the counts still answer. Other callers' responses omit both
 keys. The reference deploy automation (`scripts/deploy_sync.py`) compares
 them against the checkout after every restart.
 
-**Response:**
+**Response** (admin caller; a Docker container, so no commit):
 ```json
 {
   "active_turns": 1,
@@ -182,7 +182,9 @@ them against the checkout after every restart.
   "claude_code_jobs": 0,
   "busy_threads": [
     {"thread_id": "cli-a1b2", "holder": "astream", "held_seconds": 12.3}
-  ]
+  ],
+  "code_version": null,
+  "code_fingerprint": "0a82bfa2a3c5ebbc"
 }
 ```
 

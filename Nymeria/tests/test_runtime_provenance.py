@@ -315,6 +315,50 @@ def test_a_missing_package_has_no_digest_on_either_side(tmp_path):
     assert _server_digest(missing) is None
 
 
+@pytest.fixture
+def locked_dir(tmp_path):
+    """A package with one directory this user cannot fully read; the mode
+    is restored afterwards so pytest can clean up."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads every directory")
+    pkg = _package(tmp_path)
+    locked = pkg / "core" / "locked"
+    locked.mkdir()
+    (locked / "secret.py").write_text("Z = 1\n")
+    yield pkg, locked
+    locked.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [0o000, 0o444],  # cannot list it; can list it but not stat inside
+    ids=["unlistable", "unsearchable"],
+)
+def test_an_unreadable_directory_makes_neither_side_digest(locked_dir, mode):
+    """S-LOW-3: the host user and a container's user can differ. A walk
+    that silently skipped what it could not read counted fewer files on
+    one side only, which read as "booted files differ (stale image,
+    missing bind mount ...)" and held the target. Both walks now refuse to
+    digest such a tree: the server reports no fingerprint, the script
+    names the path."""
+    pkg, locked = locked_dir
+    locked.chmod(mode)
+    assert _server_digest(pkg) is None
+    with pytest.raises(deploy_sync.PackageUnreadable) as caught:
+        deploy_sync.checkout_fingerprint(pkg)
+    assert str(locked) in str(caught.value)
+
+
+def test_a_directory_that_became_unreadable_is_not_called_gone(locked_dir):
+    pkg, locked = locked_dir
+    record = prov.capture(pkg)
+    assert record.fingerprint is not None
+    locked.chmod(0o000)
+    assert prov.drift(record, pkg) == (
+        "part of the package became unreadable since this process started"
+    )
+
+
 def test_the_digest_is_short_hex_and_tracks_every_component():
     base = prov.Fingerprint(files=3, mtime_ns_sum=10, size_sum=20)
     digest = prov.fingerprint_digest(base)
