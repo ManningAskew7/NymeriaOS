@@ -202,20 +202,32 @@ def _restart_child_env(settings: Any) -> dict[str, str]:
     condition that motivates this (a non-UTF-8 byte in a password, a Notepad
     UTF-16 BOM), and aborting here would be worse than skipping: it would
     strand a process that has already begun shutting down.
+
+    The runtime settings file (the container shapes' app-saved settings) is
+    the exception (#434): its keys go back to their boot baseline here and the
+    file is NOT merged, because the restarted image's own boot load applies it
+    and judges it against the environment it booted with. Carrying the file's
+    values across the exec would make the file its own baseline, hiding every
+    `.env.docker` value it shadows and turning `/settings clear` into a no-op.
     """
     from dotenv import dotenv_values
 
-    from ...config.settings import get_env_file_paths
+    from ...config.settings import (
+        environ_without_runtime_settings,
+        get_env_file_paths,
+        runtime_settings_file,
+    )
 
-    child_env = os.environ.copy()
+    child_env = environ_without_runtime_settings(os.environ)
     try:
         env_paths = get_env_file_paths(settings.project_root)
     except Exception:  # noqa: BLE001 - a bad project_root must not block a restart
         logger.warning("Could not resolve env files for restart", exc_info=True)
         return child_env
+    runtime = runtime_settings_file()
     for env_path in env_paths:
         try:
-            if not env_path.exists():
+            if env_path == runtime or not env_path.exists():
                 continue
             values = dotenv_values(env_path)
         except (OSError, UnicodeDecodeError, ValueError):

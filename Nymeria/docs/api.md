@@ -2537,7 +2537,11 @@ commits or restores the previous environment:
 
 A key REMOVED from a file keeps its current value, on this path and across a
 restart alike: the loader only sets what it finds. Set it to the value you want
-rather than deleting the line.
+rather than deleting the line. The one exception is the container shapes' saved
+settings file (`/data/settings.env`): remove a key there with
+`DELETE /settings/env/{key}` (below), and an in-app `/restart api` re-applies
+that file over the environment the container started with rather than over its
+own previous values.
 
 Values a runtime shape pins are never overridden by a file: `nymeria slim`
 removes `REDIS_URL` so the process cannot reach a cross-process event bus, and
@@ -2549,6 +2553,64 @@ no turn and drops no stream.
 
 ---
 
+### Clear A Setting Saved In The App
+
+```http
+DELETE /settings/env/{key}?gate_agent_writes=false
+Authorization: Bearer <admin-token>
+```
+
+Container shapes only (#434). There a setting changed in the app is saved to
+`NYMERIA_SETTINGS_FILE` (`/data/settings.env`), which loads last and overrides
+the same key in `.env.docker`, so a later `nymeria init` value for that key is
+silently not in effect. This removes every line for `key` from that file and
+puts the value set elsewhere back in effect immediately (the boot environment
+plus the root env files, never a previous value from the file itself), or
+leaves the key unset when nothing else sets it. The agent is re-bound and the
+graph rebuilt for an LLM, tool, or credential field, as with `PATCH /settings`.
+`/settings clear <key>` (aliases `/env clear`, Telegram `/settings_clear`) is
+the command spelling.
+
+`key` is a field name or its env-var spelling, any case (`openai_api_key`,
+`OPENAI_API_KEY`); a key that is no settings field (a stale line) is accepted
+too, since every line reaches child processes' environment.
+
+**Response:**
+```json
+{
+  "message": "Cleared OPENAI_API_KEY from the app's saved settings (/data/settings.env). It now uses the value set elsewhere (for example in .env.docker). The saved key is gone; if it was a real key you still need, save it again with /settings set OPENAI_DIRECT_API_KEY <key>.",
+  "cleared": "OPENAI_API_KEY",
+  "field": "openai_api_key",
+  "updated": ["openai_api_key"],
+  "source": "elsewhere",
+  "credential": true,
+  "direct_slot": "OPENAI_DIRECT_API_KEY",
+  "restart_required": false
+}
+```
+
+`source` is `elsewhere` (the value set outside the app now applies), `unset`, or
+`pinned` (a compose-pinned key, whose dead line is removed without touching its
+value). No value is ever returned. Refusals change nothing:
+
+- **400** for a malformed key (the input is not echoed: it may be a pasted
+  value), on a shape with no saved settings file (slim and native installs save
+  to their own config file, so nothing overrides it), or when the value set
+  elsewhere is itself invalid (checked before the file is touched).
+- **403** for a non-admin, or with `gate_agent_writes=true` for a setting an
+  agent may not write (`HOOKS_ENABLED`, #157).
+- **404** when the file does not hold the key ("nothing to clear"). A key
+  that is no known setting is not named back here (it may be a pasted value);
+  a stale line the file does hold is still clearable.
+- **409** when the key's line is not in `KEY=value` form (an `export` line
+  written by hand), so it could not be removed here.
+
+The success message ends with "(restart required to take effect: /restart
+api)" when `restart_required` is true: the value set elsewhere is back in the
+process, but keys read only at startup apply after a restart. That is the
+same rule as the reload above (the `PATCH /settings` restart register plus any
+field no settings write can reach, such as `CORS_ORIGINS`); a `pinned` clear
+never needs one, since its value did not move.
 
 ---
 

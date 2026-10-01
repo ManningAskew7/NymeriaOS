@@ -338,7 +338,7 @@ land; read `SEED_TOOLS` and regenerate `tools-index.md` for the live totals).
 ### Discord Bot (30 slash commands)
 - /ask, /stop, /clear, /compact, /thread, /context, /export, /restart, /help
 - /model list, /think, /status
-- /todos (list/add/edit/schedule/repeat/complete/delete), /settings (get/set), /tools (core/optional/enabled/category/enable/disable)
+- /todos (list/add/edit/schedule/repeat/complete/delete), /settings (get/set/reload/clear), /tools (core/optional/enabled/category/enable/disable)
 - /memory (list/save/delete/search), /notepad (read/write/clear)
 - /show-tools, /channel-context
 - SSE streaming (~1.5s edit intervals), channel context toggle, workspace artifact upload
@@ -451,7 +451,7 @@ CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`).
 - **Background service**  -  `nymeria service install|uninstall|status|restart` (systemd user unit on Linux with lingering, launchd agent on macOS: starts at boot/login, restarts on crash, verified against `/health` after install; the `nymeria init` hosting choice offers the same install at the start-now step)
 - **Interactive CLI**  -  `python3 run.py cli`
 - **Non-interactive CLI**  -  `python3 run.py cli -m "prompt"` (oneshot mode with plain or JSON output)
-- **Connection profile**  -  `/login [api-url] [--user-id <id>]` validates and saves the backend URL + token + user id to `~/.nymeria/cli.json` (`0600`); the CLI auto-connects from it on next launch, `/logout` clears it. If the backend is unreachable at startup (e.g. CLI started before the API), the saved profile is kept and the Rich REPL auto-reconnects once it comes up; `/reconnect` retries on demand without re-entering the URL or token. An invalid/revoked token is not retried and prompts for a fresh `/login`. Switching `/login` to another **local** (loopback) URL reuses the saved token without re-prompting (a remote host always prompts, so a saved token is never silently resent to a new host). When the target is an unreachable loopback port, the CLI probes a small curated set (the project's configured `API_PORT`, `NYMERIA_API_URL`, `:8000`, other saved profiles) and, if a Nymeria backend answers on a different port, suggests it ("a Nymeria backend is running at http://127.0.0.1:8000. Run /login ...").
+- **Connection profile**  -  `/login [api-url] [--user-id <id>]` validates and saves the backend URL + token + user id to `~/.nymeria/cli.json` (`0600`); the CLI auto-connects from it on next launch, `/logout` clears it. If the backend is unreachable at startup (e.g. CLI started before the API), the saved profile is kept and the Rich REPL auto-reconnects once it comes up; `/reconnect` retries on demand without re-entering the URL or token. An invalid/revoked token is not retried and prompts for a fresh `/login`. Switching `/login` to another **local** (loopback) URL reuses the saved token without re-prompting (a remote host always prompts, so a saved token is never silently resent to a new host); when that backend refuses the saved token, the token prompt itself says why (expired or revoked on a 401 with the `nymeria users issue-token` remedy, the account refusal on a 403, otherwise the HTTP status), and cancelling it repeats the remedy. When the target is an unreachable loopback port, the CLI probes a small curated set (the project's configured `API_PORT`, `NYMERIA_API_URL`, `:8000`, other saved profiles) and, if a Nymeria backend answers on a different port, suggests it ("a Nymeria backend is running at http://127.0.0.1:8000. Run /login ...").
 - **CLI JSON output**  -  add `--json` to slash-command list/stat commands for machine-readable stdout: `/thread list --json`, `/tools list --json`, `/settings --json`, `/context --json`, and `/usage --json`.
 - **Session resume**  -  `python3 run.py cli -c` (continue most recent thread), `python3 run.py cli -r <ref>` (resume by ID/title)
 - **Session export/import**  -  `python3 run.py cli --export <thread-id> --format json|md|jsonl` (non-interactive export); `/export` and `/import` slash commands in the REPL
@@ -468,7 +468,8 @@ CLIProxyAPI runs as a separate stack (not part of `Nymeria/docker-compose.yml`).
 
 ### Configuration
 - 100+ environment variables across LLM, API, database, messaging, autonomous, context, voice, logging
-- Hot-reload settings via `PATCH /settings` (clears LRU cache, rebuilds graphs)
+- Hot-reload settings via `PATCH /settings` (clears LRU cache, rebuilds graphs); `/settings reload` (`POST /settings/reload`) applies an out-of-band config-file edit without a restart
+- **App-saved settings on Docker**  -  a value changed in the app is saved to `/data/settings.env`, which loads last and overrides `.env.docker`. What it overrides is named (keys and classes, never values) in an admin `/status` Settings file block, in a `nymeria doctor` Settings file row (warns for a credential or route key when run inside the API container; on the host it points at those two places), and in the api's startup log; `/settings clear <KEY>` (admin, `DELETE /settings/env/{key}`) drops the app's copy so the `.env.docker` value applies again
 - Per-thread LLM overrides: provider, model, temperature, thinking mode
 
 ---

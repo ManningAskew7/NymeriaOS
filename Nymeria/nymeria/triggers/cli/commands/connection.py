@@ -21,6 +21,8 @@ from ..transport.api import (
     _status_code,
     is_loopback_url,
     resolve_api_connection_config,
+    saved_token_refused_cancel_note,
+    saved_token_refused_reason,
     suggest_reachable_backend,
     validate_api_agent_client,
 )
@@ -286,12 +288,15 @@ async def _connection_failure_result(
     )
 
 
-def _login_cancelled() -> CommandResult:
+def _login_cancelled(note: str = "") -> CommandResult:
     """EOF at a /login prompt (Ctrl+D; Ctrl+C where the prompt lets it through,
     the REPL's own keymap binds it to clear-line) is a cancellation, not a
     failure: an EOFError's empty str used to render as a bare
-    "Command failed:". An empty token cancels too, and the prompt says so."""
-    return CommandResult.failed("Login cancelled.", error_code="login_cancelled")
+    "Command failed:". An empty token cancels too, and the prompt says so.
+    ``note`` says why the saved token did not do, when one was tried."""
+    return CommandResult.failed(
+        "Login cancelled." + (f" {note}" if note else ""), error_code="login_cancelled"
+    )
 
 
 async def _handle_login(
@@ -318,6 +323,8 @@ async def _handle_login(
     # token re-entry. A remote URL always prompts: we never silently resend a
     # saved token to a new host the user just typed.
     saved = load_cli_config(_config_path(context)).active
+    token_prompt = "API token (empty to cancel): "
+    cancel_note = ""
     if saved is not None and saved.has_token and is_loopback_url(api_url):
         try:
             return await _connect_and_save(
@@ -330,17 +337,29 @@ async def _handle_login(
             if exc.code in RECONNECTABLE_STARTUP_CODES:
                 # Backend is down; a token prompt won't help. Report (with hint).
                 return await _connection_failure_result(context, exc)
-            # Saved token rejected for this backend: fall through and prompt.
+            # Saved token rejected for this backend: say so, then prompt
+            # (#101 entry 16). The reason rides the PROMPT TEXT, not
+            # context.emit: the follow-footer REPL buffers command output
+            # until the command returns, which is after this prompt.
+            reason = saved_token_refused_reason(
+                api_url,
+                status_code=exc.status_code,
+                detail=str(exc.details.get("detail") or ""),
+                user_id=user_id,
+            )
+            token_prompt = f"{reason}\n{token_prompt}"
+            cancel_note = saved_token_refused_cancel_note(
+                api_url, status_code=exc.status_code, user_id=user_id
+            )
 
     try:
-        api_key = (
-            await context.prompt("API token (empty to cancel): ", secret=True)
-        ).strip()
+        api_key = (await context.prompt(token_prompt, secret=True)).strip()
     except (EOFError, KeyboardInterrupt):
-        return _login_cancelled()
+        return _login_cancelled(cancel_note)
     if not api_key:
         return CommandResult.failed(
-            "Login cancelled: API token is required.",
+            "Login cancelled: API token is required."
+            + (f" {cancel_note}" if cancel_note else ""),
             error_code="login_token_missing",
         )
     try:

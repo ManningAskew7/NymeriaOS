@@ -1237,6 +1237,28 @@ class GeneratedCommandsCog(commands.Cog):
         )
 
     @settings_group.command(
+        name="clear",
+        description="Remove a setting saved in the app so the value set elsewhere applies",
+    )
+    @app_commands.describe(
+        key="Setting key or env var name saved in the app",
+    )
+    async def cmd_settings_clear(
+        self,
+        interaction: discord.Interaction,
+        key: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        parts: list[str] = []
+        parts.append(shlex.quote(key))
+        await self.bot._send_backend_command(
+            interaction,
+            "settings clear",
+            args=" ".join(parts),
+            require_admin=True,
+        )
+
+    @settings_group.command(
         name="get",
         description="Show one server setting",
     )
@@ -2142,6 +2164,7 @@ GENERATED_COMMAND_NAMES: tuple[str, ...] = (
     "scheduler release",
     "scheduler status",
     "sequential-tools",
+    "settings clear",
     "settings get",
     "settings reload",
     "settings set",
@@ -2223,6 +2246,7 @@ COMMAND_CATEGORIES: dict[str, str] = {
     "scheduler release": "System",
     "scheduler status": "System",
     "sequential-tools": "Tools",
+    "settings clear": "Settings",
     "settings get": "Settings",
     "settings reload": "Settings",
     "settings set": "Settings",

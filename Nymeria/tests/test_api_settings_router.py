@@ -2480,7 +2480,7 @@ def test_system_prompt_is_admin_only(tmp_path: Path, monkeypatch):
 
 
 def test_is_secret_setting_key_derivation():
-    from nymeria.api.routers.settings import _is_secret_setting_key
+    from nymeria.config.secret_keys import is_secret_setting_key
 
     # Suffix-derived secrets not necessarily in the explicit allowlist.
     for key in (
@@ -2495,11 +2495,11 @@ def test_is_secret_setting_key_derivation():
         "some_app_password",
         "x_refresh_token",
     ):
-        assert _is_secret_setting_key(key) is True, key
+        assert is_secret_setting_key(key) is True, key
 
     # Explicit allowlist entries whose names lack a credential suffix.
     for key in ("postgres_uri", "redis_url", "discord_webhook_url"):
-        assert _is_secret_setting_key(key) is True, key
+        assert is_secret_setting_key(key) is True, key
 
     # Non-secret keys must NOT be masked (suffix matching, not substring).
     for key in (
@@ -2510,7 +2510,7 @@ def test_is_secret_setting_key_derivation():
         "embedding_model",
         "watchdog_interval_minutes",
     ):
-        assert _is_secret_setting_key(key) is False, key
+        assert is_secret_setting_key(key) is False, key
 
 
 def test_get_env_var_masks_secret_by_default(monkeypatch, tmp_path):
@@ -2793,9 +2793,9 @@ def test_command_backend_get_env_vars_matches_route_payload(
 
 def test_command_backend_get_env_vars_masks_suffix_secret(tmp_path: Path):
     # Regression for the F4 leak: groq_api_key is a credential by *_api_key suffix
-    # but is NOT in the explicit _SECRET_KEYS allowlist, so the old in-process body
-    # (allowlist-only `key in _SECRET_KEYS`) printed it RAW while the HTTP route
-    # masked it via the suffix-aware _is_secret_setting_key. The shared serializer
+    # but is NOT in the explicit SECRET_SETTING_KEYS allowlist, so the old
+    # in-process body (allowlist-only membership) printed it RAW while the HTTP
+    # route masked it via the suffix-aware is_secret_setting_key. The shared serializer
     # now masks it on both shapes.
     raw = "gsk-secret-abcdef1234567890"
     settings = FakeSettings(
@@ -3329,3 +3329,664 @@ def test_patch_settings_refuses_a_container_pinned_key_while_the_file_is_set(
     detail = response.json()["detail"]
     assert "NYMERIA_DATA_DIR" in detail and "compose" in detail
     assert not runtime.exists()
+
+
+# -- #434: DELETE /settings/env/{key}, the clear path -----------------------
+#
+# On the container shapes a value saved in the app lives in the runtime
+# settings file, which loads last and beats the `.env.docker` value. These
+# boot a container-shaped process (project root /app, file on the /data
+# volume, the boot load run for real) and clear through the route. Every
+# value is a dummy whose marker must never appear in a response.
+
+DUMMY_434 = "dummy-434"
+
+
+@pytest.fixture
+def container_shape(tmp_path: Path, monkeypatch):
+    """A booted container shape: returns (app root, runtime file, boot fn).
+
+    ``boot(file_text, **env)`` sets the compose environment (None = unset),
+    writes the runtime file, and runs the real boot load, which captures the
+    baseline. Load suppression is lifted the same sanctioned way
+    test_settings_runtime_file.py does: both roots are tmp.
+    """
+    from nymeria.config import settings as settings_mod
+
+    settings_mod.reset_env_loading_state_for_tests()
+    app = tmp_path / "app"
+    data = tmp_path / "data"
+    app.mkdir()
+    data.mkdir()
+    monkeypatch.setattr(settings_mod, "PROJECT_ROOT", app)
+    monkeypatch.setattr(settings_mod, "_PROCESS_ROOT", app)
+    monkeypatch.setattr(settings_mod, "_env_file_loading_suppressed", False)
+    runtime = data / "settings.env"
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+
+    def boot(file_text: str, **env: str | None) -> None:
+        for key, value in env.items():
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, value)
+        runtime.write_text(file_text, encoding="utf-8")
+        settings_mod.reset_env_loading_state_for_tests()
+        settings_mod.load_env_files_into_environ(force=True)
+
+    yield app, runtime, boot
+    settings_mod.reset_env_loading_state_for_tests()
+
+
+def _container_client(monkeypatch, tmp_path: Path, app: Path):
+    client, agent, token, provider = _client(
+        monkeypatch, tmp_path, settings=FakeSettings(project_root=app, data_dir=tmp_path)
+    )
+    _settle(provider)
+    return client, agent, token, provider
+
+
+def test_clear_removes_every_saved_line_and_restores_the_value_set_elsewhere(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    from nymeria.config import settings as settings_mod
+
+    app, runtime, boot = container_shape
+    boot(
+        "# saved in the app\n"
+        f"OPENAI_API_KEY=sk-{DUMMY_434}-old\n"
+        "TWITCH_CHANNEL=saved-in-app\n"
+        f"OPENAI_API_KEY=sk-{DUMMY_434}-dup\n",
+        OPENAI_API_KEY=f"cpx-{DUMMY_434}-gatekeeper",
+        TWITCH_CHANNEL=None,
+    )
+    client, agent, token, provider = _container_client(monkeypatch, tmp_path, app)
+    assert provider.settings.openai_api_key == f"sk-{DUMMY_434}-dup"
+    assert settings_mod.runtime_settings_overrides() == ("OPENAI_API_KEY",)
+
+    response = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cleared"] == "OPENAI_API_KEY"
+    assert body["source"] == "elsewhere"
+    assert body["credential"] is True
+    assert body["direct_slot"] == "OPENAI_DIRECT_API_KEY"
+    assert body["restart_required"] is False
+    assert "value set elsewhere" in body["message"]
+    # Data-loss honesty: the app's copy is gone, and where a real key goes.
+    assert "/settings set OPENAI_DIRECT_API_KEY" in body["message"]
+    assert DUMMY_434 not in response.text
+    text = runtime.read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY" not in text
+    assert text.splitlines() == ["# saved in the app", "TWITCH_CHANNEL=saved-in-app"]
+    assert runtime.stat().st_mode & 0o777 == 0o600
+    # The process is back on the compose value, and the agent re-bound to it
+    # with the LLM graph rebuilt (the key is baked into the model client).
+    assert os.environ["OPENAI_API_KEY"] == f"cpx-{DUMMY_434}-gatekeeper"
+    assert agent.settings.openai_api_key == f"cpx-{DUMMY_434}-gatekeeper"
+    assert agent.graph_rebuilds == ["sync", "async"]
+    assert settings_mod.runtime_settings_overrides() == ()
+
+
+def test_the_next_read_serves_the_restored_value(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # Lowercase field spelling resolves to the env-var line.
+    app, _runtime, boot = container_shape
+    boot("LLM_MODEL=saved-in-app\n", LLM_MODEL="from-env-docker")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    assert client.get("/settings", headers=_auth(token)).json()["llm_model"] == "saved-in-app"
+
+    response = client.delete("/settings/env/llm_model", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["credential"] is False
+    assert client.get("/settings", headers=_auth(token)).json()["llm_model"] == "from-env-docker"
+
+
+def test_clear_unsets_a_key_nothing_else_sets(container_shape, tmp_path: Path, monkeypatch):
+    app, runtime, boot = container_shape
+    boot("TWITCH_CHANNEL=saved-in-app\nLLM_MODEL=kept\n", TWITCH_CHANNEL=None)
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    body = client.delete("/settings/env/twitch_channel", headers=_auth(token)).json()
+
+    # The whole reply contract: the command layer reads `source` and
+    # `credential` without fallbacks, and its fake mirrors this key set.
+    assert set(body) == {
+        "message", "cleared", "field", "updated", "source", "credential",
+        "direct_slot", "restart_required",
+    }
+    assert body["source"] == "unset"
+    assert "now unset" in body["message"]
+    assert "TWITCH_CHANNEL" not in os.environ
+    assert runtime.read_text(encoding="utf-8") == "LLM_MODEL=kept\n"
+
+
+def test_clear_after_a_reload_still_restores_the_boot_value(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # The reload re-applies the file over os.environ; a baseline re-captured
+    # then would "restore" the very value being cleared.
+    app, _runtime, boot = container_shape
+    boot(f"OPENAI_API_KEY=sk-{DUMMY_434}\n", OPENAI_API_KEY=f"cpx-{DUMMY_434}")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    assert client.post("/settings/reload", headers=_auth(token)).status_code == 200
+
+    response = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert os.environ["OPENAI_API_KEY"] == f"cpx-{DUMMY_434}"
+
+
+def test_an_in_app_save_after_boot_is_reported_and_clearable(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    from nymeria.config import settings as settings_mod
+
+    app, runtime, boot = container_shape
+    boot("", LLM_MODEL="from-env-docker")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    client.patch("/settings", headers=_auth(token), json={"llm_model": "saved-in-app"})
+
+    assert settings_mod.runtime_settings_overrides() == ("LLM_MODEL",)
+    client.delete("/settings/env/LLM_MODEL", headers=_auth(token))
+    assert os.environ["LLM_MODEL"] == "from-env-docker"
+    assert "LLM_MODEL" not in runtime.read_text(encoding="utf-8")
+
+
+def test_clearing_a_key_that_is_not_saved_changes_nothing(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    app, runtime, boot = container_shape
+    boot("# app settings\nLLM_MODEL=saved-in-app\n", OPENAI_API_KEY=f"cpx-{DUMMY_434}")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    before = runtime.read_bytes()
+
+    response = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert response.status_code == 404
+    assert "not saved in the app" in response.json()["detail"]
+    assert "nothing to clear" in response.json()["detail"]
+    assert runtime.read_bytes() == before
+    assert os.environ["OPENAI_API_KEY"] == f"cpx-{DUMMY_434}"
+
+
+def test_clear_refuses_honestly_where_no_runtime_file_exists(tmp_path: Path, monkeypatch):
+    # Slim and native installs: the app's own config file IS the settings.
+    from nymeria.config import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(settings_mod, "_PROCESS_ROOT", tmp_path)
+    monkeypatch.delenv("NYMERIA_SETTINGS_FILE", raising=False)
+    config = tmp_path / "config.env"
+    config.write_text(f"OPENAI_API_KEY=sk-{DUMMY_434}\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", f"sk-{DUMMY_434}")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+    before = config.read_bytes()
+
+    response = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert str(config) in detail and "/settings set" in detail
+    assert config.read_bytes() == before
+    assert os.environ["OPENAI_API_KEY"] == f"sk-{DUMMY_434}"
+
+
+def test_clear_never_touches_this_processes_file_for_another_root(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # The runtime file belongs to THIS process's root only (#254); a settings
+    # object for another install never reaches it, by write or by clear.
+    _app, runtime, boot = container_shape
+    boot(f"OPENAI_API_KEY=sk-{DUMMY_434}\n", OPENAI_API_KEY=f"cpx-{DUMMY_434}")
+    other = tmp_path / "other-install"
+    other.mkdir()
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, other)
+    before = runtime.read_bytes()
+
+    response = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert response.status_code == 400
+    assert runtime.read_bytes() == before
+    assert os.environ["OPENAI_API_KEY"] == f"sk-{DUMMY_434}"
+
+
+def test_clear_is_admin_only_and_gates_agent_writes(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    app, runtime, boot = container_shape
+    boot("HOOKS_ENABLED=false\n", HOOKS_ENABLED="true")
+    client, agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    user_token = agent.accounts_repo.issue_token("alice")
+    before = runtime.read_bytes()
+
+    as_user = client.delete("/settings/env/HOOKS_ENABLED", headers=_auth(user_token))
+    as_agent = client.delete(
+        "/settings/env/HOOKS_ENABLED?gate_agent_writes=true", headers=_auth(token)
+    )
+
+    assert as_user.status_code == 403
+    assert as_agent.status_code == 403
+    assert "hooks_enabled" in as_agent.json()["detail"]
+    assert runtime.read_bytes() == before
+    assert os.environ["HOOKS_ENABLED"] == "false"
+    # The same clear by a human admin applies.
+    assert client.delete("/settings/env/HOOKS_ENABLED", headers=_auth(token)).status_code == 200
+    assert os.environ["HOOKS_ENABLED"] == "true"
+
+
+@pytest.mark.parametrize("bad_key", [f"sk-{DUMMY_434}-pasted", "1BAD", "has space"])
+def test_a_malformed_key_is_rejected_before_any_write(
+    container_shape, tmp_path: Path, monkeypatch, bad_key: str
+):
+    app, runtime, boot = container_shape
+    boot(f"OPENAI_API_KEY=sk-{DUMMY_434}\n", OPENAI_API_KEY="cpx-x")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    before = runtime.read_bytes()
+
+    response = client.delete(f"/settings/env/{bad_key}", headers=_auth(token))
+
+    assert response.status_code == 400
+    assert "not a setting name" in response.json()["detail"]
+    assert bad_key not in response.text  # it may be a pasted value
+    assert runtime.read_bytes() == before
+
+
+def test_clearing_a_container_pinned_line_leaves_the_pinned_value(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    app, runtime, boot = container_shape
+    boot(
+        "NYMERIA_DATA_DIR=/workspace/elsewhere\nLLM_MODEL=kept\n",
+        NYMERIA_DATA_DIR="/data",
+    )
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    body = client.delete("/settings/env/NYMERIA_DATA_DIR", headers=_auth(token)).json()
+
+    assert body["source"] == "pinned"
+    assert "container configuration fixes its value" in body["message"]
+    # NYMERIA_DATA_DIR is a restart-required key, but a pinned line never
+    # moved the value, so there is nothing for a restart to apply.
+    assert body["restart_required"] is False
+    assert "/restart api" not in body["message"]
+    assert runtime.read_text(encoding="utf-8") == "LLM_MODEL=kept\n"
+    assert os.environ["NYMERIA_DATA_DIR"] == "/data"
+
+
+def test_clear_rolls_back_when_the_value_set_elsewhere_is_invalid(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # The app's copy was masking an out-of-range compose value: restoring it
+    # would leave a process that cannot build its settings (500 everywhere).
+    app, runtime, boot = container_shape
+    boot("TWITCH_BUFFER_SIZE=500\n", TWITCH_BUFFER_SIZE="10")
+    client, agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    before = runtime.read_bytes()
+
+    response = client.delete("/settings/env/TWITCH_BUFFER_SIZE", headers=_auth(token))
+
+    assert response.status_code == 400
+    assert "twitch_buffer_size" in response.json()["detail"].lower()
+    assert runtime.read_bytes() == before
+    assert os.environ["TWITCH_BUFFER_SIZE"] == "500"
+    assert agent.graph_rebuilds == []
+    assert client.get("/settings/env", headers=_auth(token)).status_code == 200
+
+
+def test_a_line_the_writer_cannot_parse_is_reported_not_claimed_cleared(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    app, runtime, boot = container_shape
+    boot(f"export OPENAI_API_KEY=sk-{DUMMY_434}\n", OPENAI_API_KEY=f"cpx-{DUMMY_434}")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    response = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert response.status_code == 409
+    assert "not in KEY=value form" in response.json()["detail"]
+    assert DUMMY_434 not in response.text
+    assert os.environ["OPENAI_API_KEY"] == f"sk-{DUMMY_434}"
+
+
+def test_both_command_shapes_clear_the_same_way(container_shape, tmp_path: Path, monkeypatch):
+    """In-process (CommandBackendClient) and HTTP (CommandHttpClient over the
+    DELETE route) run one applier, so the same command gives the same answer
+    and the same end state (the TurnExecutor two-shape rule)."""
+    import httpx
+
+    from nymeria.core.command_service import (
+        CommandBackendClient,
+        CommandContext,
+        CommandHttpClient,
+        CommandService,
+        _CommandBackendUser,
+    )
+
+    app, runtime, boot = container_shape
+    file_text = f"# app\nOPENAI_API_KEY=sk-{DUMMY_434}\nLLM_MODEL=kept\n"
+    env = {"OPENAI_API_KEY": f"cpx-{DUMMY_434}"}
+    ctx = CommandContext(
+        user_id="admin", thread_id=None, actor="user", surface="cli", is_admin=True
+    )
+
+    boot(file_text, **env)
+    settings = FakeSettings(project_root=app, data_dir=tmp_path)
+    provider = FakeSettingsProvider(settings)
+    _settle(provider)
+    backend = CommandBackendClient(
+        FakeAgent(tmp_path), user=_CommandBackendUser(id="admin", role="admin"),
+        settings_fn=provider,
+    )
+    in_process = asyncio.run(
+        CommandService().execute(ctx, "/settings clear OPENAI_API_KEY", api=backend)
+    )
+    in_process_state = (runtime.read_text(encoding="utf-8"), os.environ["OPENAI_API_KEY"])
+
+    boot(file_text, **env)
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    async def over_http():
+        http = CommandHttpClient("http://api.test", token, use_act_as=False)
+        http._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app), base_url="http://api.test"
+        )
+        try:
+            return await CommandService().execute(
+                ctx, "/settings clear OPENAI_API_KEY", api=http
+            )
+        finally:
+            await http.aclose()
+
+    over_wire = asyncio.run(over_http())
+    over_wire_state = (runtime.read_text(encoding="utf-8"), os.environ["OPENAI_API_KEY"])
+
+    assert in_process.success is True and over_wire.success is True
+    assert in_process.markdown == over_wire.markdown
+    assert "OPENAI_DIRECT_API_KEY" in in_process.markdown
+    assert DUMMY_434 not in in_process.markdown
+    assert in_process_state == over_wire_state == ("# app\nLLM_MODEL=kept\n", f"cpx-{DUMMY_434}")
+
+
+def test_api_startup_logs_a_warning_for_a_shadowed_credential(
+    container_shape, tmp_path: Path, monkeypatch, caplog
+):
+    import logging
+
+    app, _runtime, boot = container_shape
+    boot(
+        f"OPENAI_API_KEY=sk-{DUMMY_434}\nUSER_TIMEZONE=Australia/Sydney\n",
+        OPENAI_API_KEY=f"cpx-{DUMMY_434}",
+        USER_TIMEZONE="UTC",
+    )
+    client, _agent, _token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    # Only the hook under test: the other startup handlers want a real
+    # Settings, which this fake is not.
+    from fastapi import FastAPI
+
+    app_obj = client.app
+    assert isinstance(app_obj, FastAPI)
+    [hook] = [
+        handler
+        for handler in app_obj.router.on_startup
+        if getattr(handler, "__name__", "") == "_log_runtime_settings_file"
+    ]
+    with caplog.at_level(logging.INFO, logger="nymeria.triggers.api"):
+        asyncio.run(hook())
+
+    records = [r for r in caplog.records if r.name == "nymeria.triggers.api"]
+    info = [r.getMessage() for r in records if r.levelno == logging.INFO]
+    warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
+    assert any("USER_TIMEZONE" in line for line in info)
+    assert len(warnings) == 1
+    assert "OPENAI_API_KEY (credential)" in warnings[0]
+    assert "USER_TIMEZONE" not in warnings[0]
+    assert all(DUMMY_434 not in r.getMessage() for r in records)
+
+
+# -- #434 review fixes --------------------------------------------------------
+
+
+def test_clearing_a_boot_captured_key_says_a_restart_is_needed(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # EMBEDDING_PROVIDER is baked into each cached MemoryIndex: the value set
+    # elsewhere is back in the process, but not in effect until a restart, and
+    # the reply has to say so rather than read as done.
+    app, runtime, boot = container_shape
+    boot("EMBEDDING_PROVIDER=openai\nLLM_MODEL=kept\n", EMBEDDING_PROVIDER="local")
+    client, agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    response = client.delete("/settings/env/EMBEDDING_PROVIDER", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["restart_required"] is True
+    assert body["source"] == "elsewhere"
+    assert body["message"].endswith("(restart required to take effect: /restart api)")
+    assert os.environ["EMBEDDING_PROVIDER"] == "local"
+    assert agent.settings.embedding_provider == "local"
+    assert runtime.read_text(encoding="utf-8") == "LLM_MODEL=kept\n"
+
+
+def test_clearing_a_key_no_settings_write_reaches_says_a_restart_is_needed(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # The reload path's rule (#434 delta review): a field outside the PATCH
+    # register (CORS, the port, the database) was never designed to hot-apply,
+    # so a clear that moves one says restart, the way a reload that moves one
+    # does. CORS_ORIGINS is captured by the middleware when the app is built.
+    from nymeria.api.schemas.settings import server_settings_env_mapping
+
+    assert "cors_origins" not in server_settings_env_mapping()
+    app, runtime, boot = container_shape
+    boot(
+        "CORS_ORIGINS=https://saved.example\nLLM_MODEL=kept\n",
+        CORS_ORIGINS="https://compose.example",
+    )
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    response = client.delete("/settings/env/CORS_ORIGINS", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "elsewhere"
+    assert body["restart_required"] is True
+    assert body["message"].endswith("(restart required to take effect: /restart api)")
+    assert os.environ["CORS_ORIGINS"] == "https://compose.example"
+    assert runtime.read_text(encoding="utf-8") == "LLM_MODEL=kept\n"
+
+
+def test_a_restart_needing_clear_is_a_warning_through_the_real_applier(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    """The command level end to end (in-process shape, real applier): a value
+    that is not live until a restart is not a plain success tick."""
+    from nymeria.core.command_service import (
+        CommandBackendClient,
+        CommandContext,
+        CommandService,
+        _CommandBackendUser,
+    )
+
+    app, _runtime, boot = container_shape
+    boot("EMBEDDING_PROVIDER=openai\n", EMBEDDING_PROVIDER="local")
+    provider = FakeSettingsProvider(FakeSettings(project_root=app, data_dir=tmp_path))
+    _settle(provider)
+    backend = CommandBackendClient(
+        FakeAgent(tmp_path), user=_CommandBackendUser(id="admin", role="admin"),
+        settings_fn=provider,
+    )
+    ctx = CommandContext(
+        user_id="admin", thread_id=None, actor="user", surface="cli", is_admin=True
+    )
+
+    result = asyncio.run(
+        CommandService().execute(ctx, "/settings clear embedding_provider", api=backend)
+    )
+
+    assert result.success is True
+    assert result.level == "warning"
+    assert "Cleared EMBEDDING_PROVIDER" in result.markdown
+    assert "/restart api" in result.markdown
+
+
+def test_clearing_a_saved_anthropic_key_names_its_direct_slot(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # The same shared/direct split as OpenAI: the wizard's CLIProxy branch
+    # writes the gatekeeper to ANTHROPIC_API_KEY, the real key lives in
+    # ANTHROPIC_DIRECT_API_KEY.
+    app, _runtime, boot = container_shape
+    boot(
+        f"ANTHROPIC_API_KEY=sk-ant-{DUMMY_434}\n",
+        ANTHROPIC_API_KEY=f"cpx-{DUMMY_434}",
+    )
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    response = client.delete("/settings/env/ANTHROPIC_API_KEY", headers=_auth(token))
+
+    body = response.json()
+    assert body["credential"] is True
+    assert body["direct_slot"] == "ANTHROPIC_DIRECT_API_KEY"
+    assert "/settings set ANTHROPIC_DIRECT_API_KEY <key>" in body["message"]
+    assert DUMMY_434 not in response.text
+    assert os.environ["ANTHROPIC_API_KEY"] == f"cpx-{DUMMY_434}"
+
+
+def test_an_unknown_key_is_named_only_once_the_file_shows_it_is_a_line(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # A well-shaped key that is no setting may be a pasted account token: the
+    # refusal must not hand it back. A stale line the file really holds is
+    # still clearable, and then it is named (it came from the file).
+    app, runtime, boot = container_shape
+    boot("NYMERIA_T434_STALE=x\nLLM_MODEL=kept\n")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    before = runtime.read_bytes()
+
+    pasted = client.delete("/settings/env/nym_abc434tok", headers=_auth(token))
+    known = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+
+    assert pasted.status_code == 404
+    assert pasted.json()["detail"].startswith("That key is not saved in the app")
+    assert "abc434tok" not in pasted.text.lower()
+    assert known.status_code == 404
+    assert known.json()["detail"].startswith("OPENAI_API_KEY is not saved in the app")
+    assert runtime.read_bytes() == before
+
+    stale = client.delete("/settings/env/nymeria_t434_stale", headers=_auth(token))
+
+    assert stale.status_code == 200
+    assert stale.json()["cleared"] == "NYMERIA_T434_STALE"
+    assert stale.json()["field"] is None
+    assert runtime.read_text(encoding="utf-8") == "LLM_MODEL=kept\n"
+
+
+def test_a_rejected_reload_leaves_the_baseline_it_found(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    """A reload that rolls back (here a 400 for an invalid value) restores what
+    the loader recorded too, not only the environment: otherwise the baseline
+    keeps the REJECTED root-file value and a later clear restores that."""
+    from nymeria.config import settings as settings_mod
+
+    app, _runtime, boot = container_shape
+    (app / "config.env").write_text(f"OPENAI_API_KEY=cpx-{DUMMY_434}-root\n", encoding="utf-8")
+    boot(f"OPENAI_API_KEY=sk-{DUMMY_434}-app\n", OPENAI_API_KEY=None)
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    (app / "config.env").write_text(
+        f"OPENAI_API_KEY=cpx-{DUMMY_434}-rejected\nTWITCH_BUFFER_SIZE=10\n", encoding="utf-8"
+    )
+
+    reload = client.post("/settings/reload", headers=_auth(token))
+
+    assert reload.status_code == 400
+    assert settings_mod.runtime_settings_baseline("OPENAI_API_KEY") == f"cpx-{DUMMY_434}-root"
+    cleared = client.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
+    assert cleared.status_code == 200
+    assert os.environ["OPENAI_API_KEY"] == f"cpx-{DUMMY_434}-root"
+
+
+def _clear_over_both_shapes(app: Path, tmp_path: Path, monkeypatch, command: str):
+    """Run one `/settings clear` through the in-process client and through the
+    HTTP client over the real DELETE route. Returns both results and every
+    request the HTTP shape sent."""
+    from nymeria.core.command_service import (
+        CommandBackendClient,
+        CommandContext,
+        CommandHttpClient,
+        CommandResult,
+        CommandService,
+        _CommandBackendUser,
+    )
+
+    ctx = CommandContext(
+        user_id="admin", thread_id=None, actor="user", surface="cli", is_admin=True
+    )
+    provider = FakeSettingsProvider(FakeSettings(project_root=app, data_dir=tmp_path))
+    _settle(provider)
+    backend = CommandBackendClient(
+        FakeAgent(tmp_path), user=_CommandBackendUser(id="admin", role="admin"),
+        settings_fn=provider,
+    )
+    in_process = asyncio.run(CommandService().execute(ctx, command, api=backend))
+
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    sent: list[httpx.Request] = []
+    asgi = httpx.ASGITransport(app=client.app)
+
+    class _Recording(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return await asgi.handle_async_request(request)
+
+    async def over_http() -> CommandResult:
+        http = CommandHttpClient("http://api.test", token, use_act_as=False)
+        http._client = httpx.AsyncClient(transport=_Recording(), base_url="http://api.test")
+        try:
+            return await CommandService().execute(ctx, command, api=http)
+        finally:
+            await http.aclose()
+
+    over_wire: CommandResult = asyncio.run(over_http())
+    return in_process, over_wire, sent
+
+
+@pytest.mark.parametrize(
+    "case, command, expected",
+    [
+        ("not saved", "/settings clear LLM_MODEL", "LLM_MODEL is not saved in the app"),
+        ("no runtime file", "/settings clear OPENAI_API_KEY", "nothing there overrides"),
+        ("pasted value", f"/settings clear sk-{DUMMY_434}-pasted", "not a setting name"),
+    ],
+)
+def test_both_command_shapes_refuse_the_same_way(
+    container_shape, tmp_path: Path, monkeypatch, case, command, expected
+):
+    """Refusals render identically through both TurnExecutor shapes, and a
+    value pasted where the key goes never leaves the HTTP client as a URL."""
+    app, runtime, boot = container_shape
+    boot(f"OPENAI_API_KEY=sk-{DUMMY_434}\n", OPENAI_API_KEY=f"cpx-{DUMMY_434}")
+    if case == "no runtime file":
+        monkeypatch.delenv("NYMERIA_SETTINGS_FILE")
+    before = runtime.read_bytes()
+
+    in_process, over_wire, sent = _clear_over_both_shapes(app, tmp_path, monkeypatch, command)
+
+    assert in_process.success is False and over_wire.success is False
+    assert in_process.markdown == over_wire.markdown
+    assert expected in in_process.markdown
+    assert DUMMY_434 not in in_process.markdown
+    assert runtime.read_bytes() == before
+    assert os.environ["OPENAI_API_KEY"] == f"sk-{DUMMY_434}"
+    if case == "pasted value":
+        assert sent == []
+    else:
+        assert [request.method for request in sent] == ["DELETE"]

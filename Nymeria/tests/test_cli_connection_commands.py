@@ -286,8 +286,9 @@ def test_login_remote_url_still_prompts_for_token(tmp_path) -> None:
     result = run(registry.dispatch_async(ctx2, "/login https://remote.example.com:8000"))
 
     assert result.ok is True
-    # A new remote host must still prompt: never silently resend the saved token.
-    assert secret_calls != []
+    # A new remote host must still prompt: never silently resend the saved
+    # token. Nothing was refused, so the prompt is the plain one (#101 e16).
+    assert secret_calls == ["API token (empty to cancel): "]
 
 
 def test_login_cancelled_at_a_prompt_reports_cancellation(tmp_path) -> None:
@@ -341,10 +342,191 @@ def test_login_reuse_falls_back_to_prompt_on_auth_error(tmp_path) -> None:
     )
     result = run(registry.dispatch_async(ctx2, "/login http://127.0.0.1:8000"))
 
-    # Reuse hit a 401, so it falls back to prompting for a fresh token.
-    assert secret_calls != []
+    # Reuse hit a 401, so it falls back to prompting for a fresh token, and
+    # the prompt itself says why (#101 entry 16): the follow-footer REPL
+    # shows command output only after the command returns, i.e. after this.
+    assert len(secret_calls) == 1
+    reason, prompt_line = secret_calls[0].split("\n")
+    assert prompt_line == "API token (empty to cancel): "
+    assert "http://127.0.0.1:8000" in reason
+    assert "saved token was rejected" in reason and "(Token revoked)" in reason
+    assert "expired or been revoked" in reason
+    assert "`nymeria users issue-token default`" in reason
+    assert "nym_secret" not in secret_calls[0]
     assert result.ok is False
     assert result.error_code == "api_auth_error"
+
+
+def _saved_login_then_refused(tmp_path, refusal, secret_handler=None):
+    """Save a loopback profile, then /login again on another port with the
+    saved token refused by ``refusal``. Returns (result, secret prompts)."""
+    FakeLoginAPI.reset()
+    actions: list[Any] = []
+    config_path = tmp_path / ".nymeria" / "cli.json"
+    registry = make_registry()
+    ctx1 = make_context(
+        config_path=config_path, actions=actions, prompts=["http://127.0.0.1:8098"]
+    )
+    assert run(registry.dispatch_async(ctx1, "/login --user-id alice")).ok is True
+    FakeLoginAPI.instances.clear()
+    FakeLoginAPI.me_result = refusal
+    secret_calls: list[str] = []
+    ctx2 = make_context(
+        config_path=config_path, actions=actions, prompts=[], secret_calls=secret_calls
+    )
+    if secret_handler is not None:
+        def recording(prompt: str) -> str:
+            secret_calls.append(prompt)
+            return secret_handler(prompt)
+
+        ctx2.secret_prompt_handler = recording
+    result = run(
+        registry.dispatch_async(ctx2, "/login http://127.0.0.1:8000 --user-id alice")
+    )
+    return result, secret_calls
+
+
+def test_a_refused_saved_token_then_a_new_one_logs_in_and_saves_the_new_token(tmp_path):
+    """L6: the path the reason copy sits on, end to end. The saved token is
+    refused, the prompt says why, the NEW token validates and is what lands in
+    cli.json, and the success carries no cancellation note."""
+    FakeLoginAPI.reset()
+    actions: list[Any] = []
+    config_path = tmp_path / ".nymeria" / "cli.json"
+    registry = make_registry()
+    ctx1 = make_context(
+        config_path=config_path, actions=actions, prompts=["http://127.0.0.1:8098"]
+    )
+    assert run(registry.dispatch_async(ctx1, "/login --user-id alice")).ok is True
+    actions.clear()
+    FakeLoginAPI.instances.clear()
+    FakeLoginAPI.me_result_by_key = {"nym_secret": http_status_error(401, "Token revoked")}
+    FakeLoginAPI.tokens_result = [token_record("nym_new", expires_in=timedelta(days=60))]
+    secret_calls: list[str] = []
+    ctx2 = make_context(
+        config_path=config_path,
+        actions=actions,
+        prompts=[],
+        token="nym_new",
+        secret_calls=secret_calls,
+    )
+
+    result = run(
+        registry.dispatch_async(ctx2, "/login http://127.0.0.1:8000 --user-id alice")
+    )
+
+    assert result.ok is True
+    [prompt] = secret_calls
+    assert prompt.startswith("The saved token was rejected by http://127.0.0.1:8000")
+    assert prompt.endswith("\nAPI token (empty to cancel): ")
+    message = str(result.messages[0].content)
+    assert "cancelled" not in message.lower() and "no longer works" not in message
+    assert "nym_new" not in message and "nym_secret" not in message
+    # The saved token was tried first and refused; the new one validated.
+    assert [api.api_key for api in FakeLoginAPI.instances] == ["nym_secret", "nym_new"]
+    profile = json.loads(config_path.read_text(encoding="utf-8"))["profiles"]["default"]
+    assert profile["api_key"] == "nym_new"
+    assert profile["api_url"] == "http://127.0.0.1:8000"
+    assert actions[0]["type"] == "replace_client"
+
+
+def test_login_says_a_403_refused_the_saved_token_without_calling_it_expired(tmp_path):
+    _result, secret_calls = _saved_login_then_refused(
+        tmp_path, http_status_error(403, "Act-As requires admin")
+    )
+
+    reason = secret_calls[0].split("\n")[0]
+    assert "http://127.0.0.1:8000 refused the saved token for alice" in reason
+    assert "(Act-As requires admin)" in reason
+    assert "expired" not in reason
+
+
+def test_login_names_the_status_for_any_other_refusal(tmp_path):
+    _result, secret_calls = _saved_login_then_refused(
+        tmp_path, http_status_error(404, "act-as user was not found")
+    )
+
+    reason = secret_calls[0].split("\n")[0]
+    assert "did not accept the saved token (HTTP 404: act-as user was not found)" in reason
+    assert "expired" not in reason
+
+
+@pytest.mark.parametrize(
+    "answer, error_code",
+    [("", "login_token_missing"), (EOFError, "login_cancelled")],
+)
+def test_cancelling_after_a_refused_saved_token_says_it_no_longer_works(
+    tmp_path, answer, error_code
+):
+    def handler(prompt: str) -> str:
+        if answer is EOFError:
+            raise EOFError
+        return answer
+
+    result, _secret_calls = _saved_login_then_refused(
+        tmp_path, http_status_error(401, "Invalid API key"), secret_handler=handler
+    )
+
+    assert result.ok is False
+    assert result.error_code == error_code
+    message = str(result.messages[0].content)
+    assert message.startswith("Login cancelled")
+    assert (
+        "The saved token no longer works for http://127.0.0.1:8000; mint a new one "
+        "on the host with `nymeria users issue-token alice`." in message
+    )
+    assert "nym_secret" not in message
+
+
+def test_cancelling_after_a_403_names_the_status_not_expiry(tmp_path):
+    result, _secret_calls = _saved_login_then_refused(
+        tmp_path, http_status_error(403, "Admin only"), secret_handler=lambda _p: ""
+    )
+
+    message = str(result.messages[0].content)
+    assert "The saved token was not accepted by http://127.0.0.1:8000 (HTTP 403)." in message
+    assert "no longer works" not in message
+
+
+def test_login_with_the_backend_down_reports_it_without_a_token_prompt(tmp_path):
+    # The saved-token fast path: a backend that is not up is not a token
+    # problem, so no prompt (and no claim the token was refused).
+    FakeLoginAPI.reset()
+    actions: list[Any] = []
+    config_path = tmp_path / ".nymeria" / "cli.json"
+    registry = make_registry()
+    ctx1 = make_context(
+        config_path=config_path, actions=actions, prompts=["http://127.0.0.1:8098"]
+    )
+    assert run(registry.dispatch_async(ctx1, "/login")).ok is True
+    FakeLoginAPI.instances.clear()
+    FakeLoginAPI.health_result = False
+    secret_calls: list[str] = []
+    ctx2 = make_context(
+        config_path=config_path, actions=actions, prompts=[], secret_calls=secret_calls
+    )
+
+    result = run(registry.dispatch_async(ctx2, "/login http://127.0.0.1:8000"))
+
+    assert secret_calls == []
+    assert result.ok is False
+    assert result.error_code == "api_unavailable"
+
+
+def test_a_first_login_prompt_is_the_plain_one(tmp_path):
+    # No saved token: nothing was refused, so the prompt never claims it.
+    FakeLoginAPI.reset()
+    secret_calls: list[str] = []
+    context = make_context(
+        config_path=tmp_path / ".nymeria" / "cli.json",
+        actions=[],
+        prompts=[],
+        secret_calls=secret_calls,
+    )
+
+    assert run(make_registry().dispatch_async(context, "/login http://127.0.0.1:8000")).ok
+
+    assert secret_calls == ["API token (empty to cancel): "]
 
 
 def test_reconnect_reuses_saved_profile_without_reprompting(tmp_path) -> None:

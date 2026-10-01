@@ -885,6 +885,61 @@ def test_a_blank_key_on_the_way_to_openai_direct_does_not_keep_the_gateway_key(
     assert config.read_text(encoding="utf-8") == before
 
 
+def test_the_headless_refusal_says_the_slot_holds_the_old_gateway_key(
+    monkeypatch, tmp_path
+):
+    """#433 follow-up: the bare "--api-key is required" read as a wizard that had
+    lost the key. It names the slot, why its key does not count, and the flag;
+    the config stays byte-identical and the key never appears."""
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+    config = root / "config.env"
+    before = config.read_bytes()
+
+    with pytest.raises(SystemExit) as refused:
+        setup_main(
+            ["--auth-method", "api_key", "--provider", "openai", "--model", "gpt-x",
+             "--base-url", "https://api.openai.com/v1", "--root", str(root),
+             "--non-interactive", "--skip-llm-test"]
+        )
+
+    message = str(refused.value.code)
+    assert "OPENAI_API_KEY holds the old gateway route's key" in message
+    assert "not with https://api.openai.com/v1" in message
+    assert "--api-key is required with --non-interactive" in message
+    assert "sk-litellm" not in message
+    assert config.read_bytes() == before
+
+
+def test_the_headless_refusal_never_prints_credentials_in_the_base_url(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "init"
+    _litellm_install(monkeypatch, root)
+
+    with pytest.raises(SystemExit) as refused:
+        setup_main(
+            ["--provider", "openai", "--model", "gpt-x",
+             "--base-url", "https://gw-user:gw-pass-434@gateway.example/v1?key=q-434",
+             "--root", str(root), "--non-interactive", "--skip-llm-test"]
+        )
+
+    message = str(refused.value.code)
+    assert "not with https://gateway.example/v1." in message
+    assert "gw-pass-434" not in message and "gw-user" not in message
+    assert "q-434" not in message
+
+
+def test_a_fresh_headless_install_without_a_key_keeps_the_plain_refusal(tmp_path):
+    with pytest.raises(SystemExit) as refused:
+        setup_main(
+            ["--provider", "openai", "--model", "gpt-x", "--hosting", "local",
+             "--root", str(tmp_path / "fresh"), "--non-interactive", "--skip-llm-test"]
+        )
+
+    assert str(refused.value.code) == "--api-key is required with --non-interactive"
+
+
 def test_a_new_openai_key_on_the_way_to_openai_direct_is_written(monkeypatch, tmp_path):
     root = tmp_path / "init"
     _litellm_install(monkeypatch, root)

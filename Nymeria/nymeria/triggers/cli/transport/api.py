@@ -61,6 +61,53 @@ def token_rejected_message(api_url: str, *, detail: str = "") -> str:
     )
 
 
+def saved_token_refused_reason(
+    api_url: str, *, status_code: int | None, detail: str, user_id: str
+) -> str:
+    """Why `/login` is asking for a token after trying the saved one (#101 entry 16).
+
+    Shown AS PART OF the secret prompt, because the follow-footer REPL renders
+    command output only after the command returns, i.e. after the prompt.
+    401 alone means expired or revoked; 403 is an authorization refusal of a
+    working token (usually Act-As without admin, see
+    ``token_rejected_message``), so it never says "expired". Never carries the
+    token itself.
+    """
+
+    if status_code == 401:
+        reason = f" ({detail})" if detail else ""
+        return (
+            f"The saved token was rejected by {api_url}{reason}: it has probably "
+            "expired or been revoked. Paste a new one (mint one on the host with "
+            f"`nymeria users issue-token {user_id}`)."
+        )
+    if status_code == 403:
+        reason = f" ({detail})" if detail else ""
+        return (
+            f"{api_url} refused the saved token for {user_id}{reason}. "
+            "Enter a token for that account."
+        )
+    if status_code is not None:
+        reason = f"HTTP {status_code}" + (f": {detail}" if detail else "")
+        return f"{api_url} did not accept the saved token ({reason})."
+    reason = f" ({detail})" if detail else ""
+    return f"{api_url} did not accept the saved token{reason}."
+
+
+def saved_token_refused_cancel_note(
+    api_url: str, *, status_code: int | None, user_id: str
+) -> str:
+    """The sentence a cancelled `/login` adds after the saved token was refused."""
+
+    if status_code == 401:
+        return (
+            f"The saved token no longer works for {api_url}; mint a new one on the "
+            f"host with `nymeria users issue-token {user_id}`."
+        )
+    status = f" (HTTP {status_code})" if status_code is not None else ""
+    return f"The saved token was not accepted by {api_url}{status}."
+
+
 # Exception shapes that mean "the connection dropped", not "the request was
 # rejected": these trigger the turn re-attach recovery path in stream_chat.
 # httpx.TransportError covers connect/read/write errors and timeouts;
@@ -1293,6 +1340,8 @@ __all__ = [
     "default_api_url",
     "is_loopback_url",
     "resolve_api_connection_config",
+    "saved_token_refused_cancel_note",
+    "saved_token_refused_reason",
     "select_agent_client",
     "suggest_reachable_backend",
     "token_rejected_message",

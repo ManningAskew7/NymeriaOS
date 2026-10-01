@@ -10,10 +10,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
 from dotenv import dotenv_values
 
 from nymeria.config.env_file import (
     format_env_value,
+    is_env_key_name,
     merge_env_lines,
     parse_env_value,
     write_env_file,
@@ -168,6 +170,52 @@ def test_write_env_file_merge_missing_file_appends_all(tmp_path: Path):
     lines = write_env_file(path, [("A", "1")], merge=True)
     assert lines == ["A=1"]
     assert path.read_text(encoding="utf-8") == "A=1\n"
+
+
+def test_write_env_file_merge_refuses_a_file_it_cannot_read(tmp_path: Path, monkeypatch):
+    """Only a MISSING file merges as empty. Any other read failure (permissions,
+    a transient I/O error) raises before the write: treating it as empty would
+    rewrite the file with only the produced keys, silently dropping the vault
+    key and every saved credential it held."""
+    path = tmp_path / "settings.env"
+    original = "NYMERIA_SECRETS_KEY=kept\nOPENAI_API_KEY=kept\n"
+    path.write_text(original, encoding="utf-8")
+    real_read_text = Path.read_text
+
+    def unreadable(self: Path, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+
+    with pytest.raises(PermissionError):
+        write_env_file(path, [("LLM_MODEL", "new")], merge=True)
+    with pytest.raises(PermissionError):
+        write_env_file(path, [], merge=True, drop=["OPENAI_API_KEY"])
+
+    monkeypatch.undo()
+    assert path.read_text(encoding="utf-8") == original
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.env"]  # no temp left
+
+
+@pytest.mark.parametrize(
+    "name, ok",
+    [
+        ("OPENAI_API_KEY", True),
+        ("A", True),
+        ("S3_ACCESS_KEY_ID", True),
+        ("openai_api_key", False),
+        ("1BAD", False),
+        ("_LEADING", False),
+        ("HAS SPACE", False),
+        ("SK-PASTED-VALUE", False),
+        ("KEY\n", False),
+        ("", False),
+    ],
+)
+def test_is_env_key_name_is_the_whole_name_shape(name: str, ok: bool):
+    assert is_env_key_name(name) is ok
 
 
 def test_write_env_file_merge_reads_back_as_written_over_a_duplicated_key(

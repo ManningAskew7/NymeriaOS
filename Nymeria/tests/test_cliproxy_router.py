@@ -1040,10 +1040,10 @@ def test_config_masks_gatekeeper_keys():
 def test_management_key_is_masked_in_settings_env():
     """The CLIProxy management secret must be treated as a secret by
     GET /settings/env (no bare *_key suffix rule covers it)."""
-    from nymeria.api.routers.settings import _is_secret_setting_key
+    from nymeria.config.secret_keys import is_secret_setting_key
 
-    assert _is_secret_setting_key("cliproxy_management_key") is True
-    assert _is_secret_setting_key("cliproxy_management_url") is False
+    assert is_secret_setting_key("cliproxy_management_key") is True
+    assert is_secret_setting_key("cliproxy_management_url") is False
 
 
 def test_auth_error_maps_to_502_on_action_routes():

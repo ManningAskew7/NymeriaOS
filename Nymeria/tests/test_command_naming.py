@@ -335,6 +335,7 @@ def test_leading_single_token_aliases_snapshot() -> None:
         "scheduler.release": "scheduler_release",
         "scheduler.status": "scheduler_status",
         "settings": "settings_show",
+        "settings.clear": "settings_clear",
         "settings.get": "settings_get",
         "settings.reload": "settings_reload",
         "settings.set": "settings_set",

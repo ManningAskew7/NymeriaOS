@@ -25,6 +25,7 @@ from urllib.parse import quote
 import httpx
 
 from ..config import get_settings
+from ..config.secret_keys import is_secret_setting_key
 from .command_executor_aliases import AliasCommandsMixin
 from .command_executor_browser import BrowserCommandsMixin
 from .command_executor_claude_code import ClaudeCodeCommandsMixin
@@ -378,6 +379,40 @@ def _code_status_lines(*, show_drift: bool) -> list[str]:
     record = _provenance.boot_record()
     reason = _provenance.drift(record) if show_drift else None
     return _provenance.status_lines(record, drift_reason=reason)
+
+
+def _settings_file_status_lines(*, show: bool) -> list[str]:
+    """The ``/status`` Settings file block (#434): the keys whose app-saved
+    copy (the container shapes' runtime settings file) overrides a value set
+    elsewhere, classed, with the remedy. Like the Code block it describes the
+    process executing the command.
+
+    Empty unless ``show`` (operator state: a known non-admin cannot act on
+    it), the shape names a runtime file, and something is actually shadowed.
+    Keys saved ONLY in the app stay silent here: a GUI-onboarded Docker
+    install holds many, legitimately; the in-container doctor lists them."""
+    if not show:
+        return []
+    from ..config.settings import (
+        SETTINGS_CLEAR_REMEDY,
+        direct_slot_hints,
+        runtime_settings_file,
+        runtime_settings_shadows,
+        shadow_labels,
+    )
+
+    runtime = runtime_settings_file()
+    if runtime is None:
+        return []
+    shadows = [shadow for shadow in runtime_settings_shadows() if shadow.shadows]
+    if not shadows:
+        return []
+    return [
+        f"{runtime} (saved in the app) overrides values set elsewhere:",
+        shadow_labels(shadows),
+        f"to use the other value: {SETTINGS_CLEAR_REMEDY}",
+        *direct_slot_hints(shadows),
+    ]
 
 
 def _notepad_status_line(notepad: dict[str, Any]) -> str | None:
@@ -1196,6 +1231,27 @@ class CommandHttpClient:
         return await self._post(
             "/settings/reload",
             json={},
+            params={"gate_agent_writes": gate_agent_writes},
+            act_as=user_id,
+        )
+
+    async def clear_setting(
+        self,
+        key: str,
+        *,
+        user_id: Optional[str] = None,
+        gate_agent_writes: bool = False,
+    ) -> dict:
+        from ..api.schemas.settings import SETTING_KEY_MALFORMED_DETAIL
+        from ..config.env_file import is_env_key_name
+
+        # The server refuses this shape too, but by then a value pasted where
+        # the key goes would already sit in a URL path (access logs). Same
+        # refusal, same words, no request (#434).
+        if not is_env_key_name(str(key or "").strip().upper()):
+            _raise_http_status(400, SETTING_KEY_MALFORMED_DETAIL)
+        return await self._delete(
+            f"/settings/env/{_path_param(str(key).strip())}",
             params={"gate_agent_writes": gate_agent_writes},
             act_as=user_id,
         )
@@ -2329,6 +2385,36 @@ class CommandBackendClient:
             # move a gate setting from an agent turn) are both user-actionable
             # and already rolled back; the HTTP shape answers them with a
             # status, so the in-process shape must not answer with a traceback.
+            _raise_http_status(exc.status_code, str(exc.detail))
+
+    async def clear_setting(
+        self,
+        key: str,
+        *,
+        user_id: Optional[str] = None,
+        gate_agent_writes: bool = False,
+    ) -> dict:
+        self._require_admin()
+        from fastapi import HTTPException
+
+        from ..api.routers.settings import clear_server_setting
+        from ..api.schemas.settings import AGENT_WRITE_BLOCKED_SETTINGS
+
+        # The one clear applier, shared with DELETE /settings/env/{key} (#434).
+        try:
+            return clear_server_setting(
+                key,
+                settings=self._settings(),
+                agent=self.agent,
+                get_settings_fn=self.settings_fn,
+                blocked_settings=(
+                    AGENT_WRITE_BLOCKED_SETTINGS
+                    if gate_agent_writes
+                    else frozenset()
+                ),
+            )
+        except HTTPException as exc:
+            # Every refusal there is user-actionable and changes nothing.
             _raise_http_status(exc.status_code, str(exc.detail))
 
     async def test_llm_provider_config(
@@ -6025,7 +6111,12 @@ class _CommandExecutor(
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        settings, ctx, tools_data, todos, thread_cfg, notepad, code = await asyncio.gather(
+        # `is False` like every admin gate here: an agent actor's None
+        # passes, a known non-admin caller does not.
+        operator = self.is_admin is not False
+        (
+            settings, ctx, tools_data, todos, thread_cfg, notepad, code, settings_file,
+        ) = await asyncio.gather(
             self.api.get_settings(),
             self.api.get_context_stats(self.thread_id),
             self.api.get_default_tools(self.user_id),
@@ -6033,14 +6124,17 @@ class _CommandExecutor(
             self.api.get_thread_config(self.thread_id),
             self.api.get_thread_notepad(self.thread_id),
             # A stat walk of the package (a few ms): off the event loop.
-            # `is False` like every admin gate here: an agent actor's None
-            # passes, a known non-admin caller does not.
-            asyncio.to_thread(_code_status_lines, show_drift=self.is_admin is not False),
+            asyncio.to_thread(_code_status_lines, show_drift=operator),
+            # One small file read: off the event loop too.
+            asyncio.to_thread(_settings_file_status_lines, show=operator),
             return_exceptions=True,
         )
         if isinstance(code, BaseException):
             logger.warning("/status: code provenance unavailable: %s", code)
             code = []
+        if isinstance(settings_file, BaseException):
+            logger.warning("/status: settings file report unavailable: %s", settings_file)
+            settings_file = []
         settings = _dict_result(settings)
         ctx = _dict_result(ctx)
         tools_data = _dict_result(tools_data)
@@ -6125,6 +6219,11 @@ class _CommandExecutor(
             f"  {tasks_str}",
             "",
             *(["Code", *[f"  {line}" for line in code], ""] if code else []),
+            *(
+                ["Settings file", *[f"  {line}" for line in settings_file], ""]
+                if settings_file
+                else []
+            ),
             f"thread: {self.thread_id}",
             f"user:   {self.user_id}",
         ]
@@ -6737,6 +6836,31 @@ class _CommandExecutor(
             )
         return command_success(body)
 
+    async def _cmd_settings_clear(self, bound: BoundArgs) -> str | CommandOutput:
+        """Take a key's app-saved copy out of the runtime settings file (#434).
+
+        The command spelling of DELETE /settings/env/{key}. Gated on the same
+        #157 axis as `/settings set` up front, and again in the applier (the
+        HTTP shape cannot see this layer's actor)."""
+        from ..api.schemas.settings import resolve_settings_field_name
+
+        raw = str(bound.get("key") or "")
+        field = resolve_settings_field_name(raw.strip())
+        blocked = self._agent_settings_write_block(field)
+        if blocked is not None:
+            return blocked
+        old_value = self._current_setting_value(field)
+        result = await self.api.clear_setting(
+            raw, user_id=self.user_id, gate_agent_writes=self.actor != "user"
+        )
+        self._alert_agent_settings_clear(result, old_value)
+        message = str(result.get("message") or f"Cleared {result.get('cleared', raw)}.")
+        if result.get("credential") or result.get("restart_required"):
+            # A discarded key and a value that is not live yet both deserve
+            # more than a success tick.
+            return command_warning(message)
+        return command_success(message)
+
     def _agent_settings_write_block(self, key: str) -> CommandOutput | None:
         """Gate-integrity carve-out (#157) for the GLOBAL master switches.
 
@@ -6802,9 +6926,7 @@ class _CommandExecutor(
         mechanics live in `_dispatch_owner_alert`.
         """
         try:
-            from ..api.routers.settings import _is_secret_setting_key
-
-            secret = _is_secret_setting_key(key)
+            secret = is_secret_setting_key(key)
             shown = "(value withheld: secret)" if secret else str(value)
             was = ""
             if old_value is not None and str(old_value) != "":
@@ -6823,6 +6945,50 @@ class _CommandExecutor(
             )
         except Exception as e:  # noqa: BLE001 - never fail the write
             logger.error("Agent settings-write alert failed for %s: %s", key, e)
+
+    def _alert_agent_settings_clear(self, result: dict, old_value: Any) -> None:
+        """Owner alert when an AGENT-issued `/settings clear` applied to a
+        sensitive key (#157, #434).
+
+        Sensitive is the write alert's set (a route or gate URL moved) plus ANY
+        credential: a clear is a pure discard, and the app's copy of a key may
+        have been the only one, so it is louder than an overwrite. Names only
+        for a credential; a non-secret value is echoed like the write alert,
+        so the owner can put it back.
+        """
+        if self.actor != "agent":
+            return
+        try:
+            from ..api.schemas.settings import AGENT_WRITE_ALERT_SETTINGS
+
+            # The applier's reply always carries `credential` and one of the
+            # three sources (clear_server_setting).
+            name = str(result.get("cleared") or "")
+            credential = bool(result.get("credential"))
+            alert_key = bool(set(result.get("updated") or []) & AGENT_WRITE_ALERT_SETTINGS)
+            if not name or not (credential or alert_key):
+                return
+            now = {
+                "elsewhere": "it now uses the value set elsewhere",
+                "unset": "nothing else sets it, so it is now unset",
+                "pinned": "the container configuration fixes its value",
+            }.get(str(result.get("source") or ""), "")
+            if credential:
+                was = " The saved key is gone and is not shown here."
+            elif old_value is not None and str(old_value) != "":
+                was = f" The app's copy was {old_value}."
+            else:
+                was = ""
+            surface = self.surface or "unknown surface"
+            self._dispatch_owner_alert(
+                f"An agent cleared server setting {name} from the app's saved "
+                f"settings via {surface} on thread {self.thread_id or 'unknown'}"
+                f"{'; ' + now if now else ''}.{was} Review with /env show and set "
+                "it again with /env set if this was not expected.",
+                context=name,
+            )
+        except Exception as e:  # noqa: BLE001 - never fail the clear
+            logger.error("Agent settings-clear alert failed: %s", e)
 
     def _alert_agent_settings_reload(self, changed: list[str]) -> None:
         """Owner alert when an AGENT-issued config reload moved a sensitive key.

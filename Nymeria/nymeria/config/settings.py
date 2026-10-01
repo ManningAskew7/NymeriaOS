@@ -9,9 +9,10 @@ import logging
 import os
 import sys
 import threading
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, List, Literal, Mapping, Optional, Tuple
+from typing import Any, Callable, List, Literal, Mapping, Optional, Sequence, Tuple
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +20,7 @@ from pydantic_settings.sources import EnvSettingsSource
 
 from .._env_overrides import FIELD_ENV_OVERRIDES
 from .._runtime_paths import default_user_project_root, is_installed_location
+from .secret_keys import SettingKeyClass, classify_setting_key, direct_key_slot
 from .llm_providers import (
     get_llm_provider_spec,
     normalize_llm_provider,
@@ -311,37 +313,40 @@ _env_files_loaded = False
 _env_file_loading_suppressed = False
 _env_load_lock = threading.RLock()
 _runtime_pins: dict[str, Optional[str]] = {}
-_runtime_settings_overrides: Tuple[str, ...] = ()
-_runtime_settings_ignored: Tuple[str, ...] = ()
 # The env files the last load read, in order (#101 entry 6: the boot warning
 # inspects only what this process actually loaded, never re-reads a root).
 _loaded_env_files: Tuple[Path, ...] = ()
+# The process environment as it was BEFORE the first env-file load (#434): on
+# the container shapes that is the compose environment, i.e. the `.env.docker`
+# values. Captured once and never refreshed, because after the first load
+# `os.environ` already holds the runtime settings file's values, so any later
+# snapshot would compare the file against itself (a reload used to empty the
+# override report that way). Values never leave memory; they were already in
+# `os.environ` at boot.
+_boot_environ: Optional[dict[str, str]] = None
+# What the root env files (not the runtime file) set at the last load.
+_root_env_values: dict[str, str] = {}
+# Keys the runtime settings file applied at the last load.
+_runtime_applied_keys: frozenset[str] = frozenset()
 
 
-def _apply_runtime_settings_file(path: Path) -> Tuple[List[str], List[str]]:
-    """Merge the runtime settings file into os.environ; return (overrides, ignored).
+def _apply_runtime_settings_file(path: Path) -> frozenset[str]:
+    """Merge the runtime settings file into os.environ; return the keys applied.
 
     ``load_dotenv(override=True)`` semantics, minus ``CONTAINER_PINNED_KEYS``,
-    which stay whatever the shape set. An override is a key that held a
-    DIFFERENT non-empty value first: compose's ``${VAR:-}`` idiom injects an
-    empty string for every unset optional, which is not "a value set
-    elsewhere" (#254 review).
+    which stay whatever the shape set. What the file overrides is computed
+    separately and live (``runtime_settings_shadows``), against the boot
+    environment rather than whatever ``os.environ`` held just before this ran.
     """
     from dotenv import dotenv_values
 
-    overrides: List[str] = []
-    ignored: List[str] = []
+    applied: set[str] = set()
     for key, value in dotenv_values(path).items():
-        if value is None:
+        if value is None or key in CONTAINER_PINNED_KEYS:
             continue
-        if key in CONTAINER_PINNED_KEYS:
-            ignored.append(key)
-            continue
-        old = os.environ.get(key)
         os.environ[key] = value
-        if old and old != value:
-            overrides.append(key)
-    return sorted(overrides), sorted(ignored)
+        applied.add(key)
+    return frozenset(applied)
 
 
 def env_file_source(key: str, value: str) -> Optional[Path]:
@@ -449,16 +454,148 @@ def _docker_service_host(value: str) -> Optional[str]:
     return None
 
 
+# --- what the runtime settings file shadows (#434) ----------------------------
+#
+# On the container shapes a value saved in the app lives in the runtime settings
+# file, which loads LAST and wins over the compose environment the wizard's
+# `.env.docker` feeds. Neither side can see the other's file, so a stale app
+# copy silently beats every later wizard run (an old OPENAI_API_KEY becoming a
+# proxy's bearer, a stale proxy LLM_BASE_URL under a direct route). The report
+# below is computed LIVE from the file and the boot baseline, so a reload or an
+# in-app save never makes it lie, and it carries key NAMES and classes only.
+
+ShadowKind = Literal["override", "blanked", "app_only"]
+
+
+@dataclass(frozen=True)
+class RuntimeSettingsShadow:
+    """One key the runtime settings file sets, judged against the boot baseline.
+
+    ``kind``: ``override`` (a DIFFERENT non-empty value was set elsewhere),
+    ``blanked`` (an empty line masks a non-empty value set elsewhere) or
+    ``app_only`` (nothing else sets it; compose's ``${VAR:-}`` empty string
+    counts as nothing, #254 review). Only the first two shadow anything.
+    """
+
+    key: str
+    key_class: SettingKeyClass
+    kind: ShadowKind
+
+    @property
+    def shadows(self) -> bool:
+        return self.kind != "app_only"
+
+    @property
+    def severe(self) -> bool:
+        """A credential or a route key is shadowed: the one that can misroute a key."""
+        return self.shadows and self.key_class != "setting"
+
+    def label(self) -> str:
+        notes: List[str] = [self.key_class] if self.key_class != "setting" else []
+        if self.kind == "blanked":
+            notes.append("saved empty")
+        return f"{self.key} ({', '.join(notes)})" if notes else self.key
+
+
+def _runtime_settings_values() -> dict[str, str]:
+    """The runtime settings file's current key/value pairs; {} when absent or unreadable."""
+    runtime = runtime_settings_file()
+    if runtime is None:
+        return {}
+    from dotenv import dotenv_values
+
+    try:
+        if not runtime.is_file():
+            return {}
+        values = dotenv_values(runtime)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def runtime_settings_baseline(key: str) -> Optional[str]:
+    """The value ``key`` would hold in this process WITHOUT the runtime settings file.
+
+    The boot environment, overlaid by what the root env files set at the last
+    load, with the shape's registered pins winning. None means unset. Never
+    logged or returned to a caller outside the process.
+    """
+    with _env_load_lock:
+        if key in _runtime_pins:
+            return _runtime_pins[key]
+        if key in _root_env_values:
+            return _root_env_values[key]
+        boot = _boot_environ if _boot_environ is not None else os.environ
+        return boot.get(key)
+
+
+def runtime_settings_shadows() -> Tuple[RuntimeSettingsShadow, ...]:
+    """Every key the runtime settings file sets, classed and judged, sorted by key.
+
+    Empty when the shape names no runtime file. ``CONTAINER_PINNED_KEYS`` are
+    never applied from the file, so they shadow nothing (see
+    ``runtime_settings_ignored``); an empty line over an unset key changes
+    nothing and is skipped.
+    """
+    shadows: List[RuntimeSettingsShadow] = []
+    for key, value in sorted(_runtime_settings_values().items()):
+        if key in CONTAINER_PINNED_KEYS:
+            continue
+        baseline = runtime_settings_baseline(key)
+        if baseline:
+            if value == baseline:
+                continue
+            kind: ShadowKind = "blanked" if value == "" else "override"
+        elif value == "":
+            continue
+        else:
+            kind = "app_only"
+        shadows.append(RuntimeSettingsShadow(key, classify_setting_key(key), kind))
+    return tuple(shadows)
+
+
 def runtime_settings_overrides() -> Tuple[str, ...]:
-    """Keys the runtime settings file changed at the last env load, sorted.
+    """Keys whose runtime-settings-file value shadows one set elsewhere, sorted.
 
     Names only, never values (most are secrets or harmless, and the log line
-    this feeds must be safe either way). A key counts when the process already
-    held a DIFFERENT value before the file loaded: on the container shapes
-    that is the compose environment, usually a value from ``.env.docker``, so
-    this is the list of ".env.docker edits that will not take effect".
+    this feeds must be safe either way). On the container shapes "elsewhere" is
+    the compose environment, usually a value from ``.env.docker``, so this is
+    the list of ".env.docker edits that will not take effect". Live, so it
+    stays right after ``POST /settings/reload`` and an in-app save (#434).
     """
-    return _runtime_settings_overrides
+    return tuple(shadow.key for shadow in runtime_settings_shadows() if shadow.shadows)
+
+
+def runtime_settings_ignored() -> Tuple[str, ...]:
+    """Container-pinned keys the runtime settings file names, which never apply."""
+    return tuple(
+        sorted(key for key in _runtime_settings_values() if key in CONTAINER_PINNED_KEYS)
+    )
+
+
+def shadow_labels(shadows: Sequence[RuntimeSettingsShadow]) -> str:
+    """``OPENAI_API_KEY (credential), LLM_BASE_URL (route), USER_TIMEZONE``."""
+    return ", ".join(shadow.label() for shadow in shadows)
+
+
+def direct_slot_hints(shadows: Sequence[RuntimeSettingsShadow]) -> List[str]:
+    """One data-loss note per shadowed shared key slot that has a direct twin.
+
+    Clearing the app's copy of OPENAI_API_KEY discards it, and that copy may
+    be the user's only record of a real OpenAI key (the #431 class).
+    """
+    hints = []
+    for shadow in shadows:
+        slot = direct_key_slot(shadow.key)
+        if slot and shadow.shadows:
+            hints.append(
+                f"Clearing {shadow.key} discards the app's copy: if it is a real "
+                f"key you still need, save it as {slot} first."
+            )
+    return hints
+
+
+SETTINGS_CLEAR_REMEDY = "/settings clear <KEY>"
 
 
 def describe_runtime_settings_file() -> Optional[str]:
@@ -466,25 +603,89 @@ def describe_runtime_settings_file() -> Optional[str]:
 
     Says where app-made settings changes are saved, and names (never values)
     the keys that file overrides, which is the list of ``.env.docker`` edits
-    that will not take effect until the line is removed or changed in the app.
+    that will not take effect until the app's copy is cleared or changed.
     """
     runtime = runtime_settings_file()
     if runtime is None:
         return None
     line = f"Settings changed in the app are saved to {runtime} ({SETTINGS_FILE_ENV})."
-    overrides = runtime_settings_overrides()
+    overrides = [shadow for shadow in runtime_settings_shadows() if shadow.shadows]
     if overrides:
         line += (
             f" It loads last and overrides {len(overrides)} value(s) set elsewhere "
-            f"(for example in .env.docker): {', '.join(overrides)}. Change them in "
-            "the app, or delete their lines there, to use the other value."
+            f"(for example in .env.docker): {shadow_labels(overrides)}. Change them "
+            f"in the app, or run {SETTINGS_CLEAR_REMEDY} to use the other value."
         )
-    if _runtime_settings_ignored:
+    ignored = runtime_settings_ignored()
+    if ignored:
         line += (
             f" Ignored (the container configuration fixes them): "
-            f"{', '.join(_runtime_settings_ignored)}."
+            f"{', '.join(ignored)}."
         )
     return line
+
+
+def describe_runtime_settings_warning() -> Optional[str]:
+    """A WARNING-level startup line when a credential or route key is shadowed.
+
+    The same names as the INFO line, singled out because these are the keys
+    whose stale app copy can send a credential to the wrong place (#434).
+    """
+    runtime = runtime_settings_file()
+    if runtime is None:
+        return None
+    severe = [shadow for shadow in runtime_settings_shadows() if shadow.severe]
+    if not severe:
+        return None
+    return " ".join(
+        [
+            f"The app's saved settings ({runtime}) override {len(severe)} "
+            "credential or route value(s) set elsewhere (for example in "
+            f".env.docker), so those values are not in effect: "
+            f"{shadow_labels(severe)}. If that is not intended, an admin can run "
+            f"{SETTINGS_CLEAR_REMEDY}.",
+            *direct_slot_hints(severe),
+        ]
+    )
+
+
+def restore_runtime_settings_baseline(key: str) -> Optional[str]:
+    """Put ``os.environ[key]`` back to its value without the runtime file.
+
+    The clear path's process half (the file half is the caller's): returns the
+    restored value, None when the key is now unset.
+    """
+    with _env_load_lock:
+        value = runtime_settings_baseline(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+        return value
+
+
+def environ_without_runtime_settings(environ: Mapping[str, str]) -> dict[str, str]:
+    """A copy of ``environ`` with the runtime settings file's keys at their baseline.
+
+    For an in-place restart (``/restart api`` re-execs with this process's
+    environment): without it the restarted image would BOOT with the file's
+    values already in its environment, so its baseline would be the file
+    itself and every shadow would vanish from the report, and a later clear
+    would restore the very value it removed. The restarted image's own boot
+    load applies the file again. A no-op when the shape names no file.
+    """
+    env = dict(environ)
+    if runtime_settings_file() is None:
+        return env
+    with _env_load_lock:
+        keys = set(_runtime_settings_values()) | set(_runtime_applied_keys)
+        for key in keys - CONTAINER_PINNED_KEYS:
+            value = runtime_settings_baseline(key)
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+    return env
 
 
 def register_runtime_pins(pins: Mapping[str, Optional[str]]) -> None:
@@ -550,20 +751,55 @@ def suppress_env_file_loading() -> None:
         _env_file_loading_suppressed = True
 
 
+@dataclass(frozen=True)
+class EnvLoadingState:
+    """What the last env load recorded, for a caller that may undo that load.
+
+    ``POST /settings/reload`` loads the files and then rolls back on a 400 or
+    403; restoring ``os.environ`` alone would leave the REJECTED load's record
+    of what the root files and the runtime file set, so the #434 baseline
+    would then judge (and a later clear restore) against a value that was
+    never applied. The boot environment is not here: it is captured once and
+    no load replaces it.
+    """
+
+    loaded_env_files: Tuple[Path, ...]
+    root_env_values: Mapping[str, str]
+    runtime_applied_keys: frozenset[str]
+
+
+def env_loading_state() -> EnvLoadingState:
+    """Snapshot what the last env load recorded (see :class:`EnvLoadingState`)."""
+    with _env_load_lock:
+        return EnvLoadingState(
+            _loaded_env_files, dict(_root_env_values), _runtime_applied_keys
+        )
+
+
+def restore_env_loading_state(state: EnvLoadingState) -> None:
+    """Put back a snapshot from :func:`env_loading_state` (a rolled-back load)."""
+    global _loaded_env_files, _root_env_values, _runtime_applied_keys
+    with _env_load_lock:
+        _loaded_env_files = state.loaded_env_files
+        _root_env_values = dict(state.root_env_values)
+        _runtime_applied_keys = state.runtime_applied_keys
+
+
 def reset_env_loading_state_for_tests() -> None:
     """Drop the load flag and the registered pins, for test isolation.
 
     Deliberately does NOT clear the suppression flag: that one is the suite's
     hermeticity guarantee (#294) and must survive every test.
     """
-    global _env_files_loaded, _runtime_settings_overrides, _runtime_settings_ignored
-    global _loaded_env_files
+    global _env_files_loaded, _loaded_env_files, _boot_environ, _root_env_values
+    global _runtime_applied_keys
     with _env_load_lock:
         _env_files_loaded = False
         _runtime_pins.clear()
-        _runtime_settings_overrides = ()
-        _runtime_settings_ignored = ()
         _loaded_env_files = ()
+        _boot_environ = None
+        _root_env_values = {}
+        _runtime_applied_keys = frozenset()
 
 
 def load_env_files_into_environ(
@@ -585,8 +821,8 @@ def load_env_files_into_environ(
     non-UTF-8 byte in a password or a Notepad UTF-16 BOM must not stop a process
     from starting on the rest of its configuration.
     """
-    global _env_files_loaded, _runtime_settings_overrides, _runtime_settings_ignored
-    global _loaded_env_files
+    global _env_files_loaded, _loaded_env_files, _boot_environ, _root_env_values
+    global _runtime_applied_keys
     with _env_load_lock:
         if _env_file_loading_suppressed and (
             project_root is None or Path(project_root) == PROJECT_ROOT
@@ -595,28 +831,37 @@ def load_env_files_into_environ(
         if _env_files_loaded and not force:
             return []
 
-        from dotenv import load_dotenv
+        from dotenv import dotenv_values, load_dotenv
+
+        # The baseline the runtime settings file is judged against (#434):
+        # captured on the FIRST load only, even when the file does not exist
+        # yet (a fresh volume; a later in-app save creates it).
+        if _boot_environ is None:
+            _boot_environ = dict(os.environ)
 
         runtime = runtime_settings_file()
-        overrides: List[str] = []
-        ignored: List[str] = []
+        applied: frozenset[str] = frozenset()
+        root_values: dict[str, str] = {}
         loaded: List[Path] = []
         for path in get_env_file_paths(project_root):
             try:
                 if not path.exists():
                     continue
                 if path == runtime:
-                    overrides, ignored = _apply_runtime_settings_file(path)
+                    applied = _apply_runtime_settings_file(path)
                 else:
                     load_dotenv(path, override=True)
+                    for key, value in dotenv_values(path).items():
+                        if value is not None and key in os.environ:
+                            root_values[key] = os.environ[key]
             except (OSError, UnicodeDecodeError, ValueError):
                 logger.warning("Skipping unreadable env file: %s", path, exc_info=True)
                 continue
             loaded.append(path)
 
-        _runtime_settings_overrides = tuple(overrides)
-        _runtime_settings_ignored = tuple(ignored)
         _loaded_env_files = tuple(loaded)
+        _root_env_values = root_values
+        _runtime_applied_keys = applied
 
         _env_files_loaded = True
         _apply_runtime_pins()

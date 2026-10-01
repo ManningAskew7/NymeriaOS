@@ -30,14 +30,33 @@ Settings changed in the app (the Settings screens, `/settings set`,
 `/model ... global`, `PATCH /settings`) are saved to `NYMERIA_SETTINGS_FILE`,
 which every container shape sets to `/data/settings.env` on the data volume.
 That file loads LAST, so a value saved there wins over the same key in
-`.env.docker`; the api logs at startup which keys it overrides (names only).
-To go back to the `.env.docker` value, change it in the app or delete its line
-from `/data/settings.env`. Keys the compose file pins (the data, workspace and
-project dirs, `DATABASE_BACKEND`, `POSTGRES_URI`, `REDIS_*`, the listen address,
-`NYMERIA_API_URL`) cannot be changed this way: a settings write refuses them,
-and the file never applies them. Before #254 these writes went to `/app/.env` in the
-container's own filesystem: they applied on a `restart` and were silently lost
-on the next recreate.
+`.env.docker`, and a later `nymeria init` run cannot see it (#434). Where to
+see what it overrides (key names and classes, never values): `/status` (admins
+get a Settings file block), `nymeria doctor` run inside the API container (a
+Settings file row, which warns when a credential or route key such as
+`OPENAI_API_KEY` or `LLM_BASE_URL` (or another base URL a provider key is sent
+to: background model, embeddings, TTS, STT) is overridden, and also lists keys saved
+only in the app), and the api's startup log (INFO, plus a WARNING for a
+credential or route key). The report is judged against the environment the
+process booted with, so it stays right after `/settings reload` and an in-app
+save. To go back to the `.env.docker` value, change it in the app or run
+`/settings clear <KEY>` (admin; `DELETE /settings/env/{key}`), which removes
+every line for that key from `/data/settings.env` and puts the value set
+elsewhere back into the process (or leaves the key unset when nothing else
+sets it). Most keys take effect at once; the few read only at startup (the
+embedding model, bot tokens, ticker intervals and similar) still need
+`/restart api`, and the reply says so. Clearing a credential discards the
+app's copy: if `OPENAI_API_KEY`, `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` holds
+a real vendor key you still need, save it under its direct slot
+(`OPENAI_DIRECT_API_KEY`, `GEMINI_DIRECT_API_KEY`, `ANTHROPIC_DIRECT_API_KEY`)
+first. Slim and
+native installs have no such file and the command says so. Keys the compose
+file pins (the data, workspace and project dirs, `DATABASE_BACKEND`,
+`POSTGRES_URI`, `REDIS_*`, the listen address, `NYMERIA_API_URL`) cannot be
+changed this way: a settings write refuses them, and the file never applies
+them (clearing one only removes its dead line). Before #254 these writes went
+to `/app/.env` in the container's own filesystem: they applied on a `restart`
+and were silently lost on the next recreate.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 

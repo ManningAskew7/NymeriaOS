@@ -242,6 +242,7 @@ backend's own gate applies.
 | `/settings_get <key>` | Get a specific setting value (was `/config_get`) |
 | `/settings_set <key> <value>` | Update a setting. Auto-parses booleans, numbers, none (was `/config_set`) |
 | `/settings_reload` | Re-read the config files and apply what changed, without restarting |
+| `/settings_clear <key>` | Docker shapes: remove a setting saved in the app so the value set elsewhere (`.env.docker`) applies again. Admin only |
 | `/env_show` | List environment variables by category, secrets masked |
 | `/env_set <key> <value>` | Write one environment variable |
 

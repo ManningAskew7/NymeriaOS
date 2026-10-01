@@ -997,6 +997,11 @@ def server_settings_env_mapping() -> dict[str, str]:
 #
 # ALERT: agent-issued writes to these platform-level, URL/egress-shaped keys
 # succeed but fire a send_owner_alert (loud + reversible, never blocking).
+# Every base URL a provider key is sent to belongs here (the voice clients
+# send TTS_API_KEY/STT_API_KEY or the OpenAI media key over plain httpx, so
+# an agent pointing one elsewhere hands the key over); it is the same set the
+# settings-file report calls routes (`config/secret_keys.py::
+# ROUTE_SETTING_KEYS`, tests/test_command_service.py keeps them agreeing).
 # Integration-level base_urls are deliberately excluded: their egress is
 # policy-controlled at consumption (the service-integration egress gates).
 AGENT_WRITE_ALERT_SETTINGS = frozenset({
@@ -1004,6 +1009,8 @@ AGENT_WRITE_ALERT_SETTINGS = frozenset({
     "llm_base_url",
     "llm_background_base_url",
     "embedding_base_url",
+    "tts_base_url",
+    "stt_base_url",
     "cliproxy_management_url",
     "cliproxy_management_key",
 })
@@ -1014,6 +1021,16 @@ AGENT_WRITE_ALERT_SETTINGS = frozenset({
 AGENT_WRITE_BLOCKED_SETTINGS = frozenset({
     "hooks_enabled",
 })
+
+
+# The refusal for a key that is not shaped like a setting name. Shared by the
+# clear applier and the command layer's HTTP client, which refuses the same
+# key before it can become a URL path (#434). Never echoes the input: a value
+# pasted where the key goes would land in a reply or an access log.
+SETTING_KEY_MALFORMED_DETAIL = (
+    "That is not a setting name (letters, digits and underscores, starting "
+    "with a letter). Nothing was changed."
+)
 
 
 def resolve_settings_field_name(key: str) -> str:

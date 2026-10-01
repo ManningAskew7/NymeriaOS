@@ -118,6 +118,9 @@ def _append_settings_checks(
     browser = _check_server_browser(settings, project_root)
     if browser is not None:
         results.append(browser)
+    settings_file = _check_settings_file(project_root, own_root=override is None)
+    if settings_file is not None:
+        results.append(settings_file)
 
 
 def _project_root_override(args: argparse.Namespace) -> Path | None:
@@ -585,6 +588,60 @@ def _check_server_browser(settings: Any, project_root: Path) -> CheckResult | No
         return CheckResult("Server browser", "pass", summary)
     problems = "; ".join(report.problems) or "not healthy"
     return CheckResult("Server browser", "warn", f"{problems} (details: nymeria browser status)")
+
+
+def _check_settings_file(project_root: Path, *, own_root: bool) -> CheckResult | None:
+    """What the app's saved settings file overrides, on the container shapes (#434).
+
+    That file (``NYMERIA_SETTINGS_FILE``, ``/data/settings.env``) loads last,
+    so a value saved in the app silently beats the one ``.env.docker`` sets.
+    In a process that loads it (doctor run inside the API container): WARN
+    when a credential or route key is overridden (the shape that sends a key
+    to the wrong place), PASS naming any other override and the keys saved
+    only in the app. On a host whose root holds ``.env.docker`` the file sits
+    in the data volume and is invisible from here, so a PASS row points at the
+    two places that can see it rather than guessing. Anything else: no row.
+    Names only, never values.
+    """
+    from .config.settings import (
+        SETTINGS_CLEAR_REMEDY,
+        direct_slot_hints,
+        runtime_settings_file,
+        runtime_settings_shadows,
+        shadow_labels,
+    )
+
+    runtime = runtime_settings_file() if own_root else None
+    if runtime is None:
+        if not (project_root / ".env.docker").is_file():
+            return None
+        return CheckResult(
+            "Settings file",
+            "pass",
+            "settings saved in the app live in the data volume (/data/settings.env), "
+            "which loads last and overrides .env.docker but is not visible from "
+            "here. To see what it overrides, run /status as an admin, or doctor "
+            "inside the API container (`docker exec <api container> python run.py "
+            "doctor`).",
+        )
+    shadows = runtime_settings_shadows()
+    overriding = [shadow for shadow in shadows if shadow.shadows]
+    app_only = [shadow for shadow in shadows if not shadow.shadows]
+    detail = f"{runtime} (saved in the app, loads last)"
+    if overriding:
+        detail += (
+            f"; overrides values set elsewhere: {shadow_labels(overriding)}. To use "
+            f"the other value, run {SETTINGS_CLEAR_REMEDY}"
+        )
+    else:
+        detail += "; overrides nothing set elsewhere"
+    if app_only:
+        detail += f"; saved only in the app: {shadow_labels(app_only)}"
+    hints = direct_slot_hints(overriding)
+    if hints:
+        detail += ". " + " ".join(hints)
+    severe = any(shadow.severe for shadow in overriding)
+    return CheckResult("Settings file", "warn" if severe else "pass", detail)
 
 
 def _check_voice(settings: Any) -> CheckResult:

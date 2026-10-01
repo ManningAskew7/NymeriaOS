@@ -1034,6 +1034,30 @@ def register_default_commands(service: "CommandService") -> None:
         params=(),
     )
     service.register(
+        "settings clear",
+        description="Remove a setting saved in the app so the value set elsewhere applies",
+        category="Settings",
+        aliases=("settings_clear", "env clear", "env_clear"),
+        # Same gate as `settings set` (#434): it can discard a saved
+        # credential and move the LLM route. Container shapes only; elsewhere
+        # the app's own config file IS the settings and the command says so.
+        requires_admin=True,
+        mutates_state=True,
+        danger_level="dangerous",
+        note=(
+            "Docker shapes save app settings to /data/settings.env, which loads "
+            "last and overrides .env.docker; this removes a key's line there "
+            "and restores the other value. /status names what is overridden."
+        ),
+        params=(
+            CommandParam(
+                "key",
+                required=True,
+                description="Setting key or env var name saved in the app",
+            ),
+        ),
+    )
+    service.register(
         "env",
         description="Show environment variables",
         category="Settings",

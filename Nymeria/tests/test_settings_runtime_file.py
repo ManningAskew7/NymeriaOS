@@ -259,3 +259,254 @@ def test_other_env_files_are_unaffected_when_unset(
     other.write_text("K=V\n", encoding="utf-8")
 
     assert secrets_path_error(other) is None
+
+
+# --- #434: the report is live, classed, and judged against the boot baseline --
+#
+# Every value below is a dummy whose substring "dummy-434" must never reach a
+# report, a log line, or a response: the report carries key NAMES only.
+
+DUMMY = "dummy-434"
+
+
+def _shadow_map() -> dict[str, tuple[str, str]]:
+    return {
+        shadow.key: (shadow.key_class, shadow.kind)
+        for shadow in settings_mod.runtime_settings_shadows()
+    }
+
+
+def test_a_shadow_is_classed_credential_route_or_setting(container):
+    _app, runtime = container
+    os.environ["OPENAI_API_KEY"] = f"cpx-{DUMMY}-gatekeeper"
+    os.environ["LLM_BASE_URL"] = f"http://proxy-{DUMMY}:8317/v1"
+    os.environ["USER_TIMEZONE"] = "UTC"
+    runtime.write_text(
+        f"OPENAI_API_KEY=sk-{DUMMY}-old\n"
+        f"LLM_BASE_URL=https://api.openai.com/v1\n"
+        "USER_TIMEZONE=Australia/Sydney\n",
+        encoding="utf-8",
+    )
+
+    settings_mod.load_env_files_into_environ(force=True)
+
+    assert _shadow_map() == {
+        "LLM_BASE_URL": ("route", "override"),
+        "OPENAI_API_KEY": ("credential", "override"),
+        "USER_TIMEZONE": ("setting", "override"),
+    }
+    assert settings_mod.runtime_settings_overrides() == (
+        "LLM_BASE_URL",
+        "OPENAI_API_KEY",
+        "USER_TIMEZONE",
+    )
+
+
+def test_an_equal_value_is_not_a_shadow(container):
+    _app, runtime = container
+    os.environ["OPENAI_API_KEY"] = f"sk-{DUMMY}"
+    runtime.write_text(f"OPENAI_API_KEY=sk-{DUMMY}\n", encoding="utf-8")
+
+    settings_mod.load_env_files_into_environ(force=True)
+
+    assert settings_mod.runtime_settings_shadows() == ()
+
+
+def test_a_key_set_nowhere_else_is_saved_only_in_the_app_never_an_override(container):
+    # G1 stays informational: a GUI-onboarded Docker install legitimately
+    # holds its whole route here, and the API cannot tell that apart from a
+    # value the wizard dropped.
+    _app, runtime = container
+    os.environ["LLM_BASE_URL"] = ""  # compose's ${VAR:-}
+    os.environ.pop("OPENAI_API_KEY", None)
+    runtime.write_text(
+        f"LLM_BASE_URL=http://proxy-{DUMMY}:8317\nOPENAI_API_KEY=cpx-{DUMMY}\n",
+        encoding="utf-8",
+    )
+
+    settings_mod.load_env_files_into_environ(force=True)
+
+    assert _shadow_map() == {
+        "LLM_BASE_URL": ("route", "app_only"),
+        "OPENAI_API_KEY": ("credential", "app_only"),
+    }
+    assert settings_mod.runtime_settings_overrides() == ()
+    assert settings_mod.describe_runtime_settings_warning() is None
+
+
+def test_a_reload_does_not_empty_the_report(container):
+    # G2: by the second load os.environ already holds the file's values, so a
+    # snapshot taken then compares the file against itself.
+    _app, runtime = container
+    os.environ["OPENAI_API_KEY"] = f"cpx-{DUMMY}"
+    runtime.write_text(f"OPENAI_API_KEY=sk-{DUMMY}\n", encoding="utf-8")
+    settings_mod.load_env_files_into_environ(force=True)
+    assert settings_mod.runtime_settings_overrides() == ("OPENAI_API_KEY",)
+
+    settings_mod.load_env_files_into_environ(force=True)  # POST /settings/reload
+
+    assert settings_mod.runtime_settings_overrides() == ("OPENAI_API_KEY",)
+    assert settings_mod.runtime_settings_baseline("OPENAI_API_KEY") == f"cpx-{DUMMY}"
+
+
+def test_a_value_saved_after_boot_is_reported_without_a_restart(container):
+    # G3: an in-app save writes the file and os.environ, nothing else.
+    from nymeria.config.env_file import write_env_file
+
+    _app, runtime = container
+    os.environ["LLM_MODEL"] = "from-env-docker"
+    settings_mod.load_env_files_into_environ(force=True)  # fresh volume: no file yet
+    assert settings_mod.runtime_settings_overrides() == ()
+
+    write_env_file(runtime, [("LLM_MODEL", "saved-in-app")], merge=True)
+    os.environ["LLM_MODEL"] = "saved-in-app"
+
+    assert settings_mod.runtime_settings_overrides() == ("LLM_MODEL",)
+
+
+def test_an_empty_line_over_a_set_value_is_reported_as_blanked(container):
+    # G4: `KEY=` masks the value set elsewhere rather than restoring it.
+    _app, runtime = container
+    os.environ["TTS_BASE_URL"] = "http://tts.local"
+    os.environ.pop("STT_BASE_URL", None)
+    runtime.write_text("TTS_BASE_URL=\nSTT_BASE_URL=\n", encoding="utf-8")
+
+    settings_mod.load_env_files_into_environ(force=True)
+
+    # Over an unset key an empty line changes nothing, so it is not listed.
+    # (TTS_BASE_URL decides where the TTS key goes, so it is a route key.)
+    assert _shadow_map() == {"TTS_BASE_URL": ("route", "blanked")}
+    assert settings_mod.runtime_settings_overrides() == ("TTS_BASE_URL",)
+    assert "TTS_BASE_URL (route, saved empty)" in (
+        settings_mod.describe_runtime_settings_file() or ""
+    )
+
+
+def test_a_root_env_file_counts_as_set_elsewhere(container):
+    # The baseline is the boot env overlaid by the root files of THIS load.
+    app, runtime = container
+    (app / "config.env").write_text("LLM_MODEL=from-root-file\n", encoding="utf-8")
+    runtime.write_text("LLM_MODEL=saved-in-app\n", encoding="utf-8")
+
+    settings_mod.load_env_files_into_environ(force=True)
+    settings_mod.load_env_files_into_environ(force=True)
+
+    assert settings_mod.runtime_settings_overrides() == ("LLM_MODEL",)
+    assert settings_mod.runtime_settings_baseline("LLM_MODEL") == "from-root-file"
+
+
+def test_the_warning_line_names_credential_and_route_keys_and_the_remedy(container):
+    _app, runtime = container
+    os.environ["OPENAI_API_KEY"] = f"cpx-{DUMMY}-gatekeeper"
+    os.environ["LLM_BASE_URL"] = f"http://proxy-{DUMMY}:8317/v1"
+    os.environ["USER_TIMEZONE"] = "UTC"
+    runtime.write_text(
+        f"OPENAI_API_KEY=sk-{DUMMY}-old\nLLM_BASE_URL=https://{DUMMY}.example/v1\n"
+        "USER_TIMEZONE=Australia/Sydney\n",
+        encoding="utf-8",
+    )
+    settings_mod.load_env_files_into_environ(force=True)
+
+    warning = settings_mod.describe_runtime_settings_warning()
+    info = settings_mod.describe_runtime_settings_file()
+
+    assert warning is not None and info is not None
+    assert "OPENAI_API_KEY (credential)" in warning
+    assert "LLM_BASE_URL (route)" in warning
+    assert "USER_TIMEZONE" not in warning  # a plain setting stays on the INFO line
+    assert "/settings clear <KEY>" in warning
+    assert "OPENAI_DIRECT_API_KEY" in warning  # where a real key goes first
+    assert "USER_TIMEZONE" in info and "/settings clear <KEY>" in info
+    for line in (warning, info):
+        assert DUMMY not in line and "sk-" not in line and "cpx-" not in line
+
+
+def test_only_plain_setting_overrides_raise_no_warning(container):
+    _app, runtime = container
+    os.environ["USER_TIMEZONE"] = "UTC"
+    runtime.write_text("USER_TIMEZONE=Australia/Sydney\n", encoding="utf-8")
+    settings_mod.load_env_files_into_environ(force=True)
+
+    assert settings_mod.describe_runtime_settings_warning() is None
+    assert "USER_TIMEZONE" in (settings_mod.describe_runtime_settings_file() or "")
+
+
+def test_a_restart_carries_the_baseline_not_the_files_values(container):
+    # /restart api re-execs with this process's environment. Carrying the
+    # file's values across would make the file its own baseline in the new
+    # image: every shadow gone from the report, and a clear a no-op.
+    from nymeria.api.routers.system import _restart_child_env
+
+    app, runtime = container
+    os.environ["OPENAI_API_KEY"] = f"cpx-{DUMMY}"
+    os.environ.pop("TWITCH_CHANNEL", None)
+    os.environ["UNRELATED_PROCESS_VAR"] = "kept"
+    runtime.write_text(
+        f"OPENAI_API_KEY=sk-{DUMMY}\nTWITCH_CHANNEL=saved-in-app\n", encoding="utf-8"
+    )
+    settings_mod.load_env_files_into_environ(force=True)
+    assert os.environ["OPENAI_API_KEY"] == f"sk-{DUMMY}"
+
+    class _Settings:
+        project_root = app
+
+    env = _restart_child_env(_Settings())
+
+    assert env["OPENAI_API_KEY"] == f"cpx-{DUMMY}"
+    assert "TWITCH_CHANNEL" not in env
+    assert env["UNRELATED_PROCESS_VAR"] == "kept"
+    # The running process itself is untouched by building the child's env.
+    assert os.environ["OPENAI_API_KEY"] == f"sk-{DUMMY}"
+
+
+def test_a_restart_applies_a_line_removed_by_hand(container):
+    # The restart env puts back every key the LAST load applied, not only the
+    # keys the file holds now: a line the operator deleted on the host after
+    # boot must not ride the exec into the new image (documented in api.md).
+    from nymeria.api.routers.system import _restart_child_env
+
+    app, runtime = container
+    os.environ["LLM_MODEL"] = "from-env-docker"
+    os.environ.pop("TWITCH_CHANNEL", None)
+    runtime.write_text("LLM_MODEL=saved-in-app\nTWITCH_CHANNEL=saved-in-app\n", encoding="utf-8")
+    settings_mod.load_env_files_into_environ(force=True)
+    runtime.write_text("", encoding="utf-8")  # both lines removed by hand
+
+    class _Settings:
+        project_root = app
+
+    env = _restart_child_env(_Settings())
+
+    assert env["LLM_MODEL"] == "from-env-docker"
+    assert "TWITCH_CHANNEL" not in env
+
+
+@pytest.mark.parametrize(
+    "key", ["LLM_BACKGROUND_BASE_URL", "EMBEDDING_BASE_URL", "TTS_BASE_URL", "STT_BASE_URL"]
+)
+def test_every_base_url_that_carries_a_provider_key_is_a_route(container, key):
+    # A stale copy of any of these sends that provider's key to the old host,
+    # so it warns like LLM_BASE_URL does.
+    _app, runtime = container
+    os.environ[key] = f"http://proxy-{DUMMY}:8317/v1"
+    runtime.write_text(f"{key}=https://{DUMMY}.example/v1\n", encoding="utf-8")
+
+    settings_mod.load_env_files_into_environ(force=True)
+
+    assert _shadow_map() == {key: ("route", "override")}
+    warning = settings_mod.describe_runtime_settings_warning() or ""
+    assert f"{key} (route)" in warning
+    assert DUMMY not in warning
+
+
+def test_a_shadowed_anthropic_key_names_its_direct_slot(container):
+    _app, runtime = container
+    os.environ["ANTHROPIC_API_KEY"] = f"cpx-{DUMMY}"
+    runtime.write_text(f"ANTHROPIC_API_KEY=sk-ant-{DUMMY}\n", encoding="utf-8")
+
+    settings_mod.load_env_files_into_environ(force=True)
+
+    warning = settings_mod.describe_runtime_settings_warning() or ""
+    assert "ANTHROPIC_API_KEY (credential)" in warning
+    assert "save it as ANTHROPIC_DIRECT_API_KEY first" in warning
+    assert DUMMY not in warning

@@ -840,18 +840,27 @@ def run_init(args: argparse.Namespace) -> int:
                 raise SystemExit("--model is required with --non-interactive")
             # Reconfigure: a key already on disk satisfies the requirement
             # (finalize's keep-existing-key path preserves the line). Mirrors
-            # finalize's own key_present check. Not honored when leaving the
-            # CLIProxy branch: the present key is the proxy gatekeeper.
-            # Nor for an old gateway route's key anywhere but that gateway
-            # (openai via LiteLLM, then openai direct or another base URL):
-            # LiteLLM's key is no OpenAI key (#433).
+            # finalize's own key_present check, judged by hydrate's shape
+            # bits rather than by presence: a proxy gatekeeper never counts
+            # (leaving the CLIProxy branch, codex's sits in OPENAI_API_KEY),
+            # nor does an old gateway route's key anywhere but that gateway
+            # (openai via LiteLLM, then openai direct or another base URL:
+            # LiteLLM's key is no OpenAI key, #433). Any other key in the
+            # slot is this route's own, so leaving CLIProxy keeps a real
+            # ANTHROPIC_DIRECT_API_KEY (the gatekeeper sits beside it).
             from .tool_keys import gateway_key_would_go_elsewhere
 
             slot = spec.api_key_env_vars[0] if spec and spec.api_key_env_vars else ""
-            key_present = not leaving_cliproxy and bool(
+            gateway_key_stays = bool(
                 slot
                 and slot in state.present_env_keys
-                and not gateway_key_would_go_elsewhere(state, slot)
+                and gateway_key_would_go_elsewhere(state, slot)
+            )
+            key_present = bool(
+                slot
+                and slot in state.present_env_keys
+                and slot not in state.gatekeeper_env_keys
+                and not gateway_key_stays
             )
             if (
                 spec is not None
@@ -859,6 +868,35 @@ def run_init(args: argparse.Namespace) -> int:
                 and not state.api_key
                 and not key_present
             ):
+                # Hydrate's classification, never presence: the direct slot
+                # beside a CLIProxy route can hold a real key (#434 delta).
+                proxy_key_stays = leaving_cliproxy and bool(
+                    slot and slot in state.gatekeeper_env_keys
+                )
+                if gateway_key_stays or proxy_key_stays:
+                    # Say WHY the key on disk does not count (#433 follow-up):
+                    # the bare flag demand read as a wizard that lost the key.
+                    # Leaving the CLIProxy branch is the same case: the slot
+                    # holds the proxy's gatekeeper. The URL loses its userinfo
+                    # and query, either of which can carry a credential.
+                    from urllib.parse import urlsplit, urlunsplit
+
+                    target = spec.label
+                    if state.base_url:
+                        parts = urlsplit(state.base_url)
+                        target = urlunsplit(
+                            (parts.scheme, parts.netloc.rpartition("@")[2], parts.path, "", "")
+                        )
+                    held = (
+                        "the CLIProxy route's gatekeeper key"
+                        if proxy_key_stays
+                        else "the old gateway route's key"
+                    )
+                    raise SystemExit(
+                        f"{slot} holds {held}, which only works with that "
+                        f"gateway, not with {target}. --api-key is required "
+                        "with --non-interactive (the key for this route)."
+                    )
                 raise SystemExit("--api-key is required with --non-interactive")
             if spec is not None and spec.requires_base_url and not state.base_url:
                 raise SystemExit(

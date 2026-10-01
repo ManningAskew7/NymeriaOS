@@ -5,6 +5,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from nymeria import doctor
 from nymeria.config import settings as settings_module
 
@@ -418,3 +420,103 @@ def test_another_roots_doctor_skips_the_local_rag_row(monkeypatch, tmp_path: Pat
     assert "Local RAG" not in names
     # ...while the key check follows the override to that root's files.
     assert _result(results, "Secrets key").status == "pass"
+
+
+# --- #434: the Settings file row ---------------------------------------------
+
+
+@pytest.fixture
+def booted_container(tmp_path: Path, monkeypatch):
+    """Doctor run INSIDE a container: the process loads the runtime file.
+    ``boot(text, **env)`` sets the compose env (None = unset), writes the
+    file, and runs the real boot load."""
+    settings_module.reset_env_loading_state_for_tests()
+    app = tmp_path / "app"
+    app.mkdir()
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", app)
+    monkeypatch.setattr(settings_module, "_PROCESS_ROOT", app)
+    monkeypatch.setattr(settings_module, "_env_file_loading_suppressed", False)
+    runtime = tmp_path / "data" / "settings.env"
+    runtime.parent.mkdir()
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+
+    def boot(text: str, **env: str | None) -> None:
+        for key, value in env.items():
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, value)
+        runtime.write_text(text, encoding="utf-8")
+        settings_module.reset_env_loading_state_for_tests()
+        settings_module.load_env_files_into_environ(force=True)
+
+    yield app, runtime, boot
+    settings_module.reset_env_loading_state_for_tests()
+
+
+def test_settings_file_row_warns_when_a_credential_or_route_is_shadowed(booted_container):
+    app, runtime, boot = booted_container
+    boot(
+        "OPENAI_API_KEY=sk-dummy-434\nUSER_TIMEZONE=Australia/Sydney\n"
+        "TWITCH_CHANNEL=only-in-app\n",
+        OPENAI_API_KEY="cpx-dummy-434", USER_TIMEZONE="UTC", TWITCH_CHANNEL=None,
+    )
+
+    row = doctor._check_settings_file(app, own_root=True)
+
+    assert row is not None and row.name == "Settings file"
+    assert row.status == "warn"
+    assert str(runtime) in row.detail
+    assert "overrides values set elsewhere: OPENAI_API_KEY (credential), USER_TIMEZONE" in row.detail
+    assert "/settings clear <KEY>" in row.detail
+    assert "save it as OPENAI_DIRECT_API_KEY first" in row.detail
+    # Saved only in the app: listed here (and only here), never a warning.
+    assert "saved only in the app: TWITCH_CHANNEL" in row.detail
+    assert "dummy-434" not in row.detail
+
+
+def test_settings_file_row_passes_for_plain_setting_overrides(booted_container):
+    app, _runtime, boot = booted_container
+    boot(
+        "USER_TIMEZONE=Australia/Sydney\nLLM_BASE_URL=http://proxy:8317/v1\n",
+        USER_TIMEZONE="UTC", LLM_BASE_URL="",  # compose ${VAR:-}: app-only
+    )
+
+    row = doctor._check_settings_file(app, own_root=True)
+
+    assert row is not None and row.status == "pass"
+    assert "overrides values set elsewhere: USER_TIMEZONE" in row.detail
+    assert "saved only in the app: LLM_BASE_URL (route)" in row.detail
+
+
+def test_settings_file_row_points_a_docker_host_at_where_the_file_is_visible(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.delenv("NYMERIA_SETTINGS_FILE", raising=False)
+    docker_root = tmp_path / "docker"
+    docker_root.mkdir()
+    (docker_root / ".env.docker").write_text("LLM_PROVIDER=openai\n", encoding="utf-8")
+    native_root = tmp_path / "slim"
+    native_root.mkdir()
+    (native_root / "config.env").write_text("LLM_PROVIDER=openai\n", encoding="utf-8")
+
+    row = doctor._check_settings_file(docker_root, own_root=True)
+
+    assert row is not None and row.status == "pass"
+    assert "/data/settings.env" in row.detail and "not visible from here" in row.detail
+    assert "/status" in row.detail and "python run.py doctor" in row.detail
+    assert doctor._check_settings_file(native_root, own_root=True) is None
+
+
+def test_settings_file_row_is_wired_into_settings_checks(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    monkeypatch.delenv("NYMERIA_SETTINGS_FILE", raising=False)
+    (tmp_path / ".env.docker").write_text("LLM_PROVIDER=openai\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "PROJECT_ROOT", tmp_path)
+
+    results: list[doctor.CheckResult] = []
+    doctor._append_settings_checks(
+        results, RagSettings(data_dir=tmp_path / "data"), argparse.Namespace(skip_llm_test=True)
+    )
+
+    assert _result(results, "Settings file").status == "pass"

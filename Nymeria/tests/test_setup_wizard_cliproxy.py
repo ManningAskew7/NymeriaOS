@@ -629,6 +629,96 @@ def test_noninteractive_leaving_cliproxy_requires_api_key(monkeypatch, tmp_path)
     assert "--api-key" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    "cliproxy_provider, provider, model, expected",
+    [
+        # codex keeps its gatekeeper in OPENAI_API_KEY, the openai route's
+        # own slot: the case that read as "the wizard lost my key".
+        ("codex", "openai", "gpt-5.5",
+         "OPENAI_API_KEY holds the CLIProxy route's gatekeeper key, which only "
+         "works with that gateway, not with OpenAI. --api-key is required with "
+         "--non-interactive (the key for this route)."),
+        # The direct anthropic route reads ANTHROPIC_DIRECT_API_KEY, which holds
+        # nothing: no key on disk was passed over, so the plain refusal stays.
+        ("claude", "anthropic", "claude-direct",
+         "--api-key is required with --non-interactive"),
+        # A non-cpx key in the proxy's slot (an api-key set by hand on the
+        # proxy) is the old route's key, not a gatekeeper hydrate recognised:
+        # the "gatekeeper" claim needs that classification, never presence.
+        ("codex-own-key", "openai", "gpt-5.5",
+         "OPENAI_API_KEY holds the old gateway route's key, which only works "
+         "with that gateway, not with OpenAI. --api-key is required with "
+         "--non-interactive (the key for this route)."),
+    ],
+)
+def test_noninteractive_leaving_cliproxy_says_when_the_slot_holds_the_gatekeeper(
+    monkeypatch, tmp_path, cliproxy_provider, provider, model, expected
+):
+    """The bare "--api-key is required" read as a wizard that lost the key
+    (#434 review, the #433 D5 wording on its sibling path): when the new
+    route's slot holds the proxy's gatekeeper, the refusal names the slot and
+    why its key does not count, never the key, and writes nothing."""
+    root = tmp_path / "init"
+    config = root / "config.env"
+    if cliproxy_provider == "codex-own-key":
+        _cliproxy_first_run(monkeypatch, root, provider="codex")
+        text = config.read_text(encoding="utf-8")
+        config.write_text(
+            text.replace("OPENAI_API_KEY=cpx-gate", "OPENAI_API_KEY=proxy-own-434"),
+            encoding="utf-8",
+        )
+        assert _env_line(config.read_text(encoding="utf-8"), "OPENAI_API_KEY") == (
+            "proxy-own-434"
+        )
+    else:
+        _cliproxy_first_run(monkeypatch, root, provider=cliproxy_provider)
+    before = config.read_bytes()
+
+    with pytest.raises(SystemExit) as exc:
+        setup_main(
+            ["--provider", provider, "--model", model, "--root", str(root),
+             "--non-interactive", "--skip-llm-test"]
+        )
+
+    message = str(exc.value.code)
+    assert message == expected
+    assert "cpx-gate" not in message and "cpm-secret" not in message
+    assert "proxy-own-434" not in message
+    assert config.read_bytes() == before
+
+
+def test_noninteractive_leaving_cliproxy_keeps_a_real_key_already_in_the_new_slot(
+    monkeypatch, tmp_path
+):
+    """Leaving the subscription branch, a real key already in the new route's
+    slot is the key for that route: the gatekeeper sits in a different slot
+    (ANTHROPIC_API_KEY), so no --api-key is needed and the real key stays
+    (#434 delta review). A direct install reconfigured onto CLIProxy keeps
+    its direct key exactly this way (#431), so the way back must honour it."""
+    root = tmp_path / "init"
+    _cliproxy_first_run(monkeypatch, root, provider="claude")
+    config = root / "config.env"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "ANTHROPIC_DIRECT_API_KEY=sk-ant-real-434\n",
+        encoding="utf-8",
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-direct", "--root", str(root),
+         "--non-interactive", "--skip-llm-test"]
+    )
+
+    assert rc == 0
+    after = config.read_text(encoding="utf-8")
+    assert _env_line(after, "LLM_PROVIDER") == "anthropic"
+    assert _env_line(after, "LLM_MODEL") == "claude-direct"
+    assert _env_line(after, "ANTHROPIC_DIRECT_API_KEY") == "sk-ant-real-434"
+    # The abandoned proxy route and its gatekeeper retire as on any exit.
+    assert "LLM_BASE_URL" not in after
+    assert "ANTHROPIC_API_KEY=" not in after.replace("ANTHROPIC_DIRECT_API_KEY=", "")
+    assert "cpx-gate" not in after
+
+
 def test_noninteractive_keeps_custom_base_url_on_non_cliproxy_install(
     monkeypatch, tmp_path
 ):

@@ -938,11 +938,19 @@ def create_api_app(
     async def _log_runtime_settings_file() -> None:
         # Where app-made settings changes persist on the container shapes, and
         # which env-file values they shadow (#254). Names only, never values.
-        from ..config.settings import describe_runtime_settings_file
+        # A shadowed credential or route key also gets a WARNING line (#434):
+        # it is the shape that sends a key to the wrong place.
+        from ..config.settings import (
+            describe_runtime_settings_file,
+            describe_runtime_settings_warning,
+        )
 
         line = describe_runtime_settings_file()
         if line:
             logger.info(line)
+        warning = describe_runtime_settings_warning()
+        if warning:
+            logger.warning(warning)
 
     app.router.add_event_handler("startup", _resize_default_executor)
     app.router.add_event_handler("startup", _log_runtime_settings_file)

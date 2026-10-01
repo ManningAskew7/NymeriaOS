@@ -963,7 +963,26 @@ def test_start_now_names_env_keys_the_app_saved_settings_override(
     assert "set elsewhere (for example in .env.docker)" in out
     assert "bad key" not in out and "rm" not in out.split("USER_TIMEZONE")[1][:20]
     assert "/data/settings.env" in out
-    assert "Settings" in out
+    # The remedy removes the app's copy (#434). Setting the key in the app
+    # would re-save it to the same file and re-arm the shadow for the next run.
+    assert "an admin runs /settings clear <KEY> in the app" in out
+    assert "/settings set" not in out
+    assert "discards the app's copy" not in out  # no credential key here
+
+
+def test_the_override_note_names_the_direct_slot_for_a_shared_credential():
+    from rich.console import Console
+
+    console = Console(record=True, width=400)
+    finalize_mod._print_docker_settings_overrides(console, ("LLM_MODEL", "OPENAI_API_KEY"))
+
+    out = " ".join(console.export_text().split())
+    assert "/settings clear <KEY>" in out
+    assert (
+        "Clearing OPENAI_API_KEY discards the app's copy: if it is a real vendor key "
+        "you still need, save it as OPENAI_DIRECT_API_KEY first." in out
+    )
+    assert "Clearing LLM_MODEL" not in out
 
 
 @pytest.mark.parametrize(

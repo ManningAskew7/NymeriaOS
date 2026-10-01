@@ -33,7 +33,7 @@ from .._runtime_paths import (
     configure_project_root,
     find_project_root,
 )
-from ..config.env_file import format_env_value, write_env_file
+from ..config.env_file import format_env_value, is_env_key_name, write_env_file
 from ..config.llm_providers import LLMProviderSpec
 from ..core import secrets as nymeria_secrets
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
@@ -3824,7 +3824,6 @@ _SETTINGS_OVERRIDES_SNIPPET = (
     "load_env_files_into_environ()\n"
     f"print({_SETTINGS_OVERRIDES_MARKER!r} + ','.join(runtime_settings_overrides()))\n"
 )
-_ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def _docker_settings_overrides(*, spec: _DockerStackSpec, root: Path) -> tuple[str, ...]:
@@ -3856,22 +3855,36 @@ def _docker_settings_overrides(*, spec: _DockerStackSpec, root: Path) -> tuple[s
     for line in (result.stdout or "").splitlines():
         if line.startswith(_SETTINGS_OVERRIDES_MARKER):
             names = (name.strip() for name in line[len(_SETTINGS_OVERRIDES_MARKER):].split(","))
-            return tuple(name for name in names if _ENV_KEY_RE.match(name))
+            return tuple(name for name in names if is_env_key_name(name))
     return ()
 
 
 def _print_docker_settings_overrides(console: Console, keys: tuple[str, ...]) -> None:
     """Warn, not rewrite: the wizard cannot tell a key the user just changed
     from one it re-produced unchanged from `.env.docker`, so clearing the
-    app-saved copy could revert a newer in-app change (#254 follow-up)."""
+    app-saved copy could revert a newer in-app change (#254 follow-up).
+
+    The remedy is `/settings clear` (#434), never `/settings set`: setting the
+    key in the app re-saves it to the same file, so the NEXT wizard run is
+    shadowed again."""
     if not keys:
         return
+    from ..config.secret_keys import direct_key_slot
+
+    discards = "".join(
+        f" Clearing {key} discards the app's copy: if it is a real vendor key "
+        f"you still need, save it as {slot} first."
+        for key in keys
+        if (slot := direct_key_slot(key))
+    )
     console.print(
         f"\n[yellow]Settings saved in the app override {len(keys)} value(s) set "
         f"elsewhere (for example in .env.docker): {', '.join(keys)}. The app's "
         "copy (/data/settings.env on the data volume) loads last and wins, so "
-        "the other values for those keys are not in effect. To change one, use "
-        "the app's Settings (or /settings set), which updates that copy.[/yellow]"
+        "the other values for those keys are not in effect. To use the value "
+        "this setup wrote, an admin runs /settings clear <KEY> in the app (any "
+        "chat or the CLI), which removes the app's copy; changing the key in "
+        f"the app would only save a new copy there.{discards}[/yellow]"
     )
 
 

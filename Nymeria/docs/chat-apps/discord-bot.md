@@ -307,6 +307,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 | `/settings get <key>` | Get a specific setting value (e.g., `llm_model`, `context_management`). |
 | `/settings set <key> <value>` | Update a server setting. Auto-parses booleans, numbers, and `none`. Admin only. |
 | `/settings reload` | Re-read the config files and apply what changed, without restarting. Reports which settings moved and whether a restart is still needed. Admin only. |
+| `/settings clear <key>` | Docker shapes: remove a setting saved in the app (`/data/settings.env`, which overrides `.env.docker`) so the value set elsewhere applies again. `/status` names the overridden keys. Admin only. |
 | `/env show` | List environment variables by category, with secrets masked. Admin only. |
 | `/env get <key>` | Show one environment variable. Admin only. |
 | `/env set <key> <value>` | Write one environment variable. Admin only. |

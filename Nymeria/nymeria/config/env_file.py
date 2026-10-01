@@ -24,6 +24,19 @@ from typing import Sequence
 
 logger = logging.getLogger(__name__)
 
+# What an env key this code writes or names looks like: upper-case letters,
+# digits and underscores, starting with a letter. The one owner of the shape
+# (#434): the clear path refuses anything else before it can reach a file or a
+# URL, and the wizard filters the in-container override report through it.
+# Private and unanchored on purpose: built for ``fullmatch`` only, so callers
+# go through ``is_env_key_name`` (a ``.match`` would accept a prefix).
+_ENV_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def is_env_key_name(name: str) -> bool:
+    """True when ``name`` is a whole env key in the shape above (no case folding)."""
+    return _ENV_KEY_RE.fullmatch(name) is not None
+
 
 def format_env_value(value: str | bool | None) -> str:
     """Render a Python value as a dotenv RHS string.
@@ -140,8 +153,10 @@ def write_env_file(
     """Atomically write ``path`` (0600) and return the final line list.
 
     ``merge``: overlay ``produced`` onto the file's current lines via
-    :func:`merge_env_lines` (a missing/unreadable file is treated as empty, so
-    every produced key is appended). Otherwise a fresh file is written from
+    :func:`merge_env_lines` (a MISSING file is treated as empty, so every
+    produced key is appended; any other read failure raises before anything is
+    written, because rewriting an unreadable file from nothing would silently
+    drop every line it held, the vault key and every saved credential included). Otherwise a fresh file is written from
     ``header`` (optional) plus the produced lines. Values are pre-formatted by
     the caller. The returned lines let callers sync ``os.environ`` afterward.
     ``drop`` keys are removed on merge unless re-produced (see
@@ -157,7 +172,7 @@ def write_env_file(
     if merge:
         try:
             existing = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
+        except FileNotFoundError:
             existing = []
         lines = merge_env_lines(existing, produced, drop=drop)
     else:
@@ -186,6 +201,7 @@ def write_env_file(
 
 
 __all__ = [
+    "is_env_key_name",
     "format_env_value",
     "parse_env_value",
     "merge_env_lines",

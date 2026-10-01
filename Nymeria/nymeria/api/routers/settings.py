@@ -25,11 +25,19 @@ from ...config.llm_providers import (
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
-from ...config.env_file import format_env_value, parse_env_value, write_env_file
+from ...config.env_file import (
+    format_env_value,
+    is_env_key_name,
+    parse_env_value,
+    write_env_file,
+)
+from ...config.secret_keys import is_secret_setting_key
 from ...config.settings import (
+    env_loading_state,
     get_env_file_paths,
     get_env_write_path,
     load_env_files_into_environ,
+    restore_env_loading_state,
 )
 from ...config.model_capabilities import (
     list_all_models,
@@ -59,6 +67,7 @@ from ...core.llm_provider_utils import (
 from ..schemas.settings import (
     AGENT_WRITE_BLOCKED_SETTINGS,
     HIDDEN_CONFIG_SETTINGS,
+    SETTING_KEY_MALFORMED_DETAIL,
     resolve_settings_field_name,
     server_settings_env_mapping,
     AvailableModelsRequest,
@@ -341,88 +350,6 @@ def _env_categories() -> dict[str, tuple[str, ...]]:
     return _ENV_CATEGORIES
 
 
-_SECRET_KEYS: frozenset[str] = frozenset({
-    # No _SECRET_KEY_SUFFIXES entry matches the bare *_key here, so the
-    # CLIProxy remote-management secret needs an explicit allowlist row.
-    "cliproxy_management_key",
-    "openai_api_key",
-    "openai_direct_api_key",
-    "anthropic_api_key",
-    "anthropic_direct_api_key",
-    "openrouter_api_key",
-    "embedding_api_key",
-    "perplexity_api_key",
-    "gemini_api_key",
-    "gemini_direct_api_key",
-    "discord_bot_token",
-    "discord_webhook_url",
-    "telegram_bot_token",
-    "twitch_client_secret",
-    "twitch_bot_access_token",
-    "twitch_bot_refresh_token",
-    "twitch_broadcaster_token",
-    "twitch_broadcaster_refresh_token",
-    "slack_bot_token",
-    "slack_app_token",
-    "whatsapp_access_token",
-    "whatsapp_webhook_verify_token",
-    "whatsapp_app_secret",
-    "teams_bot_app_password",
-    "microsoft_graph_access_token",
-    "postgres_uri",
-    "redis_url",
-    "tts_api_key",
-    "stt_api_key",
-    "fcm_credentials_json",
-})
-
-
-# Name suffixes that mark a settings key as credential-bearing. Used so any
-# *_api_key / *_token / *_secret / *_password / *_private_key style key is
-# masked even when it was never added to the explicit allowlist above. Suffix
-# matching (not substring) avoids false positives like ``llm_max_tokens``.
-_SECRET_KEY_SUFFIXES = (
-    "_api_key",
-    "_apikey",
-    "_secret_key",
-    "_secret",
-    "_secrets_key",
-    "_access_key",
-    "_private_key",
-    "_signing_key",
-    "_encryption_key",
-    "_token",
-    "_access_token",
-    "_refresh_token",
-    "_auth_token",
-    "_session_token",
-    "_verify_token",
-    "_password",
-    "_passwd",
-    "_app_password",
-    "_app_secret",
-    "_webhook_secret",
-    "_client_secret",
-    "_credentials_json",
-    "_service_account_json",
-)
-
-
-def _is_secret_setting_key(key: str) -> bool:
-    """Return True if a settings key holds a credential and must be masked.
-
-    Combines the explicit allowlist (for secret-bearing keys whose names do not
-    follow a credential suffix, e.g. ``postgres_uri``, ``redis_url``,
-    ``discord_webhook_url``) with name-suffix derivation so newly added secret
-    settings are masked by default rather than leaking until someone remembers
-    to extend the allowlist.
-    """
-    k = key.lower()
-    if k in _SECRET_KEYS:
-        return True
-    return k.endswith(_SECRET_KEY_SUFFIXES)
-
-
 def _fallback_model_list(value: Any) -> list[str]:
     """Return a normalized fallback model list for settings responses."""
     if value is None:
@@ -568,8 +495,8 @@ def serialize_env_entries(settings: Any) -> dict:
     Shared by ``GET /settings/env`` and ``CommandBackendClient.get_env_vars`` so
     the HTTP and in-process command shapes cannot drift (the TurnExecutor
     two-shape invariant), mirroring ``serialize_server_settings``. Secrecy is the
-    suffix-aware ``_is_secret_setting_key`` (NOT the allowlist-only
-    ``_SECRET_KEYS`` membership), so a suffix-style secret like ``groq_api_key``
+    suffix-aware ``is_secret_setting_key`` (NOT the allowlist-only
+    ``SECRET_SETTING_KEYS`` membership), so a suffix-style secret like ``groq_api_key``
     is masked on both paths; labels come from the canonical
     ``server_settings_env_mapping`` (not a naive ``key.upper()`` that mislabels
     the divergent S3 fields).
@@ -582,7 +509,7 @@ def serialize_env_entries(settings: Any) -> dict:
                 continue
             val = getattr(settings, key, None)
             env_var = env_name_map.get(key, key.upper())
-            is_secret = _is_secret_setting_key(key)
+            is_secret = is_secret_setting_key(key)
             display_val = None
             if val is not None:
                 display_val = mask_secret_value(str(val)) if is_secret else str(val)
@@ -623,7 +550,7 @@ def serialize_env_var(
         raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
     val = getattr(settings, resolved, None)
 
-    is_secret = _is_secret_setting_key(resolved)
+    is_secret = is_secret_setting_key(resolved)
     if val is None:
         display_val = None
     elif is_secret and not reveal:
@@ -930,6 +857,207 @@ def apply_server_settings_update(
     }
 
 
+def _settings_file_env_key(key: str) -> tuple[str, str, bool]:
+    """``(field name, env var name, known)`` for a user-typed key; 400 when malformed.
+
+    The same spelling rule as ``/settings set`` (field names and env-var names
+    both resolve, case-folded), mapped to the env-var name the file holds. A
+    key that is no Settings field passes through upper-cased: a stale line
+    still reaches every child process's environment, so it is clearable too.
+    ``known`` is whether it names a real setting; callers echo an unknown key
+    back only once the file has shown it is a real line, because a well-shaped
+    unknown key may still be a pasted value (an `nym_...` account token). The
+    malformed-key rejection never echoes the input at all.
+    """
+    raw = (key or "").strip()
+    field = resolve_settings_field_name(raw)
+    mapping = server_settings_env_mapping()
+    env_name = mapping.get(field) or raw.upper()
+    if not is_env_key_name(env_name):
+        raise HTTPException(status_code=400, detail=SETTING_KEY_MALFORMED_DETAIL)
+    known = field in mapping or field in Settings.model_fields
+    return field, env_name, known
+
+
+def clear_server_setting(
+    key: str,
+    *,
+    settings: Settings,
+    agent: Any,
+    get_settings_fn: Callable[[], Any],
+    blocked_settings: frozenset[str] = frozenset(),
+) -> dict:
+    """Remove ``key`` from the runtime settings file and restore its other value.
+
+    The one clear path (#434), shared by ``DELETE /settings/env/{key}`` and
+    ``CommandBackendClient.clear_setting``. On the container shapes a value
+    saved in the app lives in the runtime settings file, which loads last and
+    beats the `.env.docker` value the wizard wrote; this is how a user takes
+    the app's copy back out without a host shell. Every line for the key goes
+    (the shared atomic 0600 writer, comments and other lines kept), the process
+    value returns to its boot baseline (or unset when nothing else sets it),
+    and the agent is re-bound with the graph rebuilt for an LLM field, the same
+    tail as :func:`apply_server_settings_update`.
+
+    Refusals change nothing: a malformed key (400), a shape with no runtime
+    file, where the app's own config file IS the settings and nothing shadows
+    it (400), a gate setting from an agent turn (403, #157), a key the file
+    does not hold (404), and a restore that would leave an invalid value from
+    elsewhere (400, rolled back before the file is touched). A container-pinned
+    key's dead line is removed without touching its value. The response names
+    the key and where its value now comes from, never a value.
+    """
+    from dotenv import dotenv_values
+
+    from ...config.secret_keys import direct_key_slot
+    from ...config.settings import (
+        CONTAINER_PINNED_KEYS,
+        restore_runtime_settings_baseline,
+        runtime_settings_file,
+    )
+
+    field, env_name, known = _settings_file_env_key(key)
+    runtime = runtime_settings_file()
+    write_path = get_env_write_path(settings.project_root)
+    if runtime is None or write_path != runtime:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This install saves settings changed in the app to {write_path} "
+                "itself, so nothing there overrides another file and there is "
+                "nothing to clear. Use /settings set to change a value."
+            ),
+        )
+    if field in blocked_settings:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{field} controls the gating machinery and cannot be changed "
+                "from an agent turn. Nothing was changed. Ask the user to run "
+                "this command themselves."
+            ),
+        )
+
+    def _saved_in_file() -> bool:
+        try:
+            return runtime.is_file() and dotenv_values(runtime).get(env_name) is not None
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not read {runtime}. Nothing was changed.",
+            ) from exc
+
+    if not _saved_in_file():
+        name = env_name if known else "That key"
+        raise HTTPException(
+            status_code=404,
+            detail=f"{name} is not saved in the app ({runtime}); nothing to clear.",
+        )
+
+    pinned = env_name in CONTAINER_PINNED_KEYS
+    had_value = env_name in os.environ
+    old_value = os.environ.get(env_name)
+
+    def _rollback() -> None:
+        if had_value and old_value is not None:
+            os.environ[env_name] = old_value
+        else:
+            os.environ.pop(env_name, None)
+        _clear_settings_cache(get_settings_fn)
+
+    # Process half first, validated BEFORE the file changes: the value set
+    # elsewhere may itself be invalid (the app's copy was masking it), and a
+    # process that cannot build its settings answers 500 to everything.
+    restored = None if pinned else restore_runtime_settings_baseline(env_name)
+    try:
+        _clear_settings_cache(get_settings_fn)
+        new_settings = get_settings_fn()
+    except Exception as exc:  # noqa: BLE001 - re-raised below, never swallowed
+        _rollback()
+        if not isinstance(exc, ValidationError):
+            raise
+        first = exc.errors()[0]
+        loc = ".".join(str(part) for part in first.get("loc", ())) or env_name
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Clearing {env_name} would leave an invalid value for {loc} set "
+                f"elsewhere: {first.get('msg', 'invalid value')}. Nothing was "
+                "changed; fix that value first."
+            ),
+        ) from exc
+
+    try:
+        write_env_file(runtime, [], merge=True, drop=[env_name])
+        still_saved = _saved_in_file()
+    except BaseException:
+        _rollback()
+        raise
+    if still_saved:
+        # A line the shared writer does not parse (`export KEY=...`, written
+        # by hand on the host): saying "cleared" here would be a lie.
+        _rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The {env_name} line in {runtime} is not in KEY=value form, so "
+                "it could not be removed here. Remove it on the host, then "
+                "restart."
+            ),
+        )
+
+    agent.settings = new_settings
+    if field in _GRAPH_REBUILD_FIELDS:
+        agent._rebuild_default_graphs()
+        logger.info("Cleared graph setting from the runtime settings file: %s", field)
+
+    is_field = field in Settings.model_fields
+    # The reload path's rule: the curated PATCH register, plus any field no
+    # settings write can reach (CORS, the database), which nothing was ever
+    # designed to hot-apply. A pinned line never moved the value, so there is
+    # nothing for a restart to apply.
+    needs_restart = not pinned and (
+        field in _restart_required_keys()
+        or (is_field and field not in server_settings_env_mapping())
+    )
+    credential = is_secret_setting_key(env_name)
+    slot = direct_key_slot(env_name) if credential else None
+    if pinned:
+        source = "pinned"
+        message = (
+            f"Removed the {env_name} line from the app's saved settings "
+            f"({runtime}). The container configuration fixes its value, so "
+            "nothing else changed."
+        )
+    else:
+        source = "elsewhere" if restored else "unset"
+        message = f"Cleared {env_name} from the app's saved settings ({runtime}). " + (
+            "It now uses the value set elsewhere (for example in .env.docker)."
+            if restored
+            else "Nothing else sets it, so it is now unset."
+        )
+    if credential:
+        message += (
+            " The saved key is gone; if it was a real key you still need, save it "
+            f"again with /settings set {slot} <key>."
+            if slot
+            else " The saved key is gone."
+        )
+    if needs_restart:
+        message += " (restart required to take effect: /restart api)"
+    logger.info("Cleared %s from the runtime settings file (now %s)", env_name, source)
+    return {
+        "message": message,
+        "cleared": env_name,
+        "field": field if is_field else None,
+        "updated": [field] if is_field else [],
+        "source": source,
+        "credential": credential,
+        "direct_slot": slot,
+        "restart_required": needs_restart,
+    }
+
+
 def reload_settings_from_env_files(
     *,
     settings: Settings,
@@ -985,10 +1113,14 @@ def reload_settings_from_env_files(
     field_names = tuple(Settings.model_fields)
     before = {name: getattr(settings, name, None) for name in field_names}
     environ_before = dict(os.environ)
+    # The load also records what each file set (the #434 baseline); a
+    # rolled-back load must not leave that record describing values it undid.
+    loading_before = env_loading_state()
 
     def _rollback() -> None:
         os.environ.clear()
         os.environ.update(environ_before)
+        restore_env_loading_state(loading_before)
         _clear_settings_cache(get_settings_fn)
 
     loaded = load_env_files_into_environ(settings.project_root, force=True)
@@ -2124,6 +2256,35 @@ def create_settings_router(
         """
         return serialize_env_var(
             settings, key, reveal=reveal, actor=str(getattr(user, "id", "?"))
+        )
+
+    @router.delete("/settings/env/{key}")
+    async def clear_env_var(
+        key: str,
+        gate_agent_writes: bool = Query(
+            False,
+            description=(
+                "Refuse to clear a setting an agent may not write (#157). Set "
+                "by the command layer for a non-human caller."
+            ),
+        ),
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """Remove a key from the app's saved settings file (#434). Admin-only.
+
+        Container shapes only: the app's copy loads last and overrides the
+        value set elsewhere (`.env.docker`), so clearing it puts that value
+        back in effect. Names the key and its new source, never a value.
+        """
+        return clear_server_setting(
+            key,
+            settings=settings,
+            agent=get_agent_fn(),
+            get_settings_fn=get_settings_fn,
+            blocked_settings=(
+                AGENT_WRITE_BLOCKED_SETTINGS if gate_agent_writes else frozenset()
+            ),
         )
 
     @router.get("/models")

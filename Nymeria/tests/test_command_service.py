@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import pytest
@@ -880,6 +880,280 @@ def test_status_code_block_is_wired_to_the_real_boot_record() -> None:
     result = run(CommandService().execute(_status_ctx(), "/status", api=FakeCommandApi()))
 
     assert f"Code\n  {__version__}" in result.markdown
+
+
+# -- #434: the Settings file block ------------------------------------------
+
+
+@pytest.fixture
+def booted_settings_file(tmp_path, monkeypatch):
+    """A container-shaped boot: (runtime file, boot fn). ``boot(text, **env)``
+    sets the compose env (None = unset), writes the file, runs the real load."""
+    from nymeria.config import settings as settings_mod
+
+    settings_mod.reset_env_loading_state_for_tests()
+    app = tmp_path / "app"
+    app.mkdir()
+    monkeypatch.setattr(settings_mod, "PROJECT_ROOT", app)
+    monkeypatch.setattr(settings_mod, "_PROCESS_ROOT", app)
+    monkeypatch.setattr(settings_mod, "_env_file_loading_suppressed", False)
+    runtime = tmp_path / "settings.env"
+    monkeypatch.setenv("NYMERIA_SETTINGS_FILE", str(runtime))
+
+    def boot(text: str, **env: str | None) -> None:
+        for key, value in env.items():
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, value)
+        runtime.write_text(text, encoding="utf-8")
+        settings_mod.reset_env_loading_state_for_tests()
+        settings_mod.load_env_files_into_environ(force=True)
+
+    yield runtime, boot
+    settings_mod.reset_env_loading_state_for_tests()
+
+
+def _status_as(is_admin: bool | None, actor: Literal["user", "agent"] = "user") -> str:
+    ctx = CommandContext(user_id="alice", thread_id="thread-1", actor=actor,
+                         surface="cli", is_admin=is_admin)
+    return run(CommandService().execute(ctx, "/status", api=FakeCommandApi())).markdown
+
+
+@pytest.mark.parametrize(
+    "is_admin, actor, shown",
+    [(True, "user", True), (None, "agent", True), (False, "user", False)],
+)
+def test_status_names_what_the_app_saved_settings_override(
+    booted_settings_file, is_admin, actor, shown
+) -> None:
+    """Operator state like the drift line: an admin and an agent actor see
+    the shadowed keys with their class and the remedy; a known non-admin
+    sees nothing. Names only, never a value."""
+    runtime, boot = booted_settings_file
+    boot(
+        "OPENAI_API_KEY=sk-dummy-434-old\nLLM_BASE_URL=https://dummy-434.example/v1\n"
+        "USER_TIMEZONE=Australia/Sydney\nTWITCH_CHANNEL=only-in-app\n",
+        OPENAI_API_KEY="cpx-dummy-434", LLM_BASE_URL="http://proxy:8317/v1",
+        USER_TIMEZONE="UTC", TWITCH_CHANNEL=None,
+    )
+
+    markdown = _status_as(is_admin, actor)
+
+    assert ("Settings file\n" in markdown) is shown
+    assert "dummy-434" not in markdown
+    if shown:
+        block = markdown.split("Settings file\n", 1)[1].split("\n\n", 1)[0]
+        assert f"{runtime} (saved in the app) overrides values set elsewhere" in block
+        assert (
+            "LLM_BASE_URL (route), OPENAI_API_KEY (credential), USER_TIMEZONE" in block
+        )
+        assert "to use the other value: /settings clear <KEY>" in block
+        assert "save it as OPENAI_DIRECT_API_KEY first" in block
+        # Saved only in the app: silent here (doctor lists it).
+        assert "TWITCH_CHANNEL" not in markdown
+        assert markdown.index("Tasks") < markdown.index("Settings file")
+        assert markdown.index("Settings file") < markdown.index("thread: thread-1")
+
+
+def test_status_is_unchanged_when_nothing_is_shadowed(booted_settings_file, monkeypatch) -> None:
+    _runtime, boot = booted_settings_file
+    boot("TWITCH_CHANNEL=only-in-app\n", TWITCH_CHANNEL=None)
+    with_file = _status_as(True)
+    monkeypatch.delenv("NYMERIA_SETTINGS_FILE")
+    without_file = _status_as(True)
+
+    assert "Settings file" not in with_file
+    # Everything but the uptime clause, which moves with the wall clock.
+    strip = lambda text: [line for line in text.splitlines() if "started" not in line]  # noqa: E731
+    assert strip(with_file) == strip(without_file)
+
+
+def _clear_result(
+    key: str,
+    *,
+    credential: bool = False,
+    source: str = "elsewhere",
+    restart_required: bool = False,
+    direct_slot: str | None = None,
+) -> dict[str, Any]:
+    """The clear applier's whole reply (``clear_server_setting``; its key set
+    is pinned in test_api_settings_router.py), so the command layer is tested
+    against what it really receives, not a partial dict it has to guess at."""
+    return {
+        "message": f"Cleared {key} from the app's saved settings.",
+        "cleared": key,
+        "field": key.lower(),
+        "updated": [key.lower()],
+        "source": source,
+        "credential": credential,
+        "direct_slot": direct_slot,
+        "restart_required": restart_required,
+    }
+
+
+class _ClearRecordingApi(FakeCommandApi):
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__()
+        self.clear_result = result
+
+    async def clear_setting(self, key, *, user_id=None, gate_agent_writes=False):
+        self.calls.append(("clear_setting", (key,), {"gate_agent_writes": gate_agent_writes}))
+        return dict(self.clear_result)
+
+
+@pytest.mark.parametrize(
+    "key, credential, restart_required",
+    [("OPENAI_API_KEY", True, False), ("EMBEDDING_PROVIDER", False, True)],
+)
+def test_settings_clear_renders_a_discard_or_a_pending_restart_as_a_warning(
+    key, credential, restart_required
+) -> None:
+    # A discarded key and a value not live until a restart both get more than
+    # a success tick. The applier's own copy is pinned end to end in
+    # test_api_settings_router.py; here the command layer's verdict and the
+    # call it makes (the raw key, a human's clear ungated) are the outcome.
+    api = _ClearRecordingApi(
+        _clear_result(key, credential=credential, restart_required=restart_required)
+    )
+
+    result = run(CommandService().execute(_ctx(), f"/settings clear {key}", api=api))
+
+    assert result.success is True
+    assert result.level == "warning"
+    assert [call for call in api.calls if call[0] == "clear_setting"] == [
+        ("clear_setting", (key,), {"gate_agent_writes": False})
+    ]
+
+
+def test_settings_clear_of_a_plain_setting_is_a_success() -> None:
+    api = _ClearRecordingApi(_clear_result("USER_TIMEZONE"))
+
+    result = run(CommandService().execute(_ctx(), "/env clear USER_TIMEZONE", api=api))
+
+    assert result.success is True and result.level == "success"
+
+
+def test_an_agent_clearing_a_sensitive_setting_alerts_the_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clear moves the route like a write does, so the #157 owner alert
+    fires for an agent actor (and only for one)."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    api = _ClearRecordingApi(_clear_result("LLM_BASE_URL"))
+    agent_ctx = CommandContext(user_id="alice", thread_id="thread-1", actor="agent",
+                               surface="cli", is_admin=None)
+
+    assert run(CommandService().execute(agent_ctx, "/settings clear LLM_BASE_URL", api=api)).success
+    assert len(alerts) == 1
+    assert "An agent cleared server setting LLM_BASE_URL" in alerts[0]
+    assert run(CommandService().execute(_ctx(), "/settings clear LLM_BASE_URL", api=api)).success
+    assert len(alerts) == 1
+
+
+def test_an_agent_clearing_any_credential_alerts_the_owner_by_name_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clear is a pure discard, and the app's copy of a key may have been
+    the only one, so an agent clearing ANY credential (not only the #157
+    alert set) reaches the owner. The key's name, never its value."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+    from nymeria.core.command_service import _CommandExecutor
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    # The pre-clear read the alert would otherwise draw a "was" clause from.
+    monkeypatch.setattr(
+        _CommandExecutor, "_current_setting_value", lambda self, key: "sk-dummy-434-saved"
+    )
+    credential = _ClearRecordingApi(
+        _clear_result("OPENAI_API_KEY", credential=True, direct_slot="OPENAI_DIRECT_API_KEY")
+    )
+    plain = _ClearRecordingApi(_clear_result("USER_TIMEZONE"))
+    agent_ctx = CommandContext(user_id="alice", thread_id="thread-1", actor="agent",
+                               surface="telegram", is_admin=None)
+
+    run(CommandService().execute(agent_ctx, "/settings clear OPENAI_API_KEY", api=credential))
+    run(CommandService().execute(_ctx(), "/settings clear OPENAI_API_KEY", api=credential))
+    run(CommandService().execute(agent_ctx, "/settings clear USER_TIMEZONE", api=plain))
+
+    assert len(alerts) == 1
+    [alert] = alerts
+    assert "An agent cleared server setting OPENAI_API_KEY" in alert
+    assert "via telegram on thread thread-1" in alert
+    assert "it now uses the value set elsewhere" in alert
+    assert "The saved key is gone and is not shown here." in alert
+    assert "dummy-434" not in alert and "sk-" not in alert
+
+
+@pytest.mark.parametrize(
+    "source, clause",
+    [
+        ("elsewhere", "; it now uses the value set elsewhere."),
+        ("unset", "; nothing else sets it, so it is now unset."),
+        # POSTGRES_URI is container-pinned and a credential: the line goes,
+        # the value the compose file set stays.
+        ("pinned", "; the container configuration fixes its value."),
+    ],
+)
+def test_an_agent_clear_alert_says_where_the_value_now_comes_from(
+    monkeypatch: pytest.MonkeyPatch, source: str, clause: str
+) -> None:
+    """Each of the applier's three sources gets its own sentence in the owner
+    alert; none rides a catch-all (#434 delta review)."""
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    api = _ClearRecordingApi(_clear_result("POSTGRES_URI", credential=True, source=source))
+    agent_ctx = CommandContext(user_id="alice", thread_id="thread-1", actor="agent",
+                               surface="cli", is_admin=None)
+
+    run(CommandService().execute(agent_ctx, "/settings clear POSTGRES_URI", api=api))
+
+    [alert] = alerts
+    assert f"via cli on thread thread-1{clause} The saved key is gone" in alert
+
+
+def test_settings_clear_is_refused_for_a_non_admin_and_gated_for_an_agent() -> None:
+    api = _ClearRecordingApi(_clear_result("USER_TIMEZONE"))
+    refused = run(CommandService().execute(
+        _ctx(is_admin=False), "/settings clear HOOKS_ENABLED", api=api
+    ))
+    agent_ctx = CommandContext(user_id="alice", thread_id="thread-1", actor="agent",
+                               surface="cli", is_admin=None)
+    blocked = run(CommandService().execute(agent_ctx, "/settings clear HOOKS_ENABLED", api=api))
+    ordinary = run(CommandService().execute(agent_ctx, "/settings clear user_timezone", api=api))
+
+    assert refused.success is False and "requires an admin" in refused.markdown.lower()
+    assert blocked.success is False and "gating machinery" in blocked.markdown
+    # The agent's ordinary clear goes through, carrying the gate for the
+    # applier (the HTTP shape cannot see this layer's actor).
+    assert ordinary.success is True
+    assert [call for call in api.calls if call[0] == "clear_setting"] == [
+        ("clear_setting", ("user_timezone",), {"gate_agent_writes": True})
+    ]
 
 
 def _hold_payload(
@@ -1928,7 +2202,7 @@ def test_settings_get_and_set_delegate_to_config_handlers() -> None:
     unknown = _run_command(api, "/settings frobnicate")
     assert unknown.success is False
     assert "Unexpected argument `frobnicate`" in unknown.markdown
-    assert "Valid subcommands: get, reload, set." in unknown.markdown
+    assert "Valid subcommands: clear, get, reload, set." in unknown.markdown
     assert "Usage: `/settings`" in unknown.markdown
 
 
@@ -4056,9 +4330,10 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # list + switch + default + rename, all executable. 153 with
     # `settings reload`, the #302 config-reload command. 155 with `/code`,
     # the admin-only break-glass to Claude Code, executable. 158 with the
-    # #410 /scheduler family: root overview + status + release, executable.)
-    assert len(service._commands) == 158
-    assert sum(cmd.executable for cmd in service._commands.values()) == 149
+    # #410 /scheduler family: root overview + status + release, executable.
+    # 159 with `settings clear`, the #434 app-saved-settings clear, executable.)
+    assert len(service._commands) == 159
+    assert sum(cmd.executable for cmd in service._commands.values()) == 150
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -8730,6 +9005,60 @@ def test_agent_sensitive_settings_write_fires_owner_alert(
     )
     assert result.success is True
     assert alerts == []
+
+
+@pytest.mark.parametrize(
+    "env_key",
+    [
+        "LLM_BASE_URL",
+        "LLM_BACKGROUND_BASE_URL",
+        "EMBEDDING_BASE_URL",
+        # The voice clients send TTS_API_KEY / STT_API_KEY, else the OpenAI
+        # media key (STT: the Groq key), to these hosts over plain httpx, so
+        # an agent pointing one elsewhere hands that key over (#434 delta).
+        "TTS_BASE_URL",
+        "STT_BASE_URL",
+    ],
+)
+def test_an_agent_moving_any_base_url_that_carries_a_key_alerts_the_owner(
+    monkeypatch: pytest.MonkeyPatch, env_key: str
+) -> None:
+    import nymeria.core.notification_dispatch as dispatch_mod
+
+    alerts: list[str] = []
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_owner_alert",
+        lambda message, settings, *, user_id, thread_id="", task_id=None: alerts.append(
+            message
+        ),
+    )
+    api = FakeCommandApi()
+
+    agent = run(CommandService().execute(
+        _agent_ctx(), f"/env set {env_key} https://elsewhere.example/v1", api=api
+    ))
+    human = run(CommandService().execute(
+        _ctx(), f"/env set {env_key} https://elsewhere.example/v1", api=api
+    ))
+
+    assert agent.success is True and human.success is True
+    [alert] = alerts
+    assert f"An agent changed server setting {env_key.lower()} to https://elsewhere.example/v1" in alert
+
+
+def test_every_route_base_url_is_on_the_agent_alert_register() -> None:
+    """The settings-file report calls these keys routes because they decide
+    where a credential goes; the #157 alert register must agree, so the two
+    lists cannot drift apart again (#434 delta review)."""
+    from nymeria.api.schemas.settings import AGENT_WRITE_ALERT_SETTINGS
+    from nymeria.config.secret_keys import ROUTE_SETTING_KEYS
+
+    base_urls = {key for key in ROUTE_SETTING_KEYS if key.endswith("_base_url")}
+    assert base_urls >= {"llm_base_url", "tts_base_url", "stt_base_url"}
+    assert base_urls <= AGENT_WRITE_ALERT_SETTINGS, sorted(
+        base_urls - AGENT_WRITE_ALERT_SETTINGS
+    )
 
 
 def test_agent_secret_settings_alert_withholds_the_value(
