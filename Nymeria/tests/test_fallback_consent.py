@@ -1333,7 +1333,11 @@ def test_clear_active_llm_fallback_stamps_end_note():
     note = config.pending_fallback_note
     assert note["phase"] == "end" and note["kind"] == "refusal"
     assert "manually reverted" in note["text"]
-    assert note["to_model"] == "primary-model"
+    # The model the thread is CONFIGURED to run (the agent's global,
+    # claude-sonnet-4-6), not the hold's recorded source: after a
+    # hold-on-hold or a model change the source names the wrong model (#236).
+    assert note["to_model"] == "claude-sonnet-4-6"
+    assert "claude-sonnet-4-6" in note["text"]
     assert note["from_model"] == "fb-model"
 
 

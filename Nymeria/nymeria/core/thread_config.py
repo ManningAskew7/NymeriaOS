@@ -282,8 +282,8 @@ class ThreadConfig(BaseModel):
     active_llm_fallback: Optional[ActiveLLMFallback] = None
     # Latched model-facing note for the NEXT turn (persisted-context principle:
     # a hold ending between turns is explained to the model in the next turn's
-    # human message, once). Stamped by agent_llm_config.clear_active_llm_fallback
-    # (expiry, /fallback revert, the REST clear), consumed + cleared by the
+    # human message, once). Stamped by agent_llm_config.end_active_fallback_in_place
+    # (expiry, a revert, a route change on any config door), consumed + cleared by the
     # turn-input build (agent_streaming_input). Shape = the
     # additional_kwargs["fallback_note"] stamp (nodes.fallback_note_stamp).
     pending_fallback_note: Optional[Dict[str, Any]] = None

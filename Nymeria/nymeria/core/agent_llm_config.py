@@ -200,26 +200,168 @@ def _thread_is_busy(host: LLMConfigHost, thread_id: str) -> bool:
         return False
 
 
-def fallback_end_note_stamp(active: ActiveLLMFallback, *, reason: str) -> dict[str, Any]:
-    """The end-note latch stamp for a clearing hold (shared by every clear
-    surface, incl. the thread-config PATCH which mutates its own config
-    object instead of calling :func:`clear_active_llm_fallback`).
+def fallback_end_note_stamp(
+    active: ActiveLLMFallback,
+    *,
+    reason: str,
+    now_on: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    """The end-note latch stamp for a clearing hold (built only by
+    :func:`end_active_fallback_in_place`, which every clear surface shares).
 
-    from = the fallback that was holding, to = the primary coming back.
+    from = the fallback that was holding; to = ``now_on``, the model the
+    thread runs once the hold is gone (its configured model). The hold's own
+    ``source_*`` is only the fallback for a caller with no configured model:
+    after a hold-on-hold it names the intermediate fallback that failed, and
+    after a model change it names the model the user just moved away from
+    (#236, F5).
     """
     from ..vendor.react_agent.nodes import fallback_note_stamp
 
+    to_provider, to_model = now_on or ("", "")
+    if not to_model:
+        to_provider, to_model = active.source_provider, active.source_model
     return fallback_note_stamp(
         {
             "from_provider": active.provider,
             "from_model": active.model,
-            "to_provider": active.source_provider,
-            "to_model": active.source_model,
+            "to_provider": to_provider or active.source_provider,
+            "to_model": to_model,
             "reason": reason,
         },
         kind="refusal" if active.reason == "refusal" else "transport",
         phase="end",
     )
+
+
+def _global_llm_settings(settings: Any) -> Any:
+    """The settings a hold-release decision reads the global route from: the
+    caller's (the agent's, the same object resolution reads), else the
+    process settings."""
+    if settings is not None:
+        return settings
+    from ..config import get_settings
+
+    return get_settings()
+
+
+def configured_provider_model(llm_config: Any, settings: Any) -> tuple[str, str]:
+    """The (provider, model) a thread is CONFIGURED to run, hold ignored:
+    its override when set, else the global default. The same per-field rule
+    resolution applies (:func:`_resolve_thread_llm_override`)."""
+    settings = _global_llm_settings(settings)
+    provider = _resolve_thread_llm_override(
+        getattr(llm_config, "provider", None) if llm_config is not None else None,
+        getattr(settings, "llm_provider", None),
+    )
+    model = _resolve_thread_llm_override(
+        getattr(llm_config, "model", None) if llm_config is not None else None,
+        getattr(settings, "llm_model", None),
+    )
+    return (
+        normalize_llm_provider(str(provider)) if provider else "",
+        str(model or "").strip(),
+    )
+
+
+def _route_identity(llm_config: Any, settings: Any) -> tuple[Any, ...]:
+    """What a thread's LLM override routes to, for the hold-release diff.
+
+    Provider and model compare EFFECTIVE (thread value else global), so
+    pinning the global model or clearing an override equal to it is no
+    change. The thread-only route pins compare as stored: ``x or None``,
+    except ``base_url``, where ``""`` (explicit direct API) and ``None``
+    (inherit) are different routes.
+    """
+
+    def own(attr: str) -> Any:
+        value = getattr(llm_config, attr, None) if llm_config is not None else None
+        return value if attr == "base_url" else (value or None)
+
+    provider, model = configured_provider_model(llm_config, settings)
+    return (
+        provider,
+        model,
+        own("base_url"),
+        own("api_key"),
+        own("provider_route"),
+        own("openai_api_mode"),
+    )
+
+
+def route_changed(before: Any, after: Any, settings: Any = None) -> bool:
+    """Whether a thread-config write changed the thread's configured route
+    (provider, model, base URL, key, provider route, API mode). Effort,
+    temperature, compaction and consent-mode edits are not route changes."""
+    return _route_identity(before, settings) != _route_identity(after, settings)
+
+
+def end_active_fallback_in_place(
+    tc: Any,
+    *,
+    reason: str,
+    settings: Any = None,
+) -> ActiveLLMFallback | None:
+    """Clear ``tc``'s fallback hold and latch the model-facing end note on
+    ``tc``. Never saves: the caller's own save persists both mutations (a
+    route that saved here would be clobbered by its later save).
+
+    ``reason`` is "expired", "reverted" or "changed". The note names the
+    model the thread is configured to run AFTER the caller's write (F5).
+    Returns the cleared hold, or None when there was none: an earlier,
+    still-unconsumed end note is then left untouched.
+    """
+    active = getattr(tc, "active_llm_fallback", None)
+    if active is None:
+        return None
+    tc.pending_fallback_note = fallback_end_note_stamp(
+        active,
+        reason=reason,
+        now_on=configured_provider_model(getattr(tc, "llm_config", None), settings),
+    )
+    tc.active_llm_fallback = None
+    return active
+
+
+def release_fallback_for_config_write(
+    tc: Any,
+    *,
+    before_llm: Any,
+    settings: Any = None,
+    revert: bool = False,
+    keep: bool = False,
+) -> ActiveLLMFallback | None:
+    """THE hold-release rule for a thread-config write, shared by every door
+    (``PATCH /threads/{id}/config``, the in-process command client, the
+    CLIProxy thread apply, the workflow ``threads.configure`` verb), so the
+    two TurnExecutor shapes cannot drift (#236).
+
+    Call it once, after every field of the write is applied to ``tc`` and
+    before the save; ``before_llm`` is a COPY of ``tc.llm_config`` taken
+    before the write. The hold ends when:
+
+    - ``revert``: an explicit revert or user route choice (the
+      ``clear_active_fallback`` flag: ``/fallback revert``, the GUI and bot
+      Revert buttons, a user's ``/model``/``/provider switch``/``/fast``
+      while held). Reason "changed" if the route also moved, else
+      "reverted".
+    - the write changed the configured route (:func:`route_changed`) and
+      ``keep`` is not set. Reason "changed". ``keep`` is the agent actor's
+      model write (F3): the config saves, the outage safety net stays.
+
+    Anything else (effort, temperature, instructions, tools, a GUI Save
+    resubmitting an unchanged route) keeps the hold.
+    """
+    if getattr(tc, "active_llm_fallback", None) is None:
+        return None
+    changed = route_changed(before_llm, getattr(tc, "llm_config", None), settings)
+    if revert:
+        reason = "changed" if changed else "reverted"
+    elif changed and not keep:
+        reason = "changed"
+    else:
+        return None
+    return end_active_fallback_in_place(tc, reason=reason, settings=settings)
 
 
 def _reportable_destination(raw: str | None, resolved: str | None) -> str:
@@ -377,23 +519,25 @@ def clear_active_llm_fallback(
 ):
     """Clear a thread's active fallback hold and latch the model-facing end note.
 
-    The shared clear path for every revert/expiry surface (expiry sweep,
-    ``/fallback revert``, the REST ``clear_active_fallback`` flag). Stamps
+    The load-and-save wrapper over :func:`end_active_fallback_in_place` for a
+    clear that is not part of a config write (the expiry sweep). Stamps
     ``ThreadConfig.pending_fallback_note`` so the next turn (any source) tells
-    the model it is back on the primary (persisted-context principle; the
+    the model which model it is on now (persisted-context principle; the
     latch shape is the ``fallback_note`` message stamp). ``reason`` is
-    "expired" or "reverted". Returns the cleared ``ActiveLLMFallback`` record,
-    or None when there was nothing to clear or the save failed.
+    "expired", "reverted" or "changed". Returns the cleared
+    ``ActiveLLMFallback`` record, or None when there was nothing to clear or
+    the save failed.
     """
     if not thread_id:
         return None
     tc = host.thread_config_manager.get_config(thread_id)
-    active = tc.active_llm_fallback if tc is not None else None
-    if tc is None or active is None:
+    if tc is None:
         return None
-
-    tc.active_llm_fallback = None
-    tc.pending_fallback_note = fallback_end_note_stamp(active, reason=reason)
+    active = end_active_fallback_in_place(
+        tc, reason=reason, settings=getattr(host, "settings", None)
+    )
+    if active is None:
+        return None
     # Always save (never delete): the latch itself is state worth keeping even
     # on an otherwise-default config; the consume path runs the save-or-delete
     # choice once the latch is gone.

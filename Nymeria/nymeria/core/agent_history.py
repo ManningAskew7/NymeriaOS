@@ -636,6 +636,8 @@ def _fallback_notice_summary(note: Dict[str, Any]) -> str:
     from_model = str(note.get("from_model") or "the model")
     to_model = str(note.get("to_model") or "the fallback model")
     if note.get("phase") == "end":
+        if note.get("reason") == "changed":
+            return f"Fallback hold ended (model changed); this thread is now on {to_model}."
         how = "reverted" if note.get("reason") == "reverted" else "expired"
         return f"Fallback hold {how}; this thread is back on {to_model}."
     if note.get("kind") == "refusal":

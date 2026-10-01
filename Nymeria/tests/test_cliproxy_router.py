@@ -1150,6 +1150,51 @@ def test_apply_route_thread_helper_merges_existing_config_and_clears_fallback():
     assert saved.llm_config.api_key == "cpx-new"
     assert saved.llm_config.openai_api_mode == "responses"
     assert saved.active_llm_fallback is None
+    # The hold ended through the shared rule, so the model learns it on the
+    # next turn and is told the APPLIED model (#236: this was silent).
+    note = saved.pending_fallback_note
+    assert note is not None and note["phase"] == "end"
+    assert (note["reason"], note["to_model"]) == ("changed", "grok-4.3")
+
+
+def test_apply_route_thread_reapplying_the_same_route_still_ends_the_hold():
+    """An apply is an explicit route choice, like a user's /model: re-applying
+    the route the thread already has ends a live hold (reason "reverted")."""
+    agent = FakeAgent()
+    existing = ThreadConfig(thread_id="t-same")
+    existing.active_llm_fallback = ActiveLLMFallback(
+        provider="anthropic",
+        model="claude-opus-4-7",
+        source_provider="openai",
+        source_model="grok-4.3",
+        expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    spec = _spec("grok")
+    existing.llm_config = ThreadLLMConfig(
+        provider=spec.nymeria_provider,
+        model="grok-4.3",
+        base_url="http://proxy.test:8317/v1",
+        api_key="cpx-new",
+        openai_api_mode=spec.api_mode or None,
+        provider_route=spec.provider_route or None,
+    )
+    agent.thread_config_manager.saved["t-same"] = existing
+
+    cliproxy_router_module._apply_route_thread(
+        agent=agent,
+        admin=None,
+        spec=spec,
+        thread_id="t-same",
+        model="grok-4.3",
+        base_url="http://proxy.test:8317/v1",
+        gatekeeper="cpx-new",
+        require_thread_access_fn=None,
+    )
+    saved = agent.thread_config_manager.saved["t-same"]
+    assert saved.active_llm_fallback is None
+    note = saved.pending_fallback_note
+    assert note is not None
+    assert (note["reason"], note["to_model"]) == ("reverted", "grok-4.3")
 
 
 def test_apply_route_thread_helper_claude_writes_none_api_mode():

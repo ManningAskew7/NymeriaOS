@@ -104,10 +104,17 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_enabled_skills: bool = False
     clear_disabled_skills: bool = False
     clear_llm_config: bool = False
-    # Revert an active fallback hold (the GUI chip / Model-tab Revert):
-    # clears active_llm_fallback and latches the model-facing end note,
-    # mirroring /fallback revert.
+    # Revert an active fallback hold (the GUI chip / Model-tab Revert, a
+    # user's model command): clears active_llm_fallback and latches the
+    # model-facing end note, mirroring /fallback revert. Without it the hold
+    # ends only when this write changes the route (provider, model, base URL,
+    # key, provider route, API mode); see core.agent_llm_config
+    # .release_fallback_for_config_write.
     clear_active_fallback: bool = False
+    # Keep an active hold through a route change (the agent actor's model
+    # commands: the config saves, the outage safety net stays until the user
+    # reverts it). clear_active_fallback wins when both are set.
+    keep_active_fallback: bool = False
     clear_system_prompt: bool = False
     clear_notification_profile: bool = False
     clear_memory_char_limit: bool = False

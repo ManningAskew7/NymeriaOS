@@ -630,7 +630,17 @@ def test_thread_config_clear_active_fallback_reverts_and_latches_end_note(
     note (mirroring /fallback revert), through the route's own save."""
     from nymeria.core.thread_config import ActiveLLMFallback
 
+    from types import SimpleNamespace
+
     client, agent, token = _client(tmp_path, api_client_builder)
+    # The global route the end note names (#236: the model the thread runs
+    # once the hold is gone, which here differs from the hold's source). The
+    # route reads it off the agent, as resolution does; FakeAgent has none.
+    setattr(
+        agent,
+        "settings",
+        SimpleNamespace(llm_provider="anthropic", llm_model="claude-opus-5"),
+    )
     headers = api_client_builder.auth(token)
     thread_id = "thread-fallback-revert"
     agent.accounts_repo.claim_thread(thread_id, "owner")
@@ -660,7 +670,7 @@ def test_thread_config_clear_active_fallback_reverts_and_latches_end_note(
     assert note is not None and note["phase"] == "end"
     assert note["kind"] == "refusal"
     assert "manually reverted" in note["text"]
-    assert note["to_model"] == "claude-fable-5"
+    assert note["to_model"] == "claude-opus-5"
     assert thread_id in agent.invalidated
 
     # Idempotent: a second clear with no active hold changes nothing, and in

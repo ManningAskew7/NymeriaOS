@@ -323,6 +323,50 @@ class LLMCommandsMixin:
             await self._thread_config_for_display()
         )
 
+    def _hold_release_kwargs(
+        self, hold: Mapping[str, Any] | None
+    ) -> dict[str, bool]:
+        """The hold flag a thread-scope route command sends with its write
+        (#236). Empty without a live hold, so that write is unchanged.
+
+        A user's ``/model``, ``/provider switch`` and ``/fast``/``/smart``
+        are an explicit route choice and end the hold even when they
+        re-assert the configured model (the natural "get me back" move,
+        which the route-change diff alone would read as no change). The
+        agent's keep it (F3): ``/fallback revert`` is the user's, and the
+        hold is the outage safety net. Any other actor gets the plain
+        route-change rule.
+        """
+        if not hold:
+            return {}
+        actor = getattr(self, "actor", "user")
+        if actor == "user":
+            return {"clear_active_fallback": True}
+        if actor == "agent":
+            return {"keep_active_fallback": True}
+        return {}
+
+    def _hold_outcome_note(
+        self, hold: Mapping[str, Any] | None, written: Any
+    ) -> str:
+        """The reply suffix for a thread-config write that met a live hold:
+        ended (naming the fallback it was on) or still active (the shared
+        hold line, actor-aware revert pointer). Empty without a hold, so
+        the reply stays byte-identical, and when the write result is
+        unreadable rather than guessing."""
+        if (
+            not hold
+            or not isinstance(written, Mapping)
+            or "active_llm_fallback" not in written
+        ):
+            return ""
+        if written.get("active_llm_fallback"):
+            return f" The fallback hold stays active: {self._hold_summary(hold)}"
+        return (
+            " Ended the fallback hold (was on "
+            f"{hold.get('provider') or '?'}/{hold.get('model') or '?'})."
+        )
+
     async def _cmd_fallback(self, bound: BoundArgs) -> str:
         """Bare ``/fallback``: the chain listing, as it has always been.
 
@@ -437,24 +481,31 @@ class LLMCommandsMixin:
             # Same non-leaking shape as the REST 404: existence is not
             # disclosed to a non-owner.
             return command_error("No thread matching this id.")
-        agent = self._agent()
-        tc = self._thread_config_manager_or_none()
-        if agent is None or tc is None:
+        # Through the client door, both shapes (#236): the in-process
+        # manager is absent on the HTTP command shape, where this used to
+        # answer "Thread configuration is unavailable." The door applies the
+        # shared hold-release rule, which latches the end note.
+        config = await self._thread_config_for_display()
+        if config is None:
             return command_error("Thread configuration is unavailable.")
-        config = tc.get_config(self.thread_id)
-        active = getattr(config, "active_llm_fallback", None) if config else None
-        if config is None or active is None:
+        active = config.get("active_llm_fallback")
+        if not isinstance(active, dict):
             return "This thread has no active fallback hold."
-        from .agent_llm_config import clear_active_llm_fallback
-
-        # Shared clear path: also latches the model-facing end note so the
-        # next turn tells the model it is back on the primary.
-        cleared = clear_active_llm_fallback(agent, self.thread_id, reason="reverted")
-        if cleared is None:
+        try:
+            written = await self.api.update_thread_config(
+                self.thread_id, user_id=self.user_id, clear_active_fallback=True
+            )
+        except Exception:  # noqa: BLE001 - reported, never raised at the user.
+            logger.warning(
+                "/fallback revert failed for thread %s", self.thread_id, exc_info=True
+            )
+            return command_error("Failed to clear the fallback hold.")
+        if not isinstance(written, Mapping) or written.get("active_llm_fallback"):
             return command_error("Failed to clear the fallback hold.")
         return command_success(
             "Fallback hold cleared; this thread returns to its "
-            f"configured model (was on {cleared.provider}/{cleared.model})."
+            f"configured model (was on {active.get('provider') or '?'}/"
+            f"{active.get('model') or '?'})."
         )
 
     # -- registered child-path handlers (Phase 3) ---------------------------
@@ -486,10 +537,6 @@ class LLMCommandsMixin:
         self, args: list[str], rest: str
     ) -> str | CommandOutput:
         return self._resolve_fallback_approval(args, approved=False)
-
-    def _thread_config_manager_or_none(self) -> Any | None:
-        agent = self._agent()
-        return getattr(agent, "thread_config_manager", None) if agent else None
 
     def _visible_fallback_approvals(self) -> list[dict]:
         from ..tools.utils import is_admin
@@ -946,11 +993,19 @@ class LLMCommandsMixin:
             message = f"Thinking enabled (this thread), effort: {value}.{note}"
             enabled, effort = True, value
 
-        await self.api.update_thread_config(
+        # An effort change is not a route change, so a fallback hold stays
+        # (#236, F1); the reply says so rather than implying the configured
+        # model is the one that will run.
+        hold = self._hold_from_thread_config(tc)
+        written = await self.api.update_thread_config(
             self.thread_id, user_id=self.user_id, llm_config=llm_config
         )
         return self._think_output(
-            message, enabled=enabled, effort=effort, provider=provider, model=model
+            message + self._hold_outcome_note(hold, written),
+            enabled=enabled,
+            effort=effort,
+            provider=provider,
+            model=model,
         )
 
     def _think_output(
@@ -1654,12 +1709,17 @@ class LLMCommandsMixin:
                 return thread_error
             tc = await self.api.get_thread_config(self.thread_id)
             llm_cfg = (tc or {}).get("llm_config") or {}
-            await self.api.update_thread_config(
+            # A user's switch is an explicit route choice and ends a live
+            # fallback hold; the agent's keeps it (#236, F1/F3).
+            hold = self._hold_from_thread_config(tc)
+            written = await self.api.update_thread_config(
                 self.thread_id,
                 user_id=self.user_id,
                 llm_config={"provider": provider},
+                **self._hold_release_kwargs(hold),
             )
-            suffix = await self._switch_credential_suffix(spec)
+            suffix = self._hold_outcome_note(hold, written)
+            suffix += await self._switch_credential_suffix(spec)
             settings = await self.api.get_settings()
             model = str(
                 llm_cfg.get("model") or settings.get("llm_model") or ""

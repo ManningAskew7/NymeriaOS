@@ -129,10 +129,13 @@ def _apply_route_thread(
         require_thread_access_fn(admin, thread_id)
     manager = agent.thread_config_manager
     config = manager.get_config(thread_id) or ThreadConfig(thread_id=thread_id)
-    config.active_llm_fallback = None
-    if config.llm_config is None:
-        config.llm_config = ThreadLLMConfig()
     llm = config.llm_config
+    # Copied before the in-place writes below: the hold-release rule diffs
+    # the route across this apply.
+    llm_before = llm.model_copy() if llm is not None else None
+    if llm is None:
+        llm = ThreadLLMConfig()
+        config.llm_config = llm
     llm.provider = spec.nymeria_provider
     llm.model = model
     llm.base_url = base_url
@@ -142,6 +145,18 @@ def _apply_route_thread(
     # would otherwise outrank the provider dispatch in create_llm and
     # silently downgrade a native target to the lossy wire.
     llm.provider_route = spec.provider_route or None
+    # An apply is an explicit (admin-only) route choice, so it ends a live
+    # fallback hold like a user's /model, re-applying the same route
+    # included, and latches the end note naming the applied model (#236:
+    # this path used to clear the hold silently).
+    from ...core.agent_llm_config import release_fallback_for_config_write
+
+    release_fallback_for_config_write(
+        config,
+        before_llm=llm_before,
+        settings=getattr(agent, "settings", None),
+        revert=True,
+    )
     manager.save_config(config)
     # Evict the cached per-thread graph so the route applies to the
     # next turn (mirrors PATCH /threads/{id}/config).

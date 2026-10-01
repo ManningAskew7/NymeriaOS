@@ -579,8 +579,8 @@ def _apply_thread_configuration(
 
     Mirrors the load-bearing REST PATCH rules for the fields this verb
     exposes: the admin/developer-only tool gate for non-admins, the 5000-char
-    instructions cap (ThreadConfig does not validate on assignment), and
-    clearing the active LLM fallback when the model changes. Enabling a tool
+    instructions cap (ThreadConfig does not validate on assignment), and the
+    shared fallback-hold release rule when the model changes. Enabling a tool
     also removes it from disabled_tools (and vice versa): disabled_tools is
     authoritative subtraction at graph build, so a bare add would be a no-op.
     A team change runs the shared cross-thread fan-out (not the single-thread
@@ -591,9 +591,11 @@ def _apply_thread_configuration(
         resolve_tier,
         split_provider_model,
     )
+    from ..agent_llm_config import release_fallback_for_config_write
     from ..thread_config import ThreadLLMConfig
 
     updated: List[str] = []
+    llm_before = tc.llm_config
 
     instructions = args.get("instructions")
     if instructions is not None:
@@ -622,7 +624,13 @@ def _apply_thread_configuration(
             )
         else:
             tc.llm_config = ThreadLLMConfig(provider=provider, model=model_name)
-        tc.active_llm_fallback = None
+        # The shared hold-release rule (#236): an actual route change ends
+        # a live fallback hold and latches the end note naming the new
+        # model (this verb used to clear it silently); setting the model the
+        # thread already runs keeps the hold.
+        release_fallback_for_config_write(
+            tc, before_llm=llm_before, settings=getattr(agent, "settings", None)
+        )
         updated.append("model")
 
     tools_enable = _tool_name_list(args, "tools_enable")

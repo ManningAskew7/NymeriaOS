@@ -51,8 +51,8 @@ def _apply_pending_fallback_note(
     """Fold a latched fallback end note into this turn's human message.
 
     The latch is stamped when a fallback hold clears between turns
-    (``agent_llm_config.clear_active_llm_fallback``); the model learns it is
-    back on the primary IN the conversation, once, persisted (dev-locked
+    (``agent_llm_config.end_active_fallback_in_place``); the model learns
+    which model it is on now IN the conversation, once, persisted (dev-locked
     2026-07-25: no ephemeral model context). Applies to any turn source (user
     prompt, autonomous wakeup, dream, callable) because every source builds
     its input here. Suffix + ``fallback_note`` stamp, same shape as the

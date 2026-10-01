@@ -4100,7 +4100,8 @@ not activity). Key fields for callable threads:
 | `llm_config.provider_route` | string | Per-thread adapter route override: `native`, `openai_compat`, or `anthropic_messages`. Only applies to providers whose catalog row advertises multiple `supported_routes` (`anthropic_messages` routes a gateway's Claude models through langchain-anthropic for native thinking). |
 | `llm_config.fallback_switch_mode` | string | Per-thread override of `llm_fallback_switch_mode` (`auto`/`ask`); null inherits the global. |
 | `llm_config.refusal_swap_mode` | string | Per-thread override of `llm_refusal_swap_mode` (`off`/`ask`/`auto`); null inherits the global. |
-| `clear_active_fallback` | bool | Revert an active fallback hold (the GUI chip / Model-tab Revert, mirroring `/fallback revert`): clears `active_llm_fallback` and latches a model-facing end note for the thread's next turn. |
+| `clear_active_fallback` | bool | Revert an active fallback hold (the GUI chip / Model-tab Revert, a user's `/model <name> thread`, `/provider switch <p> thread`, `/fast`/`/smart` while held, mirroring `/fallback revert`): clears `active_llm_fallback` and latches a model-facing end note for the thread's next turn, naming the model the thread is configured to run after this write. Without it a write ends a hold only when it changes the thread's route (provider or model, compared as effective values against the global defaults, or the thread's `base_url`, `api_key`, `provider_route`, `openai_api_mode`); reasoning effort, temperature, compaction, consent-mode and non-LLM edits, and a Save that resubmits the unchanged route (or sends `clear_llm_config` on a thread whose override changed nothing), keep it. The end note's `reason` is `changed` when the route moved, else `reverted`. |
+| `keep_active_fallback` | bool | Keep an active hold through a route change: the agent actor's model commands send it, so the configuration saves while the hold, the outage safety net, stays until the user reverts it. `clear_active_fallback` wins when both are set. |
 | `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
 | `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
 | `llm_temperature` | float | Override temperature |
@@ -5396,7 +5397,9 @@ human-only, the agent cannot resolve its own parked switch).
 Every applied swap also leaves a model-facing note IN the conversation
 (persisted, never repeated): mid-turn it is appended to the last tool result,
 on a first-call switch to the prompt message itself, and when a hold ends
-(expiry or any revert surface) the next turn carries a back-on-primary note.
+(expiry, any revert surface, or a route change) the next turn carries a note
+naming the model the thread runs now (reason `expired`, `reverted`, or
+`changed`).
 History renders these as `fallback_notice` system entries (see Conversation
 History).
 
@@ -5437,9 +5440,12 @@ already-ended cases (timed out and auto-swapped, resolved elsewhere, or its
 turn died: the parked waiter removes its record on every exit). `409` is the
 rarer stale shape: the record still exists but no waiter is parked on it
 (typically a crash orphan surviving a restart); stale records are cleaned up
-on the spot. Every resolution publishes `fallback_prompt_resolved`. An active hold is inspectable and
-revertible via `/fallback status` and `/fallback revert` (permanent holds
-require the revert).
+on the spot. Every resolution publishes `fallback_prompt_resolved`. An active hold is inspectable via
+`/fallback status`, bare `/fallback`, bare `/model` and `/status`, and ends
+on expiry (never, for a permanent hold), `/fallback revert`, or a user's
+thread route command (`/model <name> thread`, `/provider switch <p> thread`,
+`/fast`/`/smart`). An agent's model command saves its configuration but
+keeps the hold. The PATCH rule above governs every other writer.
 
 ## CLIProxy Management API
 

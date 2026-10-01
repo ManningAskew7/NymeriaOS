@@ -213,7 +213,13 @@ exhausted, Nymeria emits
 `provider_fallback`, switches to the next configured fallback, and keeps that
 fallback active for the thread for `LLM_FALLBACK_HOLD_SECONDS` seconds
 (default: 2 hours). Expiry is lazy: if the hold expires during an active turn,
-the fallback is cleared after the turn releases the thread lock. After
+the fallback is cleared after the turn releases the thread lock. A hold also
+ends on `/fallback revert` (or the GUI and bot Revert buttons) and when the
+user picks the thread's model or provider (`/model <name> thread`,
+`/provider switch <p> thread`, `/fast`, `/smart`, or a model change in the
+thread settings); reasoning-effort and unrelated thread edits keep it, and
+an agent's model change saves but keeps it. Bare `/model` and `/status` show
+an active hold. After
 streaming starts, Nymeria does not switch models because that would duplicate
 visible output.
 

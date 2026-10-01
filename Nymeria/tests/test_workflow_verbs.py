@@ -999,8 +999,23 @@ async def test_threads_configure_requires_a_field(monkeypatch):
     assert "nothing to configure" in str(excinfo.value)
 
 
+def _configure_hold():
+    from datetime import timedelta
+
+    from nymeria.core.thread_config import ActiveLLMFallback
+    from nymeria.core.time_utils import utc_now
+
+    return ActiveLLMFallback(
+        provider="anthropic",
+        model="claude-haiku-4-5-20251001",
+        source_provider="anthropic",
+        source_model="claude-opus-5",
+        expires_at=utc_now() + timedelta(hours=1),
+    )
+
+
 async def test_threads_configure_applies_fields(monkeypatch):
-    tc = _configure_tc(disabled_tools=["web_search"], active_llm_fallback="stale")
+    tc = _configure_tc(disabled_tools=["web_search"], active_llm_fallback=_configure_hold())
     agent = _configure_agent(tc)
     monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
     monkeypatch.setattr(
@@ -1024,11 +1039,43 @@ async def test_threads_configure_applies_fields(monkeypatch):
     assert tc.instructions == "Be brief."
     assert tc.llm_config.provider == "openai"
     assert tc.llm_config.model == "gpt-x"
+    # The model change ended the hold through the shared rule AND latched the
+    # end note naming the new model (#236: this verb used to clear silently).
     assert tc.active_llm_fallback is None
+    assert tc.pending_fallback_note["phase"] == "end"
+    assert tc.pending_fallback_note["reason"] == "changed"
+    assert tc.pending_fallback_note["to_model"] == "gpt-x"
     assert "web_search" in tc.enabled_tools
     assert "web_search" not in tc.disabled_tools
     assert "bash_execute" in tc.disabled_tools
     assert agent._saved  # persisted
+
+
+async def test_threads_configure_same_model_keeps_the_hold(monkeypatch):
+    """The verb follows the shared rule, not an unconditional clear: naming
+    the model the thread already runs is no route change, so the hold (the
+    outage safety net) stays and no note is latched."""
+    from nymeria.core.thread_config import ThreadLLMConfig
+
+    hold = _configure_hold()
+    tc = _configure_tc(
+        llm_config=ThreadLLMConfig(provider="anthropic", model="claude-opus-5"),
+        active_llm_fallback=hold,
+        pending_fallback_note=None,
+    )
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(),
+        "threads.configure",
+        {"id_or_title": "t-9", "model": "anthropic:claude-opus-5"},
+    )
+    assert result["updated"] == ["model"]
+    assert tc.active_llm_fallback is hold
+    assert tc.pending_fallback_note is None
 
 
 async def test_threads_configure_target_need_not_be_callable(monkeypatch):

@@ -1418,6 +1418,33 @@ class _CommandBackendUser:
     admitted_thread_id: str | None = None
 
 
+# The fields CommandBackendClient.update_thread_config applies, each with the
+# PATCH /threads/{id}/config semantics. Anything else raises: a silently
+# ignored field is the #236 bug class.
+_IN_PROCESS_THREAD_CONFIG_FIELDS = frozenset(
+    {
+        "enabled_tools",
+        "disabled_tools",
+        "enabled_skills",
+        "disabled_skills",
+        "clear_enabled_skills",
+        "clear_disabled_skills",
+        "llm_config",
+        "clear_llm_config",
+        "clear_active_fallback",
+        "keep_active_fallback",
+        "memory_char_limit",
+        "clear_memory_char_limit",
+        "sequential_tool_execution",
+        "clear_sequential_tool_execution",
+        "hooks_enabled",
+        "clear_hooks_enabled",
+        "hook_overrides",
+        "clear_hook_overrides",
+    }
+)
+
+
 class CommandBackendClient:
     """In-process command backend adapter.
 
@@ -2661,7 +2688,19 @@ class CommandBackendClient:
         user_id: Optional[str] = None,
         **kwargs,
     ) -> dict:
+        from .agent_llm_config import release_fallback_for_config_write
         from .thread_config import ThreadConfig, ThreadLLMConfig
+
+        # A field this door cannot apply is a hard error, never a silent
+        # no-op: the whitelist drifting from the PATCH route is how /model,
+        # /fallback revert and /skills enable|disable each reported success
+        # while saving nothing (#236).
+        unsupported = sorted(set(kwargs) - _IN_PROCESS_THREAD_CONFIG_FIELDS)
+        if unsupported:
+            raise TypeError(
+                "update_thread_config (in-process) cannot apply: "
+                + ", ".join(unsupported)
+            )
 
         self._require_thread_access(thread_id)
         if user_id is not None:
@@ -2670,6 +2709,9 @@ class CommandBackendClient:
         tc = self.agent.thread_config_manager.get_config(thread_id)
         if tc is None:
             tc = ThreadConfig(thread_id=thread_id)
+        # Copied before the in-place llm_config merge: the hold-release rule
+        # diffs the route across this write.
+        llm_before = tc.llm_config.model_copy() if tc.llm_config is not None else None
 
         if "enabled_tools" in kwargs and kwargs["enabled_tools"] is not None:
             from ..tools import enabled_tools_role_error
@@ -2687,7 +2729,18 @@ class CommandBackendClient:
             tc.enabled_tools = enabled_tools
         if "disabled_tools" in kwargs and kwargs["disabled_tools"] is not None:
             tc.disabled_tools = list(kwargs["disabled_tools"])
-        if "llm_config" in kwargs and kwargs["llm_config"] is not None:
+        # Skills mirror the route's clear-then-set precedence.
+        if kwargs.get("clear_enabled_skills"):
+            tc.enabled_skills = []
+        elif kwargs.get("enabled_skills") is not None:
+            tc.enabled_skills = list(kwargs["enabled_skills"])
+        if kwargs.get("clear_disabled_skills"):
+            tc.disabled_skills = []
+        elif kwargs.get("disabled_skills") is not None:
+            tc.disabled_skills = list(kwargs["disabled_skills"])
+        if kwargs.get("clear_llm_config"):
+            tc.llm_config = None
+        elif "llm_config" in kwargs and kwargs["llm_config"] is not None:
             llm_data = dict(kwargs["llm_config"])
             if tc.llm_config is None:
                 tc.llm_config = ThreadLLMConfig(
@@ -2696,6 +2749,14 @@ class CommandBackendClient:
             else:
                 for key, value in llm_data.items():
                     setattr(tc.llm_config, key, value)
+        # The PATCH route's rule, the same function (both shapes, #236).
+        release_fallback_for_config_write(
+            tc,
+            before_llm=llm_before,
+            settings=getattr(self.agent, "settings", None),
+            revert=bool(kwargs.get("clear_active_fallback")),
+            keep=bool(kwargs.get("keep_active_fallback")),
+        )
         if kwargs.get("clear_memory_char_limit"):
             tc.memory_char_limit = None
         elif "memory_char_limit" in kwargs and kwargs["memory_char_limit"] is not None:
@@ -6431,7 +6492,20 @@ class _CommandExecutor(
                 lines.append(f"this thread: {thread_model} (override)")
             else:
                 lines.append("this thread: using global default")
-            lines.append("set with: /model <name> [global|thread]")
+            # A live hold wins resolution, so the read names it (#236, F2):
+            # the same hold line /status renders, plus why it started.
+            hold = self._hold_from_thread_config(tc)
+            if hold is not None:
+                lines.append(
+                    "fallback hold (active): "
+                    + self._hold_summary(hold, include_origin=True)
+                )
+            if hold is not None and getattr(self, "actor", "user") == "user":
+                lines.append(
+                    "set with: /model <name> [global|thread] (a thread model ends the hold)"
+                )
+            else:
+                lines.append("set with: /model <name> [global|thread]")
             text = "\n".join(lines)
             form = await self._model_picker_form(settings, thread_model, scope=scope)
             if form is None:
@@ -6468,11 +6542,19 @@ class _CommandExecutor(
             thread_error = self._require_thread()
             if thread_error:
                 return thread_error
-            await self.api.update_thread_config(
-                self.thread_id, user_id=self.user_id, llm_config={"model": name}
+            # A user's thread model is an explicit route choice and ends a
+            # live fallback hold, even re-asserting the configured model; the
+            # agent's saves but keeps the hold (#236, F1/F3).
+            hold = await self._active_hold_for_display()
+            written = await self.api.update_thread_config(
+                self.thread_id,
+                user_id=self.user_id,
+                llm_config={"model": name},
+                **self._hold_release_kwargs(hold),
             )
             return command_success(
-                f"Model for this thread set to {name}.{drift_note}",
+                f"Model for this thread set to {name}.{drift_note}"
+                + self._hold_outcome_note(hold, written),
                 data=command_data(state={"model": name}),
             )
         # A bare scope writes the GLOBAL default, which update_settings gates to
@@ -6491,7 +6573,16 @@ class _CommandExecutor(
         msg = f"Global model set to {name}."
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
-        return command_success(msg + drift_note)
+        # A global write never touches a thread's hold (no cross-thread
+        # mutation from a settings write), so a held thread is told the
+        # global model is not what it runs yet.
+        hold = await self._active_hold_for_display() if self.thread_id else None
+        hold_note = (
+            f" This thread stays on its fallback hold: {self._hold_summary(hold)}"
+            if hold is not None
+            else ""
+        )
+        return command_success(msg + drift_note + hold_note)
 
     async def _available_model_ids(self) -> list[str]:
         """Model ids the active provider currently lists, or [] when unknown.
@@ -6645,15 +6736,20 @@ class _CommandExecutor(
             return command_error(f"{label} model is not configured.")
         target_provider, target_model, enabled = plan
 
-        await self.api.update_thread_config(
+        # A user's toggle is an explicit route choice and ends a live
+        # fallback hold; the agent's keeps it (#236, F1/F3).
+        hold = self._hold_from_thread_config(tc)
+        written = await self.api.update_thread_config(
             self.thread_id,
             user_id=self.user_id,
             llm_config={"provider": target_provider, "model": target_model},
+            **self._hold_release_kwargs(hold),
         )
         mode = label if enabled else "default"
         return command_success(
             f"This thread switched to {mode} model "
             f"({target_model}, {target_provider})."
+            + self._hold_outcome_note(hold, written)
         )
 
     async def _cmd_background(self, bound: BoundArgs) -> str:

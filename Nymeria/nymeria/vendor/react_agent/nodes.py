@@ -949,6 +949,14 @@ def fallback_note_text(payload: dict[str, Any], *, kind: str, phase: str = "swap
     from_model = str(payload.get("from_model") or "the previous model")
     to_model = str(payload.get("to_model") or "the configured fallback model")
     if phase == "end":
+        if payload.get("reason") == "changed":
+            # The thread's model was changed while held (#236): name the
+            # model now running, never the one the hold substituted for.
+            return (
+                "[System info]: The fallback hold on this thread ended because "
+                f"the thread's model was changed; the thread is now on {to_model}. "
+                f"{from_model} handled the conversation since the switch."
+            )
         ended = (
             "was manually reverted"
             if payload.get("reason") == "reverted"

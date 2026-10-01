@@ -234,22 +234,9 @@ def create_thread_config_router(
         if tc is None:
             tc = ThreadConfig(thread_id=thread_id)
         previously_disabled = set(tc.disabled_tools or [])
-
-        def _drop_active_fallback(reason: str) -> None:
-            # Every path that clears an active hold latches the model-facing
-            # end note (the model must learn it is back on the primary), and
-            # the route's own save at the end persists both mutations. The
-            # shared core clear helper is deliberately NOT used here: it
-            # saves its own config object, which this route's later save
-            # would clobber.
-            if tc.active_llm_fallback is None:
-                return
-            from ...core.agent_llm_config import fallback_end_note_stamp
-
-            tc.pending_fallback_note = fallback_end_note_stamp(
-                tc.active_llm_fallback, reason=reason
-            )
-            tc.active_llm_fallback = None
+        # The hold-release rule diffs the route before and after this write;
+        # the llm_config merge below mutates in place, so copy it now.
+        llm_before = tc.llm_config.model_copy() if tc.llm_config is not None else None
 
         if request.clear_instructions:
             tc.instructions = None
@@ -263,11 +250,6 @@ def create_thread_config_router(
             tc.disabled_skills = []
         if request.clear_llm_config:
             tc.llm_config = None
-            _drop_active_fallback("reverted")
-        if request.clear_active_fallback:
-            # The typed revert surface (/fallback revert's REST mirror, the
-            # GUI chip / Model-tab Revert button).
-            _drop_active_fallback("reverted")
         if request.clear_system_prompt:
             tc.system_prompt = None
 
@@ -292,12 +274,25 @@ def create_thread_config_router(
         if request.disabled_skills is not None and not request.clear_disabled_skills:
             tc.disabled_skills = request.disabled_skills
         if request.llm_config is not None and not request.clear_llm_config:
-            # A model/provider edit invalidates a pinned fallback hold; latch
-            # the end note like any other clear so the model learns it.
-            _drop_active_fallback("reverted")
             tc.llm_config = _merge_optional_submodel(
                 tc.llm_config, request.llm_config, ThreadLLMConfig
             )
+        # ONE hold-release rule for every config door (#236): an explicit
+        # revert (`clear_active_fallback`: /fallback revert's REST mirror, the
+        # GUI and bot Revert buttons, a user's model command) or an actual
+        # route change ends the hold and latches the end note naming the model
+        # now configured; effort, compaction and other non-route edits, and a
+        # GUI Save that resubmits an unchanged route, keep it. Applied before
+        # the route's own save, which persists both mutations.
+        from ...core.agent_llm_config import release_fallback_for_config_write
+
+        release_fallback_for_config_write(
+            tc,
+            before_llm=llm_before,
+            settings=getattr(agent, "settings", None),
+            revert=request.clear_active_fallback,
+            keep=request.keep_active_fallback,
+        )
         if request.system_prompt is not None and not request.clear_system_prompt:
             tc.system_prompt = request.system_prompt
         if request.callable is not None:
