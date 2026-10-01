@@ -6987,12 +6987,20 @@ class _CommandExecutor(
                 was = f" The app's copy was {old_value}."
             else:
                 was = ""
+            from .notifications import alert_subject
+
             surface = self.surface or "unknown surface"
+            # Remedy before the source sentence and the old value (a URL for
+            # a route key), which would push it past the in-app row's
+            # NOTIFICATION_SUMMARY_MAX_CHARS (#406).
+            thread, thread_full = alert_subject(
+                self.thread_id or "unknown", label="Thread"
+            )
             self._dispatch_owner_alert(
-                f"An agent cleared server setting {name} from the app's saved "
-                f"settings via {surface} on thread {self.thread_id or 'unknown'}"
-                f"{'; ' + now if now else ''}.{was} Review with /env show and set "
-                "it again with /env set if this was not expected.",
+                f"An agent cleared server setting {name} via {surface} on "
+                f"thread {thread}. Review with /env show; restore with /env set "
+                "if this was not expected. It was removed from the app's saved "
+                f"settings{'; ' + now if now else ''}.{was}{thread_full}",
                 context=name,
             )
         except Exception as e:  # noqa: BLE001 - never fail the clear

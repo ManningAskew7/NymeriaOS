@@ -1133,7 +1133,7 @@ def test_an_agent_clear_alert_says_where_the_value_now_comes_from(
     run(CommandService().execute(agent_ctx, "/settings clear POSTGRES_URI", api=api))
 
     [alert] = alerts
-    assert f"via cli on thread thread-1{clause} The saved key is gone" in alert
+    assert f"from the app's saved settings{clause} The saved key is gone" in alert
 
 
 def test_settings_clear_is_refused_for_a_non_admin_and_gated_for_an_agent() -> None:
@@ -9044,7 +9044,8 @@ def test_an_agent_moving_any_base_url_that_carries_a_key_alerts_the_owner(
 
     assert agent.success is True and human.success is True
     [alert] = alerts
-    assert f"An agent changed server setting {env_key.lower()} to https://elsewhere.example/v1" in alert
+    assert alert.startswith(f"An agent changed server setting {env_key.lower()} via ")
+    assert "New value: https://elsewhere.example/v1." in alert
 
 
 def test_every_route_base_url_is_on_the_agent_alert_register() -> None:
@@ -9282,6 +9283,39 @@ def test_agent_reload_alert_row_keeps_the_review_command(
     assert row.startswith("An agent reloaded the server config files via agent")
     assert "Review with /env show; revert with /env set" in row
     assert f"Changed: {', '.join(sorted(AGENT_WRITE_ALERT_SETTINGS))}." in message
+    assert f'Thread: "{_LONG_THREAD}".' in message
+
+
+def test_agent_settings_clear_alert_row_keeps_the_review_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #434 clear alert follows the same convention: its source sentence
+    and the old value (a URL for a route key) come after the remedy."""
+    from nymeria.core.command_service import _CommandExecutor
+    from nymeria.core.notifications import NOTIFICATION_SUMMARY_MAX_CHARS
+
+    alerts = _capture_owner_alerts(monkeypatch)
+    url = "https://relay.example.net/" + "tenant-a1b2c3/" * 7
+    monkeypatch.setattr(_CommandExecutor, "_current_setting_value", lambda self, key: url)
+    api = _ClearRecordingApi(_clear_result("LLM_BACKGROUND_BASE_URL", source="unset"))
+
+    result = run(
+        CommandService().execute(
+            _long_thread_agent_ctx(), "/settings clear LLM_BACKGROUND_BASE_URL", api=api
+        )
+    )
+
+    assert result.success is True
+    [message] = alerts
+    row = message[:NOTIFICATION_SUMMARY_MAX_CHARS]
+    assert row.startswith(
+        "An agent cleared server setting LLM_BACKGROUND_BASE_URL via agent on thread "
+    )
+    assert "Review with /env show; restore with /env set" in row
+    # Where the value now comes from, the old value and the full thread id
+    # still reach external destinations.
+    assert "; nothing else sets it, so it is now unset." in message
+    assert f"The app's copy was {url}." in message
     assert f'Thread: "{_LONG_THREAD}".' in message
 
 

@@ -34,6 +34,22 @@ def test_autonomous_rules_are_explicitly_non_silent():
     assert "nym_todo" in AUTONOMOUS_MODE_RULES
 
 
+def test_rules_keep_the_three_block_shape_the_history_badge_cuts_on():
+    blocks = AUTONOMOUS_MODE_RULES.strip().split("\n\n")
+    assert (len(blocks), blocks[0], blocks[-1][:2]) == (
+        3,
+        "## Autonomous Run Rules",
+        "- ",
+    ), (
+        "AUTONOMOUS_MODE_RULES must stay three blank-line-delimited blocks "
+        "(the heading, one prose paragraph, one bullet list): "
+        "agent_history._autonomous_message_body cuts every stored wake-up on "
+        "that shape to badge its source (scheduler, watchdog, trigger). To "
+        "change the shape, teach that function the new one as well; stored "
+        "history keeps every older wording."
+    )
+
+
 # The general autonomous guidance now rides on the message tail (not the system
 # prompt). get_autonomous_tail_guidance() gates it on the turn being autonomous.
 
