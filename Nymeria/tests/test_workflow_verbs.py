@@ -999,7 +999,7 @@ async def test_threads_configure_requires_a_field(monkeypatch):
     assert "nothing to configure" in str(excinfo.value)
 
 
-def _configure_hold():
+def _configure_hold(*, expired: bool = False):
     from datetime import timedelta
 
     from nymeria.core.thread_config import ActiveLLMFallback
@@ -1010,12 +1010,12 @@ def _configure_hold():
         model="claude-haiku-4-5-20251001",
         source_provider="anthropic",
         source_model="claude-opus-5",
-        expires_at=utc_now() + timedelta(hours=1),
+        expires_at=utc_now() + timedelta(hours=-1 if expired else 1),
     )
 
 
 async def test_threads_configure_applies_fields(monkeypatch):
-    tc = _configure_tc(disabled_tools=["web_search"], active_llm_fallback=_configure_hold())
+    tc = _configure_tc(disabled_tools=["web_search"])
     agent = _configure_agent(tc)
     monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
     monkeypatch.setattr(
@@ -1032,6 +1032,7 @@ async def test_threads_configure_applies_fields(monkeypatch):
             "tools_disable": ["bash_execute"],
         },
     )
+    # No hold: the result is exactly what it always was.
     assert result == {
         "thread_id": "t-9",
         "updated": ["instructions", "model", "tools_enable", "tools_disable"],
@@ -1039,42 +1040,58 @@ async def test_threads_configure_applies_fields(monkeypatch):
     assert tc.instructions == "Be brief."
     assert tc.llm_config.provider == "openai"
     assert tc.llm_config.model == "gpt-x"
-    # The model change ended the hold through the shared rule AND latched the
-    # end note naming the new model (#236: this verb used to clear silently).
-    assert tc.active_llm_fallback is None
-    assert tc.pending_fallback_note["phase"] == "end"
-    assert tc.pending_fallback_note["reason"] == "changed"
-    assert tc.pending_fallback_note["to_model"] == "gpt-x"
     assert "web_search" in tc.enabled_tools
     assert "web_search" not in tc.disabled_tools
     assert "bash_execute" in tc.disabled_tools
     assert agent._saved  # persisted
 
 
-async def test_threads_configure_same_model_keeps_the_hold(monkeypatch):
-    """The verb follows the shared rule, not an unconditional clear: naming
-    the model the thread already runs is no route change, so the hold (the
-    outage safety net) stays and no note is latched."""
-    from nymeria.core.thread_config import ThreadLLMConfig
-
+async def test_threads_configure_model_change_saves_but_keeps_a_live_hold(monkeypatch):
+    """#236 F3: workflow code is agent-authored, so the verb is a non-user
+    writer. A real route change saves the model but the hold (the outage
+    safety net the agent cannot revert) stays, no end note is latched, and
+    the result says the hold still wins and whose revert it is."""
     hold = _configure_hold()
-    tc = _configure_tc(
-        llm_config=ThreadLLMConfig(provider="anthropic", model="claude-opus-5"),
-        active_llm_fallback=hold,
-        pending_fallback_note=None,
-    )
+    tc = _configure_tc(active_llm_fallback=hold, pending_fallback_note=None)
     agent = _configure_agent(tc)
     monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
     monkeypatch.setattr(
         verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
     )
     result = await verbs_thread._threads_configure_verb(
-        _ctx(),
-        "threads.configure",
-        {"id_or_title": "t-9", "model": "anthropic:claude-opus-5"},
+        _ctx(), "threads.configure", {"id_or_title": "t-9", "model": "openai:gpt-x"}
     )
-    assert result["updated"] == ["model"]
+    assert tc.llm_config.model == "gpt-x"
     assert tc.active_llm_fallback is hold
+    assert tc.pending_fallback_note is None
+    assert result == {
+        "thread_id": "t-9",
+        "updated": ["model"],
+        "fallback_hold": (
+            "anthropic/claude-haiku-4-5-20251001 stays active; the new model "
+            "runs once it ends (the user can revert with /fallback revert)"
+        ),
+    }
+    assert agent._saved
+
+
+async def test_threads_configure_an_expired_hold_is_not_reported(monkeypatch):
+    """Eviction is lazy: an expired record still on the config is not a live
+    hold, so the result does not claim one (the verb leaves the record for
+    the eviction, which latches the "expired" note)."""
+    stale = _configure_hold(expired=True)
+    tc = _configure_tc(active_llm_fallback=stale, pending_fallback_note=None)
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(), "threads.configure", {"id_or_title": "t-9", "model": "openai:gpt-x"}
+    )
+    assert result == {"thread_id": "t-9", "updated": ["model"]}
+    assert tc.llm_config.model == "gpt-x"
+    assert tc.active_llm_fallback is stale
     assert tc.pending_fallback_note is None
 
 

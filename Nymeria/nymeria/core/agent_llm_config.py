@@ -346,13 +346,23 @@ def release_fallback_for_config_write(
       while held). Reason "changed" if the route also moved, else
       "reverted".
     - the write changed the configured route (:func:`route_changed`) and
-      ``keep`` is not set. Reason "changed". ``keep`` is the agent actor's
-      model write (F3): the config saves, the outage safety net stays.
+      ``keep`` is not set. Reason "changed".
+
+    ``keep`` is every writer that is not an explicit user: the agent's
+    slash commands, any other non-user command actor, and the workflow
+    ``threads.configure`` verb (workflow code is agent-authored). Their
+    config saves; the hold, the outage safety net the agent is barred from
+    reverting, stays until a user ends it (F3).
+
+    A hold that has expired but is not yet evicted (eviction is lazy) ends
+    with reason "expired" whenever this rule ends it: the expiry is the
+    truer account of why it is gone.
 
     Anything else (effort, temperature, instructions, tools, a GUI Save
     resubmitting an unchanged route) keeps the hold.
     """
-    if getattr(tc, "active_llm_fallback", None) is None:
+    active = getattr(tc, "active_llm_fallback", None)
+    if active is None:
         return None
     changed = route_changed(before_llm, getattr(tc, "llm_config", None), settings)
     if revert:
@@ -361,6 +371,8 @@ def release_fallback_for_config_write(
         reason = "changed"
     else:
         return None
+    if _active_fallback_is_expired(active):
+        reason = "expired"
     return end_active_fallback_in_place(tc, reason=reason, settings=settings)
 
 

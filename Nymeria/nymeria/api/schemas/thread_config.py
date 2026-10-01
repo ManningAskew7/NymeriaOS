@@ -111,9 +111,11 @@ class ThreadConfigUpdateRequest(BaseModel):
     # key, provider route, API mode); see core.agent_llm_config
     # .release_fallback_for_config_write.
     clear_active_fallback: bool = False
-    # Keep an active hold through a route change (the agent actor's model
-    # commands: the config saves, the outage safety net stays until the user
-    # reverts it). clear_active_fallback wins when both are set.
+    # Keep an active hold through a route change: the config saves, the
+    # outage safety net stays until a user ends it. Sent by every non-user
+    # command actor's route commands (in-process in practice; over HTTP only
+    # by API clients that choose to) and by the CLI's one-turn temporary
+    # model. clear_active_fallback wins when both are set.
     keep_active_fallback: bool = False
     clear_system_prompt: bool = False
     clear_notification_profile: bool = False

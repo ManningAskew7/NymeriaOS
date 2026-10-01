@@ -77,6 +77,8 @@ EXACT_MATCH: set[str] = {
     "lib/stores/workflows.svelte.ts",
     "lib/utils/commandSearch.ts",
     "lib/utils/commandSearch.test.ts",
+    "lib/utils/fallbackHold.ts",
+    "lib/utils/fallbackHold.test.ts",
     "lib/utils/fileProcessing.ts",
     "lib/utils/hooks.ts",
     "lib/utils/ids.ts",

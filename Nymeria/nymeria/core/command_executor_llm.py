@@ -332,19 +332,35 @@ class LLMCommandsMixin:
         A user's ``/model``, ``/provider switch`` and ``/fast``/``/smart``
         are an explicit route choice and end the hold even when they
         re-assert the configured model (the natural "get me back" move,
-        which the route-change diff alone would read as no change). The
-        agent's keep it (F3): ``/fallback revert`` is the user's, and the
-        hold is the outage safety net. Any other actor gets the plain
-        route-change rule.
+        which the route-change diff alone would read as no change). Every
+        other actor keeps it (F3): ``/fallback revert`` is the user's, and
+        the hold is the outage safety net, so only an explicit user ends
+        it. Keyed on ``actor != "user"``, not ``== "agent"``, so the
+        declared but unused "system" actor (and any later one) keeps the
+        hold too: the closed default, as for the gating carve-out
+        (``_agent_settings_write_block``).
         """
         if not hold:
             return {}
-        actor = getattr(self, "actor", "user")
-        if actor == "user":
+        if getattr(self, "actor", "user") == "user":
             return {"clear_active_fallback": True}
-        if actor == "agent":
-            return {"keep_active_fallback": True}
-        return {}
+        return {"keep_active_fallback": True}
+
+    async def _write_thread_route(
+        self, llm_config: dict[str, Any], hold: Mapping[str, Any] | None
+    ) -> str:
+        """The thread-scope route commands' shared write (``/model ...
+        thread``, ``/provider switch ... thread``, ``/fast``/``/smart``):
+        the route plus the actor's hold flag, under the one hold-release
+        rule (#236). Returns the reply suffix naming what happened to a
+        live hold ("" without one, so the reply is unchanged)."""
+        written = await self.api.update_thread_config(
+            self.thread_id,
+            user_id=self.user_id,
+            llm_config=llm_config,
+            **self._hold_release_kwargs(hold),
+        )
+        return self._hold_outcome_note(hold, written)
 
     def _hold_outcome_note(
         self, hold: Mapping[str, Any] | None, written: Any
@@ -1710,15 +1726,10 @@ class LLMCommandsMixin:
             tc = await self.api.get_thread_config(self.thread_id)
             llm_cfg = (tc or {}).get("llm_config") or {}
             # A user's switch is an explicit route choice and ends a live
-            # fallback hold; the agent's keeps it (#236, F1/F3).
-            hold = self._hold_from_thread_config(tc)
-            written = await self.api.update_thread_config(
-                self.thread_id,
-                user_id=self.user_id,
-                llm_config={"provider": provider},
-                **self._hold_release_kwargs(hold),
+            # fallback hold; any other actor's keeps it (#236, F1/F3).
+            suffix = await self._write_thread_route(
+                {"provider": provider}, self._hold_from_thread_config(tc)
             )
-            suffix = self._hold_outcome_note(hold, written)
             suffix += await self._switch_credential_suffix(spec)
             settings = await self.api.get_settings()
             model = str(

@@ -2,6 +2,7 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { configStore } from '$lib/stores/config.svelte';
+  import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { api } from '$lib/services/api.svelte';
   import type {
     ActiveLLMFallback,
@@ -14,6 +15,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import Modal from '$lib/components/common/Modal.svelte';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
+  import { fallbackRevertLabel } from '$lib/utils/fallbackHold';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
@@ -144,6 +146,12 @@
 
   const inheritsGlobalModel = $derived(!llmModel);
   const globalModel = $derived(serverSettingsStore.model || '');
+  // The Revert button names what the revert restores: the SAVED config (the
+  // store the host's activeFallback comes from), not the form's unsaved
+  // edits, and never the hold's sourceModel (#236).
+  const revertFallbackLabel = $derived(
+    fallbackRevertLabel(threadId ? threadConfigStore.getConfig(threadId) : null, globalModel)
+  );
   const fastTierRef = $derived(serverSettingsStore.fastModelResolved || '');
   const smartTierRef = $derived(serverSettingsStore.smartModelResolved || '');
 
@@ -274,7 +282,7 @@
           onclick={() => onRevertFallback?.()}
           disabled={fallbackRevertBusy || !onRevertFallback}
         >
-          Revert to {activeFallback.sourceModel}
+          {revertFallbackLabel}
         </button>
       </div>
       {#if fallbackRevertError}

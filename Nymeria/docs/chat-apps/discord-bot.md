@@ -270,7 +270,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 
 | Command | Description |
 |---------|-------------|
-| `/set-model <name> [scope] [force]` | Switch the LLM model. `scope` is `thread` (channel override, default) or `global` (server default); `force` accepts a model the provider does not list. A `thread` switch also ends an active fallback swap on this channel. Hand-written: `/model` is a group on Discord, so the bare switch needs its own name. |
+| `/set-model <name> [scope] [force]` | Switch the LLM model. `scope` is `thread` (channel override, default) or `global` (server default); `force` accepts a model the provider does not list. A `thread` switch also ends an active fallback hold on this channel. Hand-written: `/model` is a group on Discord, so the bare switch needs its own name. |
 | `/model list` | List all available models from the current provider with context window sizes. |
 | `/think [mode]` | Set extended thinking mode: `off`, `on`, `low`, `medium`, `high`. Without argument, shows current state. |
 | `/status` | Comprehensive dashboard: model, provider, context bar, tools count, uptime, watchdog, task counts, Discord respond mode and channel context state. |
@@ -403,7 +403,7 @@ Telegram, the GUIs, the agent).
 | `/triggers delete <trigger_id>` | Delete a trigger. |
 | `/triggers history [trigger_id]` | Show recent trigger firings. |
 | `/fallback status` | Show consent state: switch mode, holds, and this channel's active swap. |
-| `/fallback revert` | End an active fallback swap on this channel. |
+| `/fallback revert` | End an active fallback hold on this channel. |
 | `/fallback approvals` | List pending model-swap consent prompts. |
 | `/fallback approve <record_id> [hold]` | Approve a pending model swap. |
 | `/fallback deny <record_id>` | Decline a pending model swap. |

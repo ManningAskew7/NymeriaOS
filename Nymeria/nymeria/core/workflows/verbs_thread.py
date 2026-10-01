@@ -580,7 +580,8 @@ def _apply_thread_configuration(
     Mirrors the load-bearing REST PATCH rules for the fields this verb
     exposes: the admin/developer-only tool gate for non-admins, the 5000-char
     instructions cap (ThreadConfig does not validate on assignment), and the
-    shared fallback-hold release rule when the model changes. Enabling a tool
+    shared fallback-hold release rule when the model changes (as a non-user
+    writer: the hold stays). Enabling a tool
     also removes it from disabled_tools (and vice versa): disabled_tools is
     authoritative subtraction at graph build, so a bare add would be a no-op.
     A team change runs the shared cross-thread fan-out (not the single-thread
@@ -624,12 +625,17 @@ def _apply_thread_configuration(
             )
         else:
             tc.llm_config = ThreadLLMConfig(provider=provider, model=model_name)
-        # The shared hold-release rule (#236): an actual route change ends
-        # a live fallback hold and latches the end note naming the new
-        # model (this verb used to clear it silently); setting the model the
-        # thread already runs keeps the hold.
+        # The shared hold-release rule (#236) as a non-user writer: workflow
+        # code is agent-authored (VerbContext carries no actor, and an
+        # admin's agent self-approves its own revision), so a model change
+        # here saves but KEEPS a live fallback hold, exactly like the
+        # agent's /model (F3). Only a user ends a hold; this verb used to
+        # clear it silently.
         release_fallback_for_config_write(
-            tc, before_llm=llm_before, settings=getattr(agent, "settings", None)
+            tc,
+            before_llm=llm_before,
+            settings=getattr(agent, "settings", None),
+            keep=True,
         )
         updated.append("model")
 
@@ -776,4 +782,24 @@ async def _threads_configure_verb(ctx: VerbContext, verb: str, args: dict) -> An
             raise VerbError(f"kit activation failed{applied}: {message}")
         updated.append("kit")
 
-    return {"thread_id": tc.thread_id, "updated": updated}
+    result: dict[str, Any] = {"thread_id": tc.thread_id, "updated": updated}
+    hold = _live_fallback_hold(tc) if "model" in updated else None
+    if hold is not None:
+        # The model saved but the hold still wins resolution (F3): say so,
+        # so the workflow does not report a model the next turn won't run.
+        result["fallback_hold"] = (
+            f"{hold.provider}/{hold.model} stays active; the new model runs "
+            "once it ends (the user can revert with /fallback revert)"
+        )
+    return result
+
+
+def _live_fallback_hold(tc: Any) -> Any:
+    """The thread's unexpired fallback hold, or None (eviction is lazy, so
+    a stale record is filtered here, as every display path does)."""
+    from ..agent_llm_config import _active_fallback_is_expired
+
+    hold = getattr(tc, "active_llm_fallback", None)
+    if hold is None or _active_fallback_is_expired(hold):
+        return None
+    return hold

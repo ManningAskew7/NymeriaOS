@@ -44,6 +44,16 @@ async def apply_temporary_model(
     previous_model = llm_config.get("model") if model_present else None
     default_model = str(mapping_get(settings, "llm_model", "") or "")
     effective_model = str(previous_model or default_model)
+    # A one-turn model is not a route choice (#236): with a fallback hold
+    # live, both writes keep it, so the hold still wins this turn and the
+    # restore leaves the thread exactly as it was. Without one the writes
+    # are unchanged (a hold the fast turn itself trips is then ended by the
+    # restore's route change, since it held in for the temporary model).
+    hold_flag = (
+        {"keep_active_fallback": True}
+        if mapping_get(config, "active_llm_fallback", None)
+        else {}
+    )
 
     await call_client_method(
         context,
@@ -51,12 +61,14 @@ async def apply_temporary_model(
         context.thread_id,
         user_id=context.user_id,
         llm_config={"model": model},
+        **hold_flag,
     )
     return {
         "llm_config_present": llm_config_present,
         "model_present": model_present,
         "previous_model": previous_model,
         "effective_model": effective_model,
+        **hold_flag,
     }
 
 
@@ -66,9 +78,13 @@ async def restore_temporary_model(
     """Undo `apply_temporary_model`, using the token it returned.
 
     Clears the thread's llm_config when the thread had none before the fast
-    turn, otherwise writes the previously-stashed model back.
+    turn, otherwise writes the previously-stashed model back. Keeps a
+    fallback hold that was live when the temporary model applied.
     """
 
+    hold_flag = (
+        {"keep_active_fallback": True} if restore.get("keep_active_fallback") else {}
+    )
     if not bool(restore.get("llm_config_present", False)):
         await call_client_method(
             context,
@@ -76,6 +92,7 @@ async def restore_temporary_model(
             context.thread_id,
             user_id=context.user_id,
             clear_llm_config=True,
+            **hold_flag,
         )
         return
 
@@ -86,4 +103,5 @@ async def restore_temporary_model(
         context.thread_id,
         user_id=context.user_id,
         llm_config={"model": model_value},
+        **hold_flag,
     )

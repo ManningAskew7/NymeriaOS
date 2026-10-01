@@ -6543,18 +6543,13 @@ class _CommandExecutor(
             if thread_error:
                 return thread_error
             # A user's thread model is an explicit route choice and ends a
-            # live fallback hold, even re-asserting the configured model; the
-            # agent's saves but keeps the hold (#236, F1/F3).
-            hold = await self._active_hold_for_display()
-            written = await self.api.update_thread_config(
-                self.thread_id,
-                user_id=self.user_id,
-                llm_config={"model": name},
-                **self._hold_release_kwargs(hold),
+            # live fallback hold, even re-asserting the configured model;
+            # any other actor's saves but keeps the hold (#236, F1/F3).
+            hold_note = await self._write_thread_route(
+                {"model": name}, await self._active_hold_for_display()
             )
             return command_success(
-                f"Model for this thread set to {name}.{drift_note}"
-                + self._hold_outcome_note(hold, written),
+                f"Model for this thread set to {name}.{drift_note}" + hold_note,
                 data=command_data(state={"model": name}),
             )
         # A bare scope writes the GLOBAL default, which update_settings gates to
@@ -6737,19 +6732,15 @@ class _CommandExecutor(
         target_provider, target_model, enabled = plan
 
         # A user's toggle is an explicit route choice and ends a live
-        # fallback hold; the agent's keeps it (#236, F1/F3).
-        hold = self._hold_from_thread_config(tc)
-        written = await self.api.update_thread_config(
-            self.thread_id,
-            user_id=self.user_id,
-            llm_config={"provider": target_provider, "model": target_model},
-            **self._hold_release_kwargs(hold),
+        # fallback hold; any other actor's keeps it (#236, F1/F3).
+        hold_note = await self._write_thread_route(
+            {"provider": target_provider, "model": target_model},
+            self._hold_from_thread_config(tc),
         )
         mode = label if enabled else "default"
         return command_success(
             f"This thread switched to {mode} model "
-            f"({target_model}, {target_provider})."
-            + self._hold_outcome_note(hold, written)
+            f"({target_model}, {target_provider})." + hold_note
         )
 
     async def _cmd_background(self, bound: BoundArgs) -> str:
