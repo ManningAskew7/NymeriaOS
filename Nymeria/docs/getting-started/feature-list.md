@@ -137,7 +137,7 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 
 ### LangGraph ReAct Agent
 - **Reasoning + Acting loop**  -  LangGraph-based ReAct pattern with higher tool-call budgets (default 500 main, 300 callable, configurable callables up to 1000) and exact repeated tool/result loop detection
-- **Per-user graph compilation**  -  Graphs compiled per user/thread based on memory hash, tool set, and thread config; LRU-cached (max 50 entries)
+- **Per-thread graph compilation**  -  One graph compiled per user and thread (every thread, configured or not), rebuilt when its memories, tool set, role or thread config change; LRU-cached (max 50 entries)
 - **Dynamic tool binding**  -  Tools resolved at graph-build time from core + optional + callable + MCP + skill sources
 - **Multi-provider LLM support**  -  Anthropic (native) plus OpenAI, OpenRouter, xAI, Gemini, Groq, DeepSeek, Mistral, local/self-hosted runtimes, and other OpenAI-compatible providers via a registry-backed adapter and live model-list endpoints
 - **Extended thinking**  -  Configurable reasoning effort (off, on, low, medium, high) with thinking block visualization

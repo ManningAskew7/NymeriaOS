@@ -82,7 +82,7 @@ response = agent.chat("Hello", thread_id="user123", user_id="default")
 ```
 
 **Key Features:**
-- Memory hash caching: Graphs are rebuilt only when user memories or thread config change
+- Per-thread graph caching: each (user, thread) gets its own compiled graph, rebuilt only when its freshness hash (memories, tool preferences, thread config, role, skills) changes
 - Time context injection: Every message includes current time in the configured `USER_TIMEZONE`
 - Dynamic callable tool sync: `sync_agent_tools()` refreshes callable-thread-backed tools when thread configs change
 - Per-thread configuration: Custom instructions, tool overrides, and LLM settings per thread
@@ -931,18 +931,30 @@ Self-modification backups:
 
 ## Graph Caching
 
-NymeriaAgent caches compiled graphs per user. The cache key includes:
-- User ID
-- Hash of user memories
-- Hash of personality overrides
-- Hash of thread configuration (custom instructions, enabled/disabled tools, LLM overrides)
+NymeriaAgent caches one compiled graph per (user, thread): every thread,
+including one with no thread config, builds and caches its own graph, so the
+LLM config baked into it (fallback callbacks, prompt-cache key, the active
+fallback candidate) is that thread's alone. Async graphs are also keyed by
+the owning event loop. Each entry stores a freshness hash next to the graph;
+a lookup whose hash differs rebuilds. The hash folds:
+- The owner's role (admin-only and developer-only tools are gated at build)
+- Default tool preferences and the active skill set
+- Thread configuration (custom instructions, system prompt, enabled/disabled
+  and temporary tools, skills, LLM overrides)
+- Memories, personality overrides and active TODOs, only for a thread that
+  injects them into its prompt
 
-When memories or thread config change, the graph is automatically rebuilt with the updated system prompt and tool set.
+When any of these change, the graph is automatically rebuilt with the updated
+system prompt and tool set; a thread-config change or a fallback hold evicts
+the thread's entry directly. The cache is LRU, 50 entries per cache (sync and
+async separately).
 
 ```python
 # Internal cache structure
 self._user_graphs: Dict[tuple, tuple] = {}
-# (user_id, thread_id) -> (combined_hash, graph)
+# (user_id, thread_id) -> (freshness_hash, graph)
+self._async_user_graphs: Dict[tuple, tuple] = {}
+# (loop_id, user_id, thread_id) -> (freshness_hash, graph)
 ```
 
 ---
