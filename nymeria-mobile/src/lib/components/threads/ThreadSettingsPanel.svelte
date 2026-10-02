@@ -48,6 +48,7 @@
     supportedRoutesForProvider,
   } from '$lib/utils/providerRoutes';
   import { connectionOverrideForSave } from '$lib/utils/threadLlmSave';
+  import { fallbackRevertLabel } from '$lib/utils/fallbackHold';
   import { registerIdentityReloadHook } from '$lib/stores/config.svelte';
   import { onMount, untrack } from 'svelte';
 
@@ -1352,7 +1353,9 @@
               onclick={revertActiveFallback}
               disabled={fallbackRevertBusy}
             >
-              Revert to {threadConfig.activeLlmFallback.sourceModel}
+              <!-- Names what the revert restores (the saved override, else
+                   the global default), never the hold's source (#441). -->
+              {fallbackRevertLabel(threadConfig, serverSettingsStore.model)}
             </button>
             {#if fallbackRevertError}
               <p class="hint revert-error">{fallbackRevertError}</p>

@@ -22,7 +22,11 @@
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText, isConnectivityError } from '$lib/services/api/humanizeError';
   import { isTodoTool } from '$lib/utils/todoTools';
+  import { fallbackHoldChip, fallbackHoldExpiresIn } from '$lib/utils/fallbackHold';
   import { untrack } from 'svelte';
+
+  // setTimeout's ceiling (a signed 32-bit delay); holds max out at 7 days.
+  const MAX_TIMER_MS = 2_147_483_647;
   import type { DispatchInfo, FileAttachment, QueuedBatch, RestoredPrompt, SSEEvent, ThreadStatus } from '$lib/types';
 
   let currentTitle = $derived(threadsStore.currentThread?.title ?? 'New Thread');
@@ -64,6 +68,25 @@
       return { name: shortModelName(serverSettingsStore.model), isOverride: false };
     }
     return null;
+  });
+
+  // Active fallback hold (#441): every turn runs the fallback model while the
+  // model badge names the configured one, so the header says so. Inert like
+  // every badge in this strip (an 8px badge in a horizontal scroller cannot
+  // be a 44px touch target); the gear is the way in, Model tab, Revert.
+  // Visibility and copy come from the shared helper: an expired hold shows
+  // nothing. `holdClock` re-derives it when a dated hold lapses while shown
+  // (the backend evicts expired holds lazily, so no config event says so).
+  let holdClock = $state(0);
+  $effect(() => {
+    const wait = fallbackHoldExpiresIn(currentThreadConfig);
+    if (wait === null) return;
+    const timer = setTimeout(() => { holdClock += 1; }, Math.min(wait + 250, MAX_TIMER_MS));
+    return () => clearTimeout(timer);
+  });
+  const holdChip = $derived.by(() => {
+    void holdClock;
+    return fallbackHoldChip(currentThreadConfig, serverSettingsStore.model);
   });
 
   function isMcpToolName(name: string): boolean {
@@ -169,7 +192,7 @@
   const hasInstructions = $derived(!!currentThreadConfig?.instructions);
   const isCallable = $derived(currentThreadConfig?.callable ?? false);
   const hasBadges = $derived(
-    effectiveModel !== null || activeToolCount !== null || (callableCount !== null && callableCount > 0) ||
+    effectiveModel !== null || holdChip !== null || activeToolCount !== null || (callableCount !== null && callableCount > 0) ||
     activeMcpToolCount !== null || activeSkillCount !== null ||
     triggerCount > 0 || hasInstructions || isCallable
   );
@@ -1075,6 +1098,11 @@
               {effectiveModel.name}
             </span>
           {/if}
+          {#if holdChip}
+            <span class="badge fallback-badge">
+              {holdChip.label}<span class="sr-only">. {holdChip.description} Revert it in Thread Settings, on the Model tab.</span>
+            </span>
+          {/if}
           {#if activeToolCount !== null}
             <span class="badge tools-badge" class:reduced={disabledNonMcpCount > 0}>
               {activeToolCount} tools
@@ -1261,6 +1289,27 @@
     background: color-mix(in srgb, var(--text-muted) 15%, transparent);
     color: var(--text-muted);
     border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+  }
+
+  /* An active fallback hold (#441): the accent treatment desktop's chip
+     uses, so it reads as a state of the model badge beside it. */
+  .fallback-badge {
+    position: relative;
+    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
+    color: var(--accent-primary);
+    border: 1px solid var(--accent-tint-border);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .tools-badge {

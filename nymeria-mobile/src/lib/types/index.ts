@@ -386,7 +386,8 @@ export interface ActiveLLMFallback {
   sourceModel: string;
   holdSeconds: number;
   activatedAt: string;
-  expiresAt: string;
+  /** Null for a PERMANENT hold (kept until reverted), as the backend sends it. */
+  expiresAt: string | null;
   providerRoute?: ProviderRoute | null;
   openaiApiMode?: 'chat_completions' | 'responses' | null;
   reason?: string | null;

@@ -19,6 +19,10 @@
   import { healthStore } from '$lib/stores/health.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { computeEffectiveToolCounts, liveTemporaryToolNames } from '$lib/utils/toolCounts';
+  import { fallbackHoldChip, fallbackHoldExpiresIn } from '$lib/utils/fallbackHold';
+
+  // setTimeout's ceiling (a signed 32-bit delay); holds max out at 7 days.
+  const MAX_TIMER_MS = 2_147_483_647;
 
   interface Props {
     thread: Thread;
@@ -104,18 +108,23 @@
 
   // Active fallback hold (llm-fallback-consent): the thread is temporarily
   // pinned to its fallback model. The chip deep-links to the Model tab, whose
-  // status row carries the Revert button.
-  const activeFallback = $derived(threadConfig?.activeLlmFallback ?? null);
-  const activeFallbackTooltip = $derived.by(() => {
-    if (!activeFallback) return '';
-    const cause = activeFallback.reason === 'refusal'
-      ? 'Refusal swap active'
-      : 'Provider-failure fallback active';
-    const until = activeFallback.expiresAt
-      ? ` until ${new Date(activeFallback.expiresAt).toLocaleString()}`
-      : ' until reverted';
-    return `${cause}${until}; was ${activeFallback.sourceModel}. Open Model settings to revert.`;
+  // status row carries the Revert button. Visibility and copy come from the
+  // shared helper (#441): an expired hold shows no chip, and the tooltip
+  // names what a Revert restores, never the hold's source model.
+  // `holdClock` re-derives the chip when a dated hold lapses while shown
+  // (the backend evicts expired holds lazily, so no config event says so).
+  let holdClock = $state(0);
+  $effect(() => {
+    const wait = fallbackHoldExpiresIn(threadConfig);
+    if (wait === null) return;
+    const timer = setTimeout(() => { holdClock += 1; }, Math.min(wait + 250, MAX_TIMER_MS));
+    return () => clearTimeout(timer);
   });
+  const holdChip = $derived.by(() => {
+    void holdClock;
+    return fallbackHoldChip(threadConfig, serverSettingsStore.model);
+  });
+  const holdChipTooltip = $derived(holdChip ? `${holdChip.description} Open Model settings to revert.` : '');
 
   let activeSkillCount = $state<number | null>(null);
   let activeSkillTooltip = $state('');
@@ -327,11 +336,11 @@
         settingsTab: 'model',
       });
     }
-    if (activeFallback) {
+    if (holdChip) {
       parts.push({
         id: 'fallback',
-        label: `fallback: ${shortModelName(activeFallback.model)}`,
-        tooltip: activeFallbackTooltip,
+        label: holdChip.label,
+        tooltip: holdChipTooltip,
         variant: 'accent',
         settingsTab: 'model',
       });
@@ -637,14 +646,14 @@
         onclick={() => onOpenSettings('model')}
       >{effectiveModel.name}</button>
     {/if}
-    {#if activeFallback}
+    {#if holdChip}
       <button
         class="header-model accent"
         type="button"
-        data-tooltip={activeFallbackTooltip}
+        data-tooltip={holdChipTooltip}
         aria-label="Configure fallback hold"
         onclick={() => onOpenSettings('model')}
-      >fallback: {shortModelName(activeFallback.model)}</button>
+      >{holdChip.label}</button>
     {/if}
   {:else if metaParts.length > 0}
     <button
