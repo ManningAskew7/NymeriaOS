@@ -481,16 +481,18 @@ def _searxng_row(settings: Any) -> CheckResult:
             "set, so it fails unless a user saved their own SearXNG address (not "
             "checked here); set SEARXNG_BASE_URL or rerun `nymeria init`",
         )
-    if base_url_problem(base_url) is not None:
-        # The rule `nymeria init` applies to the same setting. Never echoed
-        # and never probed: a malformed or scheme-less value ("user:pw@host:1",
-        # "searxng:8080") can still carry credentials, and urlsplit finds no
-        # userinfo in it to redact.
+    problem = base_url_problem(base_url)
+    if problem is not None:
+        # The rule `nymeria init` applies to the same setting. Its reason is a
+        # fixed clause; the value is never echoed and never probed: a
+        # malformed or scheme-less value ("user:pw@host:1", "searxng:8080")
+        # can still carry credentials, and urlsplit finds no userinfo in it
+        # to redact.
         return CheckResult(
             "SearXNG",
             "warn",
-            "SEARXNG_BASE_URL is not a valid http:// or https:// URL, so "
-            "web_search_searxng cannot use it; fix it or rerun `nymeria init`",
+            f"SEARXNG_BASE_URL is not usable by web_search_searxng: {problem}; "
+            "fix it or rerun `nymeria init`",
         )
     service_host = _docker_service_host(base_url)
     if service_host and not _in_container():

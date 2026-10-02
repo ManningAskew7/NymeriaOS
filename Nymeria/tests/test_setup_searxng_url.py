@@ -42,6 +42,9 @@ _UNUSABLE = [
     ("http://:8080", "it has no host"),
     ("http://sx-user:s3cret@[bad", "it is not a well-formed URL"),
     ("http://sx-user:s3cret@127.0.0.1:99999", "its port is not a number from 1 to 65535"),
+    # Just over the limit: httpx attempts it, but glibc truncates the numeric
+    # service to port 0 (ECONNREFUSED), so it can never connect.
+    ("http://sx-user:s3cret@127.0.0.1:65536", "its port is not a number from 1 to 65535"),
     ("http://searx.example:s3cret", "its port is not a number from 1 to 65535"),
     ("http://searx.example:0", "its port is not a number from 1 to 65535"),
     ("http://my searx:8080", "its host contains whitespace"),
@@ -51,15 +54,16 @@ _UNUSABLE = [
 _UNUSABLE_IDS = [
     "schemeless-service", "schemeless-localhost", "schemeless-ip",
     "schemeless-credentials", "non-http-scheme", "scheme-relative", "no-host",
-    "port-only", "bad-bracket", "port-out-of-range", "port-not-a-number",
-    "port-zero", "space-in-host", "escape-sequence", "newline",
+    "port-only", "bad-bracket", "port-out-of-range", "port-just-over-limit",
+    "port-not-a-number", "port-zero", "space-in-host", "escape-sequence", "newline",
 ]
 
 # Values that work today and must keep working: a path (SearXNG behind a
 # prefix), userinfo (basic auth in front of it), an IPv6 literal, any scheme
-# case, and surrounding whitespace (stripped).
+# case, surrounding whitespace (stripped), and the highest port.
 _USABLE = [
     "http://searxng:8080",
+    "http://searx.example:65535",
     "https://searx.example/searx",
     "http://sx-user:s3cret@127.0.0.1:8888",
     "http://[::1]:8888",

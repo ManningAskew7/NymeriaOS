@@ -469,7 +469,8 @@ def test_local_rag_check_warns_only_when_the_runtime_would_load_a_missing_model(
     assert doctor._check_local_rag(rerank_off) is None
 
     present["value"] = True
-    assert doctor._check_local_rag(RagSettings(data_dir=tmp_path)).status == "pass"
+    installed = doctor._check_local_rag(RagSettings(data_dir=tmp_path))
+    assert installed is not None and installed.status == "pass"
 
     hosted = RagSettings(data_dir=tmp_path, embedding_provider="openai")
     assert doctor._check_local_rag(hosted) is None  # nothing local to check
@@ -1072,32 +1073,39 @@ def test_searxng_row_never_prints_url_credentials(searxng_stub, searxng_data) ->
         assert "s3cret" not in row.detail
 
 
+_PORT_REASON = "its port is not a number from 1 to 65535"
+_SCHEME_REASON = "it does not start with http:// or https://"
+
+
 @pytest.mark.parametrize(
-    "url",
+    ("url", "reason"),
     [
-        "http://sx-user:s3cret@[bad",
-        "http://sx-user:s3cret@127.0.0.1:99999",
+        ("http://sx-user:s3cret@[bad", "it is not a well-formed URL"),
+        ("http://sx-user:s3cret@127.0.0.1:99999", _PORT_REASON),
         # Scheme-less: urlsplit reads "sx-user" / "searxng" / "localhost" as the
         # scheme, finds no userinfo to redact, and httpx would refuse the
         # protocol only after the row had echoed the value.
-        "sx-user:s3cret@127.0.0.1:9",
-        "searxng:8080",
-        "localhost:8080",
-        "ftp://s3cret@searx.example",
-        "http:///s3cret",
-        # The rule `nymeria init` shares (It43): neither can ever connect, and
-        # before the shared rule both were probed (a DNS lookup of the garbage).
-        "http://sx-user:s3cret@127.0.0.1:0",
-        "http://sx-user:s3cret@my searx:8080",
+        ("sx-user:s3cret@127.0.0.1:9", _SCHEME_REASON),
+        ("searxng:8080", _SCHEME_REASON),
+        ("localhost:8080", _SCHEME_REASON),
+        ("ftp://s3cret@searx.example", _SCHEME_REASON),
+        ("http:///s3cret", "it has no host"),
+        ("http://sx-user:s3cret@searx.example:s3cret", _PORT_REASON),
+        # The rule `nymeria init` shares (It43): none of these can ever connect,
+        # and before the shared rule all three were probed (a DNS lookup of the
+        # garbage, or httpx's InvalidURL for the control character).
+        ("http://sx-user:s3cret@127.0.0.1:0", _PORT_REASON),
+        ("http://sx-user:s3cret@my searx:8080", "its host contains whitespace"),
+        ("http://sx-user:s3cret@searx\x1b.example:8080", "it contains a control character"),
     ],
     ids=[
         "bracket", "port-out-of-range", "schemeless-credentials", "schemeless-service",
-        "schemeless-localhost", "non-http-scheme", "no-host", "port-zero",
-        "space-in-host",
+        "schemeless-localhost", "non-http-scheme", "no-host", "port-not-a-number",
+        "port-zero", "space-in-host", "control-character",
     ],
 )
 def test_searxng_malformed_url_is_reported_unechoed_and_unprobed(
-    monkeypatch, searxng_data, url
+    monkeypatch, searxng_data, url, reason
 ) -> None:
     from nymeria.core import http_policy
 
@@ -1112,14 +1120,16 @@ def test_searxng_malformed_url_is_reported_unechoed_and_unprobed(
 
     row = _probe_row(searxng_data, url)
 
+    # The row names WHICH part is wrong (the rule's fixed clause), never the value.
     assert row == doctor.CheckResult(
         "SearXNG",
         "warn",
-        "SEARXNG_BASE_URL is not a valid http:// or https:// URL, so "
-        "web_search_searxng cannot use it; fix it or rerun `nymeria init`",
+        f"SEARXNG_BASE_URL is not usable by web_search_searxng: {reason}; fix it "
+        "or rerun `nymeria init`",
     )
     assert seen == []
-    assert "s3cret" not in row.detail
+    assert row is not None
+    assert "s3cret" not in row.detail and "sx-user" not in row.detail
 
 
 def test_searxng_row_never_fails_the_doctor_run(monkeypatch, searxng_stub, searxng_data) -> None:

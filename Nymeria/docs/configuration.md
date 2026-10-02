@@ -996,7 +996,8 @@ list), doctor adds a `SearXNG` row: one test search
 passes when results come back (naming any engines that failed alongside), and
 warns when the URL is unset or is not an `http://` or `https://` URL with a
 host and a valid port (the rule `nymeria init` applies to the same setting;
-never probed or echoed), the instance is unreachable or slow, it answers
+the row names which part is wrong, and the value is never probed or echoed),
+the instance is unreachable or slow, it answers
 HTTP 403 (`search.formats` lacks `json`), 429 (its rate limiter) or another
 error status, it answers without JSON, or the search came back empty, naming
 the engines that failed when it did. It is a search, not a `/healthz` check,
