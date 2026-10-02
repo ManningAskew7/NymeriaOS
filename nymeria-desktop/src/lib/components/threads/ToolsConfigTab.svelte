@@ -420,6 +420,12 @@
           <div class="tools-msg subtle">
             {#if searchActive}
               No other MCP tools match your search.
+            {:else if mcpServersForThread.length === 0 && mcpServersStore.forbidden}
+              MCP servers are managed by an admin.
+            {:else if mcpServersForThread.length === 0 && mcpServersStore.error}
+              <!-- #445: a failed list load is not "none installed". -->
+              {mcpServersStore.error}
+              <button class="retry-btn" type="button" onclick={() => mcpServersStore.refresh()}>Retry</button>
             {:else if mcpServersForThread.length === 0}
               No MCP servers installed. Install one in Settings → MCP Servers.
             {:else}

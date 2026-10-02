@@ -1,6 +1,6 @@
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
-import { registerIdentityReloadHook } from './config.svelte';
+import { configStore, registerIdentityReloadHook } from './config.svelte';
 import type {
   MCPDiscoveredTool,
   MCPInstallPreviewRequest,
@@ -12,13 +12,29 @@ import type {
   MCPServerUpdateRequest,
 } from '$lib/types';
 
-function createMCPServersStore() {
+// Exported for the store's tests only: each instance registers an identity
+// reload hook for life, so the app uses the single `mcpServersStore`.
+export function createMCPServersStore() {
   let servers = $state<MCPServer[]>([]);
   let loading = $state(false);
+  // Also latched by a FAILED load (with `error` set), so the panel effects
+  // that keep this store loaded stop re-running it: a failing GET
+  // /mcp-servers used to be asked again on every settle, as fast as the
+  // backend refused it (#445). refresh() is the way to ask again.
   let loaded = $state(false);
   let error = $state<string | null>(null);
+  // A 403 latches silently, the serverSettings shape (#381): the route is
+  // admin-only, so a refusal is not a failure to show.
+  let latched403 = $state(false);
   // Bumped by the reload hook: a response from the previous backend lands nowhere.
   let identityGeneration = 0;
+
+  // A KNOWN non-admin never asks (GET /mcp-servers is require_admin_user).
+  // Derived, not latched, so a role promotion un-settles the store.
+  function knownNonAdmin(): boolean {
+    const role = configStore.identity?.role;
+    return !!role && role !== 'admin';
+  }
 
   // MCP servers are keyed by human-chosen ids (`github`), so a stale row
   // from the previous backend could act on the new backend's like-named
@@ -29,6 +45,7 @@ function createMCPServersStore() {
     loading = false;
     loaded = false;
     error = null;
+    latched403 = false;
   });
 
   function current(generation: number): boolean {
@@ -40,9 +57,11 @@ function createMCPServersStore() {
     get loading() { return loading; },
     get loaded() { return loaded; },
     get error() { return error; },
+    /** The account cannot manage MCP servers: a latched 403 or a known non-admin. */
+    get forbidden() { return latched403 || knownNonAdmin(); },
 
     async load(): Promise<void> {
-      if (loading) return;
+      if (loading || loaded || latched403 || knownNonAdmin()) return;
       const generation = identityGeneration;
       loading = true;
       error = null;
@@ -53,7 +72,12 @@ function createMCPServersStore() {
         loaded = true;
       } catch (e) {
         if (!current(generation)) return;
+        if ((e as { status?: number } | null)?.status === 403) {
+          latched403 = true;
+          return;
+        }
         error = humanizeErrorText(e, { action: 'load', resource: 'your MCP servers' });
+        loaded = true;
         console.error('Failed to load MCP servers:', e);
       } finally {
         if (current(generation)) loading = false;
@@ -62,6 +86,9 @@ function createMCPServersStore() {
 
     async refresh(): Promise<void> {
       loaded = false;
+      latched403 = false;
+      // `error` clears when the load starts; an in-flight load lands on its
+      // own and load() refuses to race it.
       await this.load();
     },
 

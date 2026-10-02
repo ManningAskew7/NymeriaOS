@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
@@ -28,6 +29,8 @@
   let editLoading = $state(false);
   let editError = $state<string | null>(null);
 
+  // A failed load latches (`loaded` + `error`) and a refusal latches
+  // `forbidden`, so this effect asks once, never in a loop (#445).
   $effect(() => {
     if (!mcpServersStore.loaded && !mcpServersStore.loading) {
       mcpServersStore.load();
@@ -35,6 +38,12 @@
     if (!defaultToolsStore.loaded && !defaultToolsStore.loading) {
       defaultToolsStore.load();
     }
+  });
+
+  // Opening the panel again is a retry of a latched failure (outside the
+  // effect: a retry that fails again must not re-trigger itself).
+  onMount(() => {
+    if (mcpServersStore.error && !mcpServersStore.loading) void mcpServersStore.refresh();
   });
 
   let enabledToolNames = $derived(new Set(defaultToolsStore.defaultToolNames));
@@ -252,9 +261,24 @@
 
   {#if mcpServersStore.loading && mcpServersStore.servers.length === 0}
     <div class="loading"><InlineLoader text="Loading MCP servers…" /></div>
+  {:else if mcpServersStore.forbidden}
+    <p class="empty-state">MCP servers are managed by an admin.</p>
+  {:else if mcpServersStore.error && mcpServersStore.servers.length === 0}
+    <div class="load-error" role="alert">
+      <p>{mcpServersStore.error}</p>
+      <button class="retry-btn" type="button" onclick={() => mcpServersStore.refresh()}>Retry</button>
+    </div>
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
     <p class="empty-state">No MCP servers configured.</p>
   {:else}
+    {#if mcpServersStore.error}
+      <!-- A refresh failed after a good load: the list shown is the last one
+           this backend served, so say it may be out of date. -->
+      <div class="load-error" role="alert">
+        <p>{mcpServersStore.error} This list may be out of date.</p>
+        <button class="retry-btn" type="button" onclick={() => mcpServersStore.refresh()}>Retry</button>
+      </div>
+    {/if}
     {#each mcpServersStore.servers as server (server.id)}
       <div class="server-item" class:disabled-server={!server.enabled}>
         <button class="server-row" onclick={() => expandedServer = expandedServer === server.id ? null : server.id}>
@@ -414,6 +438,42 @@
     color: var(--text-secondary);
     font-size: 0.85rem;
     padding: 1rem;
+  }
+
+  /* A failed list load (#445): the error text plus a visible secondary
+     Retry at full touch size, never the empty state's "none configured". */
+  .load-error {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    margin-bottom: 0.5rem;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-left: 3px solid var(--error);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+    border-radius: var(--radius-sm);
+  }
+
+  .load-error p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    line-height: 1.4;
+  }
+
+  .retry-btn {
+    min-height: var(--touch-target-min);
+    padding: 0 var(--spacing-md);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+  }
+
+  .retry-btn:active {
+    background: var(--bg-hover);
   }
 
   .server-item {

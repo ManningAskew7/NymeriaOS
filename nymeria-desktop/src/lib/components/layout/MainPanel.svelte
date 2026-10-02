@@ -18,6 +18,7 @@
   import { outlookStore } from '$lib/stores/outlook.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
+  import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { healthStore } from '$lib/stores/health.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -98,6 +99,9 @@
       // synchronously by then, so that effect's guard holds. Keep refresh()
       // synchronous up to its load() call.
       if (serverSettingsStore.error && !serverSettingsStore.loading) void serverSettingsStore.refresh();
+      // The MCP list latches a failed load the same way (#445); a latched
+      // 403 is not retried here either (refresh() would re-ask it).
+      if (mcpServersStore.error && !mcpServersStore.loading) void mcpServersStore.refresh();
     });
   });
 

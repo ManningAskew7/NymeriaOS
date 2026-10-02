@@ -1,29 +1,43 @@
 /**
  * Lazy-loading store for OpenRouter model metadata.
- * Fetches once per connection (no polling).
+ * Fetches once per connection (no polling). A non-empty catalog latches for
+ * the connection; an empty or failed load is retried at most once per
+ * RETRY_AFTER_MS.
  */
 
 import type { AvailableModel, ModelMetadata } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
 import { registerIdentityReloadHook } from './config.svelte';
 
-function createModelsStore() {
+// The backend answers an empty catalog (OpenRouter unreachable from the
+// server) out of its own 60 s failure cache, so an earlier retry can only get
+// the same answer. Without a window every panel effect that reads `loaded` or
+// `loading` re-asked on each settle, as fast as the backend answered (#445).
+const RETRY_AFTER_MS = 60_000;
+
+// Exported for the store's tests only: each instance registers an identity
+// reload hook for life, so the app uses the single `modelsStore`.
+export function createModelsStore() {
   let models = $state<ModelMetadata[]>([]);
   let modelMap = $state<Map<string, ModelMetadata>>(new Map());
   let loaded = $state(false);
   let loading = $state(false);
+  // When the last load came back empty or failed; plain (not $state) so the
+  // no-op inside the window reads and writes nothing an effect could track.
+  let emptyAt: number | null = null;
   let identityGeneration = 0;
 
   // The catalog (and the per-thread available models merged into it) is
   // what the CONNECTED backend serves: drop it on every connection switch
   // so effort clamps and context hints never describe the previous one's
-  // models (#242).
+  // models (#242). The new backend is asked at once (#445).
   registerIdentityReloadHook(() => {
     identityGeneration += 1;
     models = [];
     modelMap = new Map();
     loaded = false;
     loading = false;
+    emptyAt = null;
   });
 
   function toMetadata(
@@ -68,6 +82,7 @@ function createModelsStore() {
 
   async function loadModels() {
     if (loaded || loading) return;
+    if (emptyAt !== null && Date.now() - emptyAt < RETRY_AFTER_MS) return;
     const generation = identityGeneration;
     loading = true;
     try {
@@ -76,10 +91,15 @@ function createModelsStore() {
       if (result.length > 0) {
         mergeModelMetadata(result);
         loaded = true;
+        emptyAt = null;
+      } else {
+        // The catalog is not populated (or the request failed: the api
+        // client folds every failure into []). Retry after the window.
+        emptyAt = Date.now();
       }
-      // Empty result = cache not populated yet, allow retry
     } catch {
-      // Non-critical: the frontend works without metadata
+      // Non-critical: the frontend works without metadata.
+      if (generation === identityGeneration) emptyAt = Date.now();
     } finally {
       if (generation === identityGeneration) loading = false;
     }

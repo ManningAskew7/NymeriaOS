@@ -14,6 +14,9 @@ vi.mock('./config.svelte', () => ({
     reg.hooks.push(hook);
     return () => undefined;
   },
+  // The MCP store reads the role to skip its admin-only load for a known
+  // non-admin (#445); no identity here, so it asks as an admin would.
+  configStore: { identity: null },
 }));
 vi.mock('$lib/services/api.svelte', () => ({
   api: {

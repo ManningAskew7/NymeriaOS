@@ -102,7 +102,11 @@ export class MCPApi extends ToolsApi {
     const response = await fetch(`${this.getBaseUrl()}/mcp-servers`, {
       headers: this.getHeaders()
     });
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    if (!response.ok) {
+      // The status rides the error: the store latches a 403 as a silent
+      // "admin-managed" state rather than a failure to show (#445).
+      throw Object.assign(new Error(`API error: ${response.status}`), { status: response.status });
+    }
     const data = await response.json();
     return {
       servers: (data.servers || []).map((s: Record<string, unknown>) => this.mcpServerFromResponse(s)),

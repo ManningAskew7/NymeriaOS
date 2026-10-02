@@ -539,7 +539,9 @@
         if (serverSettingsStore.error && !serverSettingsStore.loading) serverSettingsStore.refresh();
         else if (!serverSettingsStore.settled && !serverSettingsStore.loading) serverSettingsStore.load();
         if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
-        if (!mcpServersStore.loaded && !mcpServersStore.loading) mcpServersStore.load();
+        // Same retry idiom for the MCP list, which latches a failure (#445).
+        if (mcpServersStore.error && !mcpServersStore.loading) mcpServersStore.refresh();
+        else if (!mcpServersStore.loaded && !mcpServersStore.loading) mcpServersStore.load();
         if (!skillsStore.installedLoaded && !skillsStore.installedLoading) skillsStore.loadInstalled();
         if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) skillsStore.loadGlobal();
         if (Object.keys(triggersStore.sources).length === 0) triggersStore.loadSources();
@@ -1743,7 +1745,13 @@
             <p class="hint">Tools from MCP servers. Enable for this thread.</p>
           </div>
 
-          {#if mcpServersForThread.length === 0}
+          {#if mcpServersForThread.length === 0 && mcpServersStore.forbidden}
+            <div class="loading-state">MCP servers are managed by an admin.</div>
+          {:else if mcpServersForThread.length === 0 && mcpServersStore.error}
+            <!-- #445: a failed list load is not "none installed"; reopening
+                 the panel is the retry (the open effect refreshes it). -->
+            <div class="loading-state" role="alert">{mcpServersStore.error} Reopen Thread Settings to try again.</div>
+          {:else if mcpServersForThread.length === 0}
             <div class="loading-state">No MCP servers installed. Install one in Settings → MCP.</div>
           {:else}
             {#each mcpServersForThread as server (server.id)}

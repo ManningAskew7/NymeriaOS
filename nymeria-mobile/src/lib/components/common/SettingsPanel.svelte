@@ -364,8 +364,11 @@
     }
   });
 
+  // Gated on `open`: this panel stays mounted (LeftPanel) and `llmProvider`
+  // keeps its last seeded value, so an ungated effect kept asking for model
+  // metadata in the background for the app's lifetime (#445).
   $effect(() => {
-    if (llmProvider === 'openrouter') {
+    if (open && llmProvider === 'openrouter') {
       modelsStore.loadModels();
     }
   });

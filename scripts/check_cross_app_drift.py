@@ -64,6 +64,14 @@ EXACT_MATCH: set[str] = {
     "lib/stores/health.svelte.ts",
     "lib/stores/hooks.svelte.ts",
     "lib/stores/models.svelte.ts",
+    # #445: the store-level load latches, plus the loop proof (a real
+    # `$effect` in each panel's shape; both apps run a `runes` project).
+    # mcpServers.svelte.ts itself stays KNOWN_DRIFT (desktop's upload
+    # preview); its test touches only the shared load path.
+    "lib/stores/models.test.ts",
+    "lib/stores/mcpServers.test.ts",
+    "lib/stores/storeLoadLoops.svelte.test.ts",
+    "lib/services/api/mcp.test.ts",
     "lib/stores/serverSettings.svelte.ts",
     "lib/stores/serverSettings.test.ts",
     "lib/stores/threadConfig.svelte.ts",

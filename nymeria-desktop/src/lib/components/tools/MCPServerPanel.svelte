@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
@@ -42,7 +43,8 @@
   let editLoading = $state(false);
   let editError = $state<string | null>(null);
 
-  // Load on mount
+  // Load on mount. A failed load latches (`loaded` + `error`) and a refusal
+  // latches `forbidden`, so this effect asks once, never in a loop (#445).
   $effect(() => {
     if (!mcpServersStore.loaded && !mcpServersStore.loading) {
       mcpServersStore.load();
@@ -50,6 +52,12 @@
     if (!defaultToolsStore.loaded && !defaultToolsStore.loading) {
       defaultToolsStore.load();
     }
+  });
+
+  // Opening the panel again is a retry of a latched failure (outside the
+  // effect: a retry that fails again must not re-trigger itself).
+  onMount(() => {
+    if (mcpServersStore.error && !mcpServersStore.loading) void mcpServersStore.refresh();
   });
 
   // Derive which MCP tool names are currently ticked. Prefer the parent's
@@ -333,6 +341,18 @@
 
   {#if mcpServersStore.loading && mcpServersStore.servers.length === 0}
     <div class="loading-state"><InlineLoader text="Loading MCP servers…" /></div>
+  {:else if mcpServersStore.forbidden}
+    <div class="empty-state">
+      <Icon name="info" size={24} />
+      <p>MCP servers are managed by an admin</p>
+      <span>Ask an admin account to install or change a server.</span>
+    </div>
+  {:else if mcpServersStore.error && mcpServersStore.servers.length === 0}
+    <div class="load-error" role="alert">
+      <Icon name="warning" size={16} />
+      <p>{mcpServersStore.error}</p>
+      <Button size="sm" variant="secondary" onclick={() => mcpServersStore.refresh()}>Retry</Button>
+    </div>
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
     <div class="empty-state">
       <Icon name="terminal" size={24} />
@@ -340,6 +360,15 @@
       <span>Click <strong>Install Server</strong> above to add one. Pasting a command or JSON takes 30 seconds.</span>
     </div>
   {:else}
+    {#if mcpServersStore.error}
+      <!-- A refresh failed after a good load: the list shown is the last one
+           this backend served, so say it may be out of date. -->
+      <div class="load-error" role="alert">
+        <Icon name="warning" size={16} />
+        <p>{mcpServersStore.error} This list may be out of date.</p>
+        <Button size="sm" variant="secondary" onclick={() => mcpServersStore.refresh()}>Retry</Button>
+      </div>
+    {/if}
     <div class="servers-list">
       {#each mcpServersStore.servers as server (server.id)}
         <div class="server-card" class:expanded={expandedServer === server.id} class:disabled-server={!server.enabled}>
@@ -569,6 +598,32 @@
     font-size: var(--font-size-sm);
     padding: 1.5rem;
     text-align: center;
+  }
+
+  /* A failed list load (#445): text plus a visible secondary action, left
+     aligned so it reads as a status line rather than an empty-state hero. */
+  .load-error {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-bottom: 0.75rem;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-left: 3px solid var(--error);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .load-error :global(svg) {
+    flex-shrink: 0;
+    color: var(--error);
+  }
+
+  .load-error p {
+    flex: 1;
+    margin: 0;
+    line-height: 1.4;
   }
 
   .empty-state {
