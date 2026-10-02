@@ -740,7 +740,7 @@ def reclaim_offer_renders(
     renders the event: a chat bot (the turn-origin registry, as for the
     park) or a client that declared it on the request
     (``ChatRequest.supports_reclaim_offers``: the CLI today, the GUIs once
-    #468 renders it). Every other turn (desktop and mobile until #468,
+    #454 renders it). Every other turn (desktop and mobile until #454,
     autonomous, callable, MCP) neither probes for an offer nor spends it, so
     the one offer stays pending. A registry fault reads as "cannot render":
     a pending offer costs nothing, a spent invisible one costs the offer.

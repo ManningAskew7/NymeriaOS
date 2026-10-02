@@ -1201,7 +1201,7 @@ def test_a_turn_that_cannot_show_an_offer_neither_probes_for_it_nor_spends_it(
     tmp_path, probe, inline
 ):
     """A desktop or mobile turn (no declaration, no bot origin) cannot show
-    the offer until #468: it neither probes for one (a verdict nobody can
+    the offer until #454: it neither probes for one (a verdict nobody can
     see only goes stale) nor stamps it. Red before the review fix: the
     second turn spent the one offer invisibly."""
     turn = _Turn(tmp_path)

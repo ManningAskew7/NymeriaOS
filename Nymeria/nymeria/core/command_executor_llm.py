@@ -98,7 +98,7 @@ _TIER_ORDER = ("native", "gateway", "unverified")
 # Width of a provider's note preview in the /provider list table.
 _NOTE_PREVIEW_CHARS = 80
 # Where a fallback hold's one reclaim offer can be shown (#439,
-# ``fallback_approvals.reclaim_offer_renders``); the GUIs join with #468.
+# ``fallback_approvals.reclaim_offer_renders``); the GUIs join with #454.
 _RECLAIM_OFFER_SURFACES = "a turn from a chat bot or the CLI"
 
 # Claude models DO serve through the proxy's OpenAI-compatible path (the
