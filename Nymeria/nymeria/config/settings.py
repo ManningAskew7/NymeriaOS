@@ -1690,9 +1690,10 @@ class Settings(BaseSettings):
             "Primary reclaim for a fallback hold (#439). A held thread whose "
             "hold is at least this old sends one tiny probe to its configured "
             "primary at the start of a turn (in the background; the verdict "
-            "applies at the next turn start). When the primary answers, an "
-            "'auto' switch mode ends a timed hold; 'ask' mode and permanent "
-            "holds get one offer to revert instead. Also the base of the probe "
+            "applies at the next turn start). When the primary answers, a "
+            "hold nobody chose ends; a hold the user chose (approved at an "
+            "ask prompt, or permanent) gets one offer to revert instead. Also "
+            "the base of the probe "
             "backoff (doubling, capped at max(interval, 1 hour)). 0 disables "
             "probing. Refusal and invalid-request holds are never probed."
         ),
