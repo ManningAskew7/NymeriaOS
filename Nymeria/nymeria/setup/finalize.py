@@ -338,10 +338,13 @@ def _compose_env(spec: _DockerStackSpec) -> dict[str, str]:
     a reconfigure, or a foreign checkout's .env.docker), and compose resolves
     `${VAR}` from the process env BEFORE --env-file. So the keys those files
     defined are dropped (``spec.stale_env_keys``, empty before this run wrote
-    its config), leaving compose exactly what a clean shell running the
-    printed command gets; the shell's own exports stay (wider isolation is
-    a separate item). API_PORT, and the image pins below, are then set from
-    the spec.
+    its config), leaving compose the file's values plus the shell's exports
+    of keys no file defined (wider isolation is a separate item). A shell
+    export of a key the old file ALSO defined is dropped with it: the boot
+    load already replaced it here, so it is unrecoverable, and a clean shell
+    would hand compose the export instead. Benign: the wizard's result then
+    matches the file it wrote. API_PORT, and the image pins below, are then
+    set from the spec.
     """
     env = dict(os.environ)
     for key in spec.stale_env_keys:
@@ -3261,10 +3264,12 @@ def _start_now_docker(
     _print_command(console, up_command)
     try:
         # env-gate: full-copy - compose interpolation reads the process
-        # environment first, so the shell's environment passes through rather
-        # than being scrubbed into compose defaults. `_compose_env` drops only
-        # the launch-time copy of the OLD config's keys, so `--env-file`
-        # supplies this run's values; on the slim default-port source-checkout
+        # environment first, so the shell's exports of keys no env file
+        # defined pass through rather than being scrubbed into compose
+        # defaults. `_compose_env` drops every key the OLD config's files
+        # defined (an export of the same key with it: the boot load already
+        # replaced that), so `--env-file` supplies this run's values; on the
+        # slim default-port source-checkout
         # path (no `--env-file`, see _docker_stack_spec) the one `${...}` the
         # started service reads is API_PORT, which it pins. The values ARE the
         # stack's configuration and compose is the thing that installs them, so

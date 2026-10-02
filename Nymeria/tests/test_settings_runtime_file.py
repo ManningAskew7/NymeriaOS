@@ -885,23 +885,42 @@ def test_an_unreadable_file_raises_the_read_error_and_writes_nothing(container):
     assert runtime.read_bytes() == before
 
 
-def test_a_read_failure_after_the_write_is_not_the_nothing_written_error(container, monkeypatch):
-    # Delta review finding 2: the re-read that checks for a leftover line runs
-    # AFTER the replace, so the key is already gone. The read error means
-    # "nothing was written" to the #434 route; this one must not say that.
+def test_a_read_failure_after_the_write_reports_the_landed_removal(
+    container, monkeypatch, caplog
+):
+    # #435 Phase A review: the re-read that checks for a leftover line runs
+    # AFTER the replace, so the keys are already gone. Raising would tell the
+    # caller the clear failed (the #434 route then rolled its process value
+    # back to a copy the file no longer holds); the computed statuses stand,
+    # and the unchecked re-read is logged by name only.
     _app, runtime = container
-    runtime.write_text(f"# keep\nOPENAI_API_KEY=sk-{DUMMY}\nUSER_TIMEZONE=UTC\n", encoding="utf-8")
+    original = (
+        f"# keep\nOPENAI_API_KEY=sk-{DUMMY}\nLLM_BASE_URL=http://{DUMMY}.invalid/v1\n"
+        "USER_TIMEZONE=UTC\n"
+    ).encode()
+    runtime.write_bytes(original)
     real_read_text = Path.read_text
 
     def unreadable_once_written(self, *args, **kwargs):
-        if self == runtime and b"OPENAI_API_KEY" not in self.read_bytes():
+        if self == runtime and self.read_bytes() != original:
             raise PermissionError("denied")
         return real_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", unreadable_once_written)
 
-    with pytest.raises(OSError) as raised:
-        settings_mod.remove_runtime_settings_keys(["OPENAI_API_KEY"])
+    with caplog.at_level("WARNING", logger="nymeria.config.settings"):
+        result = settings_mod.remove_runtime_settings_keys(
+            ["OPENAI_API_KEY", "LLM_BASE_URL", "LLM_MODEL"]
+        )
 
-    assert not isinstance(raised.value, settings_mod.RuntimeSettingsReadError)
+    assert result == {
+        "OPENAI_API_KEY": "cleared",
+        "LLM_BASE_URL": "cleared",
+        "LLM_MODEL": "not_saved",
+    }
     assert runtime.read_bytes() == b"# keep\nUSER_TIMEZONE=UTC\n"
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "OPENAI_API_KEY, LLM_BASE_URL" in warnings[0]
+    assert "could not read it back" in warnings[0]
+    assert DUMMY not in warnings[0]

@@ -992,7 +992,9 @@ def clear_server_setting(
     # The file half is the config layer's, shared with the wizard's
     # in-container clear (#435), so the two cannot drift. A read failure there
     # before its write (the file changed since the check above) is the same
-    # 400 as that check; one after the write is a plain OSError (a 500).
+    # 400 as that check; a failed write is a plain OSError (a 500), nothing
+    # replaced. A failed re-read after the write raises nothing: the replace
+    # landed, so this process follows the file rather than rolling back.
     try:
         removal = remove_runtime_settings_keys([env_name])[env_name]
     except RuntimeSettingsReadError as exc:

@@ -3668,15 +3668,17 @@ def test_a_read_failure_after_the_check_is_the_same_400_and_changes_nothing(
     assert agent.graph_rebuilds == []
 
 
-def test_a_read_failure_after_the_write_never_claims_nothing_was_changed(
+def test_a_read_failure_after_the_write_completes_the_clear(
     container_shape, tmp_path: Path, monkeypatch
 ):
-    # #435 delta review finding 2: the S4 400 is for the race BEFORE the
-    # write. Once the replace has dropped the key, a failed re-read is a
-    # server error, never "Nothing was changed".
+    # #435 Phase A review: the S4 400 is for the race BEFORE the write. Once
+    # the replace has dropped the key, a failed re-read must not undo the
+    # process half: the api follows the file (the value set elsewhere, the
+    # agent re-bound), and the reply says cleared, never "Nothing was
+    # changed" and never a bare 500 that leaves the app's copy in force.
     app, runtime, boot = container_shape
     boot(f"OPENAI_API_KEY=sk-{DUMMY_434}\n", OPENAI_API_KEY=f"cpx-{DUMMY_434}")
-    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+    client, agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
     real_read_text = Path.read_text
 
     def unreadable_once_written(self, *args, **kwargs):
@@ -3689,10 +3691,16 @@ def test_a_read_failure_after_the_write_never_claims_nothing_was_changed(
 
     response = server.delete("/settings/env/OPENAI_API_KEY", headers=_auth(token))
 
-    assert response.status_code == 500
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cleared"] == "OPENAI_API_KEY"
+    assert body["source"] == "elsewhere"
     assert "Nothing was changed" not in response.text
     assert DUMMY_434 not in response.text
     assert b"OPENAI_API_KEY" not in runtime.read_bytes()
+    assert os.environ["OPENAI_API_KEY"] == f"cpx-{DUMMY_434}"
+    assert agent.settings.openai_api_key == f"cpx-{DUMMY_434}"
+    assert agent.graph_rebuilds == ["sync", "async"]
 
 
 def test_a_line_the_writer_cannot_parse_is_reported_not_claimed_cleared(

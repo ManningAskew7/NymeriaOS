@@ -802,9 +802,9 @@ class RuntimeSettingsReadError(OSError):
     was written.
 
     Raised by ``remove_runtime_settings_keys`` only before it writes, apart
-    from a failed WRITE and a failed re-read after one (plain ``OSError``s),
-    so the #434 clear route keeps answering a read failure 400 "Nothing was
-    changed" as it did, and only when that is true.
+    from a failed WRITE (a plain ``OSError``), so the #434 clear route keeps
+    answering a read failure 400 "Nothing was changed" as it did, and only
+    when that is true. A failed re-read after the write raises nothing.
     """
 
 
@@ -857,8 +857,10 @@ def remove_runtime_settings_keys(
     or a relocation pair that is not a known slot and its twin). Raises
     ``RuntimeSettingsReadError`` when the file cannot be read before anything
     is written, and a plain ``OSError`` when the write fails (nothing
-    replaced) or the re-read after it does (the replace already landed). A
-    shape with no runtime file reports every well-formed key ``not_saved``.
+    replaced). When the re-read after the write fails, the replace has
+    landed: it logs a warning (names only) and returns the statuses computed
+    from the first read, unrefined. A shape with no runtime file reports
+    every well-formed key ``not_saved``.
     """
     from .env_file import env_line_key, format_env_value, is_env_key_name, write_env_file
     from .vendor_keys import VENDOR_KEY_SLOTS
@@ -906,11 +908,18 @@ def remove_runtime_settings_keys(
     try:
         _lines, remaining = _read_runtime_settings(runtime)
     except RuntimeSettingsReadError as exc:
-        # The replace above already landed, so this is not the read error
-        # a caller answers "Nothing was changed" for (#435 delta review).
-        raise OSError(
-            "the runtime settings file was rewritten but could not be read back"
-        ) from exc
+        # The replace above already landed, so raising would tell a caller
+        # the clear failed (the #434 route would roll its process value back
+        # to the app's copy the file no longer holds). The re-read only
+        # refines ``cleared`` into ``unparsable``: report what was computed
+        # (#435 Phase A review).
+        logger.warning(
+            "Rewrote the runtime settings file without %s but could not read "
+            "it back to check for a line the writer cannot remove (%s)",
+            ", ".join(drop),
+            exc,
+        )
+        return status
     for key in drop:
         if remaining.get(key) is not None:
             status[key] = "unparsable"
