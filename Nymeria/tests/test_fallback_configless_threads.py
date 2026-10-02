@@ -65,6 +65,7 @@ from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.thread_lock_manager import ThreadLockManager
 from nymeria.core.time_utils import utc_now
 from nymeria.core.turn_runner import HolderTurn
+from nymeria.core.user_profile import UserProfile
 from nymeria.vendor.react_agent import providers as providers_module
 from nymeria.vendor.react_agent.config import CheckpointerConfig
 from nymeria.vendor.react_agent.nodes import (
@@ -181,12 +182,10 @@ class _Rig:
         # The real resolver and run config (the stub agent fakes both).
         del agent._get_llm_config_for_thread
         del agent._graph_run_config
+        # A real profile: the prompt build reads its #164 status rule.
         agent.profile_manager = SimpleNamespace(
-            get_profile=lambda user_id: SimpleNamespace(
-                memories=[],
-                personality_overrides={},
-                tool_preferences=SimpleNamespace(default_thread_tools=None),
-                enabled_global_skills=[],
+            get_profile=lambda user_id: UserProfile(
+                user_id=user_id, enabled_global_skills=[]
             )
         )
         agent.todo_manager = SimpleNamespace(

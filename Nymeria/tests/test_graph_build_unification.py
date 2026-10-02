@@ -500,11 +500,10 @@ def _configless_lookup_agent():
     agent._resolve_temporary_tools = MagicMock(return_value=set())
     agent.accounts_repo.get_user_by_id = MagicMock(return_value=None)
     agent.thread_config_manager.get_config.return_value = None
-    agent.profile_manager.get_profile.return_value = SimpleNamespace(
-        memories=[],
-        personality_overrides={},
-        tool_preferences=SimpleNamespace(default_thread_tools=None),
-    )
+    # A real profile: the prompt build reads its #164 status rule.
+    from nymeria.core.user_profile import UserProfile
+
+    agent.profile_manager.get_profile.return_value = UserProfile(user_id="u1")
     agent.todo_manager = cast(
         Any,
         SimpleNamespace(
