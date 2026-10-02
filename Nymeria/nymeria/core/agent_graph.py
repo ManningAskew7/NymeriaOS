@@ -1016,9 +1016,14 @@ def get_graph_for_user_impl(
 def get_graph_for_user(
     agent: "NymeriaAgent",
     user_id: str,
-    thread_id: str = "",
+    thread_id: str,
 ):
-    """Get the appropriate sync graph for a user+thread."""
+    """Get the appropriate sync graph for a user+thread.
+
+    ``thread_id`` is required (#459): a lookup naming no thread would build
+    and cache a graph under ``(user, "")`` with no prompt-cache key and no
+    fallback activation or consent callback, shared by every such caller.
+    """
     return agent._get_graph_for_user_impl(
         user_id, thread_id,
         agent._user_graphs, agent._build_graph_with_prompt,
@@ -1028,9 +1033,10 @@ def get_graph_for_user(
 def get_async_graph_for_user(
     agent: "NymeriaAgent",
     user_id: str,
-    thread_id: str = "",
+    thread_id: str,
 ):
-    """Get the appropriate async graph for a user+thread."""
+    """Get the appropriate async graph for a user+thread (``thread_id``
+    required, see ``get_graph_for_user``)."""
     return agent._get_graph_for_user_impl(
         user_id, thread_id,
         agent._async_user_graphs, agent._build_async_graph_with_prompt,

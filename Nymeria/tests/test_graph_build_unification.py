@@ -586,6 +586,79 @@ def test_a_thread_level_invalidation_reaches_a_configless_threads_graph():
     assert [b["thread_id"] for b in builds] == ["thread-a", "thread-b", "thread-a"]
 
 
+def test_a_graph_lookup_without_a_thread_id_fails_loudly():
+    """#459 hardening: a lookup that names no thread must raise, never build
+    and cache a graph under ``(user, "")``. That graph would be the pre-#459
+    shape (no prompt-cache key, no fallback activation or consent callback)
+    shared by every caller that forgot the argument."""
+    agent, builds = _configless_lookup_agent()
+    loose = cast(Any, agent)
+    from nymeria.core import agent_graph
+
+    async def async_lookups():
+        for lookup in (
+            lambda: loose._get_async_graph_for_user("u1"),
+            lambda: cast(Any, agent_graph).get_async_graph_for_user(agent, "u1"),
+        ):
+            try:
+                lookup()
+            except TypeError:
+                continue
+            raise AssertionError("an async lookup without a thread id built a graph")
+
+    for lookup in (
+        lambda: loose._get_graph_for_user("u1"),
+        lambda: cast(Any, agent_graph).get_graph_for_user(agent, "u1"),
+    ):
+        try:
+            lookup()
+        except TypeError:
+            continue
+        raise AssertionError("a sync lookup without a thread id built a graph")
+    asyncio.run(async_lookups())
+
+    assert builds == []
+    assert agent._user_graphs == {}
+    assert agent._async_user_graphs == {}
+
+
+def test_a_team_change_evicts_the_owners_thread_graphs_and_no_other_users():
+    """A membership change rebuilds every graph the owner's threads use, sync
+    and async, and reaches no other user's cache entry. It used to also evict
+    the retired ``""`` sentinel, which reached EVERY user's ``""``-keyed graph
+    (the sentinel is gone since #459; any such key is another caller's)."""
+    from nymeria.core.team_manager import after_team_change
+
+    agent, builds = _configless_lookup_agent()
+    owned = {"u1": ["thread-a", "thread-b"], "u2": ["thread-x"]}
+    agent.accounts_repo.list_threads_for_user = MagicMock(
+        side_effect=lambda user_id: list(owned.get(user_id, []))
+    )
+
+    agent._get_graph_for_user("u1", thread_id="thread-a")
+    other_user = agent._get_graph_for_user("u2", thread_id="thread-x")
+    other_blank = agent._get_graph_for_user("u2", thread_id="")
+
+    async def async_lookups():
+        loop_id = id(asyncio.get_running_loop())
+        agent._get_async_graph_for_user("u1", thread_id="thread-b")
+        return loop_id, agent._get_async_graph_for_user("u2", thread_id="thread-x")
+
+    loop_id, other_async = asyncio.run(async_lookups())
+
+    after_team_change(agent, "u1", membership_changed=True)
+
+    assert set(agent._user_graphs) == {("u2", "thread-x"), ("u2", "")}
+    assert agent._user_graphs[("u2", "thread-x")][1] is other_user
+    assert agent._user_graphs[("u2", "")][1] is other_blank
+    assert set(agent._async_user_graphs) == {(loop_id, "u2", "thread-x")}
+    assert agent._async_user_graphs[(loop_id, "u2", "thread-x")][1] is other_async
+    # The owner's next lookup rebuilds (the team change reached its graph).
+    agent._get_graph_for_user("u1", thread_id="thread-a")
+    assert [(b["user_id"], b["thread_id"]) for b in builds][-1] == ("u1", "thread-a")
+    assert len(builds) == 6
+
+
 def test_graph_cache_hit_moves_entry_to_lru_tail():
     agent = _make_agent()
     agent._graph_cache_lock = __import__("threading").Lock()

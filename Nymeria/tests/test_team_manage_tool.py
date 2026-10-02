@@ -137,8 +137,9 @@ def test_add_thread_by_callable_name_fans_out(agent, published):
 
     tc = agent.thread_config_manager.get_config("t-a")
     assert tc.callable_team_id and tc.callable_team_name is None
-    # Fan-out: every owned thread plus the "" sentinel.
-    assert set(agent.invalidated) == {"t-main", "t-a", "t-b", ""}
+    # Fan-out: every owned thread, members or not (each graph is cached under
+    # its own thread id since #459; there is no "" sentinel to evict).
+    assert set(agent.invalidated) == {"t-main", "t-a", "t-b"}
     assert published[-1]["reason"] == "membership"
 
     # Idempotent re-add is informational, not a mutation.
@@ -255,7 +256,8 @@ def test_delete_partial_failure_is_honest_and_invalidates(agent, monkeypatch, pu
     assert out.startswith("[Error]")
     assert "was NOT deleted" in out
     assert "1 member thread(s) were already unteamed (t-a)" in out
-    # The persisted partial change still fanned out and nudged clients.
-    assert "" in agent.invalidated
+    # The persisted partial change still fanned out (t-main is no member)
+    # and nudged clients.
+    assert set(agent.invalidated) == {"t-main", "t-a", "t-b"}
     assert published[-1]["reason"] == "membership"
     assert agent.team_manager.team_names("u1")  # entity kept for the retry

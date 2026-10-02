@@ -286,11 +286,15 @@ def test_thread_team_api_moves_membership_and_clears_on_delete(tmp_path: Path, a
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
 
+    agent.invalidated.clear()
     deleted = client.delete(f"/thread-teams/{team['id']}", headers=headers)
     assert deleted.status_code == 200
     assert agent.thread_config_manager.get_config("thread-b").callable_team_id is None
     assert agent.thread_config_manager.get_config("thread-c").callable_team_id is None
-    assert "" in agent.invalidated
+    # The delete fanned out over every owned thread (thread-a left the team
+    # earlier), never a "" sentinel (#459: every graph has its own thread id).
+    assert {"thread-a", "thread-b", "thread-c"} <= set(agent.invalidated)
+    assert "" not in agent.invalidated
     assert agent.team_manager.get_team("owner", team["id"]) is None
 
 

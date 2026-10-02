@@ -747,15 +747,15 @@ def set_thread_team(
 
 
 def invalidate_team_graphs(agent: Any, user_id: str) -> None:
-    """Drop every owned thread's cached graph plus the per-user "" sentinel.
+    """Drop every owned thread's cached graph.
 
     Team visibility is cross-thread (a callable's visibility depends on its
     peers' team ids), so a membership change invalidates the whole owned set,
-    not just the edited thread.
+    not just the edited thread. Every graph is cached under its own thread id
+    (#459), so the owned set reaches all of the user's graphs.
     """
     for owned_thread_id in agent.accounts_repo.list_threads_for_user(user_id):
         agent.invalidate_thread_config_cache(owned_thread_id)
-    agent.invalidate_thread_config_cache("")
 
 
 def publish_teams_changed(

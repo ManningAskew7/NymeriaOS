@@ -1956,17 +1956,13 @@ class NymeriaAgent:
             self, user_id, thread_id, cache, build_fn, cache_key_fn
         )
 
-    def _get_graph_for_user(
-        self, user_id: str, thread_id: str = ""
-    ):
-        """Get the appropriate sync graph for a user+thread."""
+    def _get_graph_for_user(self, user_id: str, thread_id: str):
+        """Get the appropriate sync graph for a user+thread (required, #459)."""
         from .agent_graph import get_graph_for_user
         return get_graph_for_user(self, user_id, thread_id)
 
-    def _get_async_graph_for_user(
-        self, user_id: str, thread_id: str = ""
-    ):
-        """Get the appropriate async graph for a user+thread."""
+    def _get_async_graph_for_user(self, user_id: str, thread_id: str):
+        """Get the appropriate async graph for a user+thread (required, #459)."""
         from .agent_graph import get_async_graph_for_user
         return get_async_graph_for_user(self, user_id, thread_id)
 
