@@ -312,6 +312,36 @@
     setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
   }
 
+  // #164: standard tools that shipped after this account was set up and are
+  // neither in its saved defaults nor dismissed (the backend's list, in seed
+  // order). Add and Dismiss act on the SAVED set at once, like a row toggle
+  // would after Save, so the callout clears as soon as the backend agrees;
+  // any unsaved picks in the panel stay pending.
+  const newCoreToolNames = $derived(defaultToolsStore.newCoreTools);
+
+  function flashStatus(ok: boolean, success: string, failure: string) {
+    saveStatus = ok ? 'success' : 'error';
+    saveMessage = ok ? success : defaultToolsStore.error || failure;
+    setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
+  }
+
+  async function addNewCoreTools() {
+    const names = [...newCoreToolNames];
+    const ok = await defaultToolsStore.addNewCoreTools(names);
+    if (ok) {
+      selectedTools = new Set([...selectedTools, ...names]);
+      unifiedToolsStore.resetLoaded();
+    }
+    flashStatus(ok, `Added ${names.join(', ')} to your defaults`, "Couldn't add those tools. Try again in a moment.");
+  }
+
+  async function dismissNewCoreTools() {
+    const names = [...newCoreToolNames];
+    const ok = await defaultToolsStore.dismissNewCoreTools(names);
+    if (ok) unifiedToolsStore.resetLoaded();
+    flashStatus(ok, 'Dismissed. They stay under Available Tools.', "Couldn't dismiss those tools. Try again in a moment.");
+  }
+
   // Called by the Tools tab's shared footer Reset (SettingsPanel).
   export async function resetDefaults() {
     const mcpToolsToPreserve = defaultToolsStore.defaultToolNames.filter((name) => name.startsWith('mcp__'));
@@ -513,6 +543,22 @@
       <div class="inline-warning">
         {totalWithCallable} tools total (including callable threads). High tool counts can degrade model performance
       </div>
+    {/if}
+
+    {#if newCoreToolNames.length > 0}
+      <section class="new-core-callout" aria-label="New standard tools">
+        <div class="new-core-text">
+          <span class="new-core-title">
+            {newCoreToolNames.length} new standard {newCoreToolNames.length === 1 ? 'tool' : 'tools'} since you set up this account
+          </span>
+          <span class="new-core-names">{newCoreToolNames.join(', ')}</span>
+          <span class="new-core-hint">Not turned on for you. Add puts them in your defaults for new threads; Dismiss stops calling them new.</span>
+        </div>
+        <div class="new-core-actions">
+          <Button variant="primary" size="sm" disabled={defaultToolsStore.saving} onclick={addNewCoreTools}>Add to defaults</Button>
+          <Button variant="ghost" size="sm" disabled={defaultToolsStore.saving} onclick={dismissNewCoreTools}>Dismiss</Button>
+        </div>
+      </section>
     {/if}
 
     <!-- Search -->
@@ -917,6 +963,17 @@
   {/if}
 {/snippet}
 
+<!-- #164: a standard tool outside the defaults. "New" only when it shipped
+     after this account was set up and was never removed or dismissed; the
+     rest read neutrally (a removal is the user's call, not news). -->
+{#snippet coreBadge(status: DefaultToolInfo['core_status'])}
+  {#if status === 'new'}
+    <span class="core-badge new" data-tooltip="A standard NymeriaOS tool added after you set up this account">new</span>
+  {:else if status === 'absent' || status === 'declined'}
+    <span class="core-badge standard" data-tooltip="Part of the NymeriaOS default set, not in your defaults">NymeriaOS default</span>
+  {/if}
+{/snippet}
+
 {#snippet builtinRow(gi: GroupedToolItem)}
   {@const tool = gi.data as DefaultToolInfo}
   {@const selected = selectedTools.has(tool.name)}
@@ -927,6 +984,7 @@
         <span class="admin-only-badge" data-tooltip={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
       {/if}
       {@render authBadge(tool.auth_status, tool.auth_provider)}
+      {#if !selected}{@render coreBadge(tool.core_status)}{/if}
     </span>
     <span class="tool-desc">{tool.description}</span>
   </div>
@@ -1034,6 +1092,51 @@
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
     color: var(--warning);
+  }
+
+  /* #164 new-standard-tools callout: a left-rule accent strip, flatter than
+     the count warning above it (information, not a problem). */
+  .new-core-callout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm) var(--spacing-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-left: 3px solid var(--accent-primary);
+    border-radius: var(--radius-sm);
+    background: var(--accent-tint-bg);
+  }
+
+  .new-core-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .new-core-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .new-core-names {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .new-core-hint {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  .new-core-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    flex-shrink: 0;
   }
 
   /* Search */
@@ -1235,6 +1338,30 @@
     border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
   }
   .auth-badge.pending {
+    background: var(--bg-elevated-2);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+  }
+
+  /* #164 standard-tool badges, same chip geometry as .auth-badge: accent
+     tint for "new" (the one worth noticing), the neutral chip otherwise. */
+  .core-badge {
+    display: inline-block;
+    font-size: var(--font-size-3xs);
+    font-weight: 700;
+    padding: 0 5px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    text-indent: 0.6px;
+    margin-left: 4px;
+  }
+  .core-badge.new {
+    background: var(--accent-tint-bg);
+    color: var(--accent-primary);
+    border: 1px solid var(--accent-tint-border);
+  }
+  .core-badge.standard {
     background: var(--bg-elevated-2);
     color: var(--text-secondary);
     border: 1px solid var(--border-subtle);

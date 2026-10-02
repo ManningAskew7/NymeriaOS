@@ -7,6 +7,9 @@ function createDefaultToolsStore() {
   let tools = $state<DefaultToolInfo[]>([]);
   let defaultToolNames = $state<string[]>([]);
   let callableThreadCount = $state(0);
+  // #164: standard tools new to this account since it was set up (not in
+  // its defaults, never declined), as the backend last reported them.
+  let newCoreTools = $state<string[]>([]);
   let loading = $state(false);
   let loaded = $state(false);
   let saving = $state(false);
@@ -25,6 +28,7 @@ function createDefaultToolsStore() {
     tools = [];
     defaultToolNames = [];
     callableThreadCount = 0;
+    newCoreTools = [];
     loading = false;
     loaded = false;
     saving = false;
@@ -36,6 +40,7 @@ function createDefaultToolsStore() {
     get tools() { return tools; },
     get defaultToolNames() { return defaultToolNames; },
     get callableThreadCount() { return callableThreadCount; },
+    get newCoreTools() { return newCoreTools; },
     get loading() { return loading; },
     get loaded() { return loaded; },
     get saving() { return saving; },
@@ -68,6 +73,7 @@ function createDefaultToolsStore() {
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
+        newCoreTools = response.new_core_tools ?? [];
         loaded = true;
         listReady = true;
       } catch (e) {
@@ -100,18 +106,25 @@ function createDefaultToolsStore() {
     // false) unless this backend's list has loaded: a settings panel's
     // selection seeded before a switch, or from a failed load's empty list,
     // would PUT a subset over the new backend's set (#242 delta review).
-    async save(toolNames: string[], userId?: string): Promise<boolean> {
+    // `declinedCoreTools` (#164) records standard tools absent from the list
+    // as declined, so they stop being offered as new.
+    async save(toolNames: string[], userId?: string, declinedCoreTools?: string[]): Promise<boolean> {
       if (!listReady) return false;
       const requestGeneration = identityGeneration;
       saving = true;
       error = null;
       try {
-        await api.setDefaultTools(toolNames, userId);
+        if (declinedCoreTools && declinedCoreTools.length > 0) {
+          await api.setDefaultTools(toolNames, userId, declinedCoreTools);
+        } else {
+          await api.setDefaultTools(toolNames, userId);
+        }
         const response = await api.getDefaultTools(userId);
         if (requestGeneration !== identityGeneration) return false;
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
+        newCoreTools = response.new_core_tools ?? [];
         loaded = true;
         listReady = true;
         return true;
@@ -136,6 +149,7 @@ function createDefaultToolsStore() {
         tools = response.available_tools;
         defaultToolNames = response.default_tools;
         callableThreadCount = response.callable_thread_count;
+        newCoreTools = response.new_core_tools ?? [];
         loaded = true;
         listReady = true;
         return true;
@@ -162,6 +176,27 @@ function createDefaultToolsStore() {
         ? defaultToolNames.filter((name) => name !== toolName)
         : [...defaultToolNames, toolName];
       return this.save(next, userId);
+    },
+
+    /**
+     * #164's callout "Add": put new standard tools into the SAVED default set
+     * (not the panel's unsaved selection). Same guard as toggleDefaultTool:
+     * it saves the whole list, so it needs this backend's list loaded.
+     */
+    async addNewCoreTools(names: string[], userId?: string): Promise<boolean> {
+      if (!listReady || loading || saving || names.length === 0) return false;
+      const next = [...defaultToolNames, ...names.filter((name) => !defaultToolNames.includes(name))];
+      return this.save(next, userId);
+    },
+
+    /**
+     * #164's callout "Dismiss": record new standard tools as declined so
+     * they are no longer offered as new (to the user or the agent). The
+     * saved list is resent unchanged; same guard as toggleDefaultTool.
+     */
+    async dismissNewCoreTools(names: string[], userId?: string): Promise<boolean> {
+      if (!listReady || loading || saving || names.length === 0) return false;
+      return this.save([...defaultToolNames], userId, names);
     },
 
     clearError() { error = null; },

@@ -681,6 +681,12 @@ export interface OptionalTool {
   description: string;
 }
 
+// A standard (core seed) tool's standing on this account (backlog #164):
+// in the defaults, new since the account was set up, declined (removed or
+// dismissed), or absent (offered at setup, not in the defaults). The backend
+// stamps it on standard tools only; every other tool carries none.
+export type CoreToolStatus = 'default' | 'new' | 'declined' | 'absent';
+
 export interface DefaultToolInfo {
   name: string;
   description: string;
@@ -701,6 +707,8 @@ export interface DefaultToolInfo {
   // this raw-passthrough type.
   auth_status?: string | null;
   auth_provider?: string | null;
+  // #164: standard tools only (absent on every other tool).
+  core_status?: CoreToolStatus | null;
 }
 
 export interface DefaultToolsResponse {
@@ -708,6 +716,9 @@ export interface DefaultToolsResponse {
   default_tools: string[];
   available_tools: DefaultToolInfo[];
   callable_thread_count: number;
+  // #164: standard tools new to this account (not in its defaults, never
+  // declined), in seed order. Optional so an older backend reads as none.
+  new_core_tools?: string[];
 }
 
 // Normalized row passed to the shared ToolGroupedList. Each panel maps its own
@@ -2230,6 +2241,8 @@ export interface UnifiedTool {
   // null; authProvider is the provider slug (e.g. "todoist").
   authStatus?: string | null;
   authProvider?: string | null;
+  // #164: standard (core seed) tools only; null for every other tool.
+  coreStatus?: CoreToolStatus | null;
   createdAt?: string;
   updatedAt?: string;
 }

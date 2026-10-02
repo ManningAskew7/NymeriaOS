@@ -72,6 +72,18 @@
   {/if}
 {/snippet}
 
+<!-- #164: a standard tool outside the defaults. "New" only when it shipped
+     after this account was set up and was never removed or dismissed; the
+     rest read neutrally (a removal is the user's call, not news). Mirrors
+     desktop's coreBadge; switching a new tool off records the decline. -->
+{#snippet coreBadge(status: string | null | undefined)}
+  {#if status === 'new'}
+    <span class="core-badge new" title="A standard NymeriaOS tool added after you set up this account">new</span>
+  {:else if status === 'absent' || status === 'declined'}
+    <span class="core-badge standard" title="Part of the NymeriaOS default set, not in your defaults">NymeriaOS default</span>
+  {/if}
+{/snippet}
+
 {#if open}
   <div class="tool-panel">
     <div class="panel-header">
@@ -126,6 +138,7 @@
                       </span>
                     {/if}
                     {@render authBadge(tool.authStatus, tool.authProvider)}
+                    {#if !tool.enabled}{@render coreBadge(tool.coreStatus)}{/if}
                   </span>
                   <span class="tool-desc">{tool.description}</span>
                 </div>
@@ -312,6 +325,30 @@
     border: 1px solid rgba(var(--warning-rgb), 0.4);
   }
   .auth-badge.pending {
+    background: var(--bg-elevated-2);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+  }
+
+  /* #164 standard-tool badges, same chip geometry as .auth-badge: accent
+     tint for "new" (the one worth noticing), the neutral chip otherwise. */
+  .core-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 0 5px;
+    margin-left: 4px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    vertical-align: middle;
+  }
+  .core-badge.new {
+    background: var(--accent-tint-bg);
+    color: var(--accent-primary);
+    border: 1px solid var(--accent-tint-border);
+  }
+  .core-badge.standard {
     background: var(--bg-elevated-2);
     color: var(--text-secondary);
     border: 1px solid var(--border-subtle);

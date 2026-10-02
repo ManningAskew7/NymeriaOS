@@ -449,3 +449,89 @@ describe('default-tool toggles save the whole list, so only a list loaded from t
     expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('new standard tools (#164): the store carries them, and Add / Dismiss save the whole list like a toggle', () => {
+  const seed = (name: string, core_status: string) => ({
+    name,
+    description: `${name} tool`,
+    category: 'general',
+    security_level: 'safe',
+    is_optional: false,
+    is_default: core_status === 'default',
+    core_status,
+  });
+  const withNew = (defaults: string[], fresh: string[]) => ({
+    available_tools: [
+      ...defaults.map((n) => seed(n, 'default')),
+      ...fresh.map((n) => seed(n, 'new')),
+    ],
+    default_tools: defaults,
+    callable_thread_count: 0,
+    new_core_tools: fresh,
+  });
+
+  it('exposes the backend`s new tools, and an older backend without the field reads as none', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.newCoreTools).toEqual(['file_list']);
+
+    defaultToolsStore.resetLoaded();
+    (api.getDefaultTools as Mock).mockResolvedValueOnce({
+      available_tools: [], default_tools: ['a_1'], callable_thread_count: 0,
+    });
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+  });
+
+  it('a switch drops the previous backend`s new tools, and Dismiss sends nothing until this backend`s list loads', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+    switchBackend();
+
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(await defaultToolsStore.dismissNewCoreTools(['file_list'])).toBe(false);
+    expect(await defaultToolsStore.addNewCoreTools(['file_list'])).toBe(false);
+    expect(api.setDefaultTools).not.toHaveBeenCalled();
+  });
+
+  it('Dismiss resends the saved list unchanged with the decline', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1', 'a_2'], ['file_list', 'notify']));
+    await defaultToolsStore.load();
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1', 'a_2'], []));
+
+    expect(await defaultToolsStore.dismissNewCoreTools(['file_list', 'notify'])).toBe(true);
+
+    expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['a_1', 'a_2'], undefined, ['file_list', 'notify']);
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(defaultToolsStore.defaultToolNames).toEqual(['a_1', 'a_2']);
+  });
+
+  it('Add saves the new tools into the saved list, with no decline', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1', 'file_list'], []));
+
+    expect(await defaultToolsStore.addNewCoreTools(['file_list'])).toBe(true);
+
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['a_1', 'file_list'], undefined);
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(defaultToolsStore.defaultToolNames).toEqual(['a_1', 'file_list']);
+  });
+
+  it('a Dismiss in flight across a switch lands nothing on the new backend', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+    const stale = deferred<void>();
+    (api.setDefaultTools as Mock).mockReturnValueOnce(stale.promise);
+    const inFlight = defaultToolsStore.dismissNewCoreTools(['file_list']);
+    expect(await defaultToolsStore.dismissNewCoreTools(['file_list'])).toBe(false);
+
+    switchBackend();
+    stale.resolve();
+    expect(await inFlight).toBe(false);
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(defaultToolsStore.listReady).toBe(false);
+    expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
+  });
+});

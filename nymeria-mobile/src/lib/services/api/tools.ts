@@ -346,6 +346,7 @@ export class ToolsApi extends TodosApi {
       editable: item.editable as boolean,
       authStatus: (item.auth_status as string | null | undefined) ?? null,
       authProvider: (item.auth_provider as string | null | undefined) ?? null,
+      coreStatus: (item.core_status as UnifiedTool['coreStatus']) ?? null,
       createdAt: item.created_at as string | undefined,
       updatedAt: item.updated_at as string | undefined
     };
@@ -474,12 +475,26 @@ export class ToolsApi extends TodosApi {
     if (!response.ok) throw new Error(`Failed to load default tools: ${response.status}`);
     return response.json();
   }
-  async setDefaultTools(toolNames: string[], userId?: string): Promise<void> {
+  /**
+   * Replace the account's default tool set. `declinedCoreTools` records
+   * standard tools that are NOT in `toolNames` as declined (#164, the
+   * "Dismiss" on new standard tools); a standard tool the list drops is
+   * recorded by the backend on its own.
+   */
+  async setDefaultTools(
+    toolNames: string[],
+    userId?: string,
+    declinedCoreTools?: string[]
+  ): Promise<void> {
     const params = new URLSearchParams({ user_id: this.resolveUserId(userId) });
+    const body: Record<string, unknown> = { tool_names: toolNames };
+    if (declinedCoreTools && declinedCoreTools.length > 0) {
+      body.declined_core_tools = declinedCoreTools;
+    }
     const response = await fetch(`${this.getBaseUrl()}/tools/defaults?${params}`, {
       method: 'PUT',
       headers: this.getHeaders(),
-      body: JSON.stringify({ tool_names: toolNames })
+      body: JSON.stringify(body)
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));

@@ -253,3 +253,102 @@ describe('default-tool toggles save the whole list, so only a list loaded from t
     expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('new standard tools (#164): the store carries them, and Add / Dismiss save the whole list like a toggle', () => {
+  const seed = (name: string, core_status: string) => ({
+    name,
+    description: `${name} tool`,
+    category: 'general',
+    security_level: 'safe',
+    is_optional: false,
+    is_default: core_status === 'default',
+    core_status,
+  });
+  const withNew = (defaults: string[], fresh: string[]) => ({
+    available_tools: [
+      ...defaults.map((n) => seed(n, 'default')),
+      ...fresh.map((n) => seed(n, 'new')),
+    ],
+    default_tools: defaults,
+    callable_thread_count: 0,
+    new_core_tools: fresh,
+  });
+
+  it('exposes the backend`s new tools, and an older backend without the field reads as none', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.newCoreTools).toEqual(['file_list']);
+
+    defaultToolsStore.resetLoaded();
+    (api.getDefaultTools as Mock).mockResolvedValueOnce({
+      available_tools: [], default_tools: ['a_1'], callable_thread_count: 0,
+    });
+    await defaultToolsStore.load();
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+  });
+
+  it('a switch drops the previous backend`s new tools, and Dismiss sends nothing until this backend`s list loads', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+    switchBackend();
+
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(await defaultToolsStore.dismissNewCoreTools(['file_list'])).toBe(false);
+    expect(await defaultToolsStore.addNewCoreTools(['file_list'])).toBe(false);
+    expect(api.setDefaultTools).not.toHaveBeenCalled();
+  });
+
+  it('Dismiss resends the saved list unchanged with the decline', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1', 'a_2'], ['file_list', 'notify']));
+    await defaultToolsStore.load();
+    // Mobile's save does not re-read the list: what it shows after the
+    // save is its own bookkeeping, asserted below without a second response.
+
+    expect(await defaultToolsStore.dismissNewCoreTools(['file_list', 'notify'])).toBe(true);
+
+    expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['a_1', 'a_2'], undefined, ['file_list', 'notify']);
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(defaultToolsStore.defaultToolNames).toEqual(['a_1', 'a_2']);
+  });
+
+  it('Add saves the new tools into the saved list, with no decline', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+
+    expect(await defaultToolsStore.addNewCoreTools(['file_list'])).toBe(true);
+
+    expect(api.setDefaultTools).toHaveBeenLastCalledWith(['a_1', 'file_list'], undefined);
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(defaultToolsStore.defaultToolNames).toEqual(['a_1', 'file_list']);
+  });
+
+  it('a Dismiss in flight across a switch lands nothing on the new backend', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list']));
+    await defaultToolsStore.load();
+    const stale = deferred<void>();
+    (api.setDefaultTools as Mock).mockReturnValueOnce(stale.promise);
+    const inFlight = defaultToolsStore.dismissNewCoreTools(['file_list']);
+    expect(await defaultToolsStore.dismissNewCoreTools(['file_list'])).toBe(false);
+
+    switchBackend();
+    stale.resolve();
+    expect(await inFlight).toBe(false);
+    expect(defaultToolsStore.newCoreTools).toEqual([]);
+    expect(defaultToolsStore.listReady).toBe(false);
+    expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('without a re-read, the saved standing still matches the backend`s rule', async () => {
+    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list', 'notify']));
+    await defaultToolsStore.load();
+
+    expect(await defaultToolsStore.dismissNewCoreTools(['notify'])).toBe(true);
+    expect(defaultToolsStore.newCoreTools).toEqual(['file_list']);
+    expect(await defaultToolsStore.toggleDefaultTool('a_1')).toBe(true);
+
+    const status = Object.fromEntries(defaultToolsStore.tools.map((t) => [t.name, t.core_status]));
+    // Dismissed and dropped standard tools are declined; the rest keep theirs.
+    expect(status).toEqual({ a_1: 'declined', file_list: 'new', notify: 'declined' });
+  });
+});
