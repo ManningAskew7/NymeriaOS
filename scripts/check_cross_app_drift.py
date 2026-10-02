@@ -28,6 +28,12 @@ MOBILE_SRC = REPO_ROOT / "nymeria-mobile" / "src"
 EXACT_MATCH: set[str] = {
     "lib/services/queuedPrompt.ts",
     "lib/services/queuedPrompt.test.ts",
+    # #440: the refresh after a typed command or a Thread Settings write
+    # (pure, deps injected) and its binding to the real stores.
+    "lib/services/threadStateRefresh.ts",
+    "lib/services/threadStateRefresh.test.ts",
+    "lib/services/liveThreadState.ts",
+    "lib/services/liveThreadState.test.ts",
     "lib/components/chat/QueuedBatch.svelte",
     "lib/actions/focus.ts",
     "lib/components/account/RoleChip.svelte",

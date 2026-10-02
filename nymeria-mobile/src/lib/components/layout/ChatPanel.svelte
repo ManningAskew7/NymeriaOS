@@ -1,6 +1,7 @@
 <script lang="ts">
   import { adoptCurrentStream, consumeTurnReplay, consumeTurnStream } from '$lib/services/api/chat';
   import { finishPromotedTurn, queuedPromptEvents } from '$lib/services/queuedPrompt';
+  import { runLiveTypedCommand } from '$lib/services/liveThreadState';
   import Icon from '$lib/components/common/Icon.svelte';
   import { ChatContainer, InputBar, ContextStatusBar, QueuedPromptsBar, MessageActionSheet } from '$lib/components/chat';
   import { ThreadSettingsPanel } from '$lib/components/threads';
@@ -239,19 +240,10 @@
         threadsStore.selectThread(thread.id);
       }
       const threadId = threadsStore.currentThreadId || undefined;
-      try {
-        const result = await api.executeCommand(trimmed, threadId);
-        chatStore.addCommandResult(trimmed, result.markdown, result.success, result.level);
-      } catch (error) {
-        // The card is the ONE error surface for a failed command (backlog
-        // #135): humanized copy, error accent from the store's level
-        // fallback, no toast duplicate (the API layer no longer pushes one).
-        chatStore.addCommandResult(
-          trimmed,
-          humanizeErrorText(error, { action: 'run', resource: `the ${slashRoot} command` }),
-          false
-        );
-      }
+      // Result card, then a refresh of what the command may have changed
+      // (stats, thread config, server settings), so the header badges and
+      // the status bar update now rather than at a later turn (#440).
+      await runLiveTypedCommand(trimmed, threadId, slashRoot);
       return;
     }
 
@@ -902,6 +894,15 @@
         // left to cancel, so drop the stopping state without the
         // cancelled-visuals finalization.
         if (chatStore.isStopping) chatStore.clearStopping();
+        // A completed turn may have changed the thread's config (a hold
+        // started or ended, a kit bound tools, the agent changed its own
+        // model): reload it so the header badges match, as desktop does.
+        // Mobile used to refresh it only on a thread switch, a fallback
+        // event, or opening Thread Settings (#440).
+        {
+          const completedThreadId = doneData.dispatchedTo?.threadId || doneData.threadId || threadId;
+          if (completedThreadId) void threadConfigStore.loadConfig(completedThreadId).catch(() => {});
+        }
         break;
       }
 

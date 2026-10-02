@@ -4,7 +4,7 @@
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
-  import { chatStore } from '$lib/stores/chat.svelte';
+  import { refreshLiveThreadState } from '$lib/services/liveThreadState';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { hooksStore } from '$lib/stores/hooks.svelte';
   import {
@@ -939,13 +939,9 @@
         platform: platformAfterCallableChange(threadId, thread?.platform, result.callable),
       });
 
-      // Refresh context stats
-      api.getThreadContextStats(threadId).then((stats) => {
-        if (stats && threadsStore.currentThreadId === threadId) {
-          chatStore.setContextStats(stats);
-          chatStore.setActiveModel(stats.model);
-        }
-      });
+      // The write can change the effective model (or end a hold): refresh
+      // the status bar and header badges now (#440).
+      void refreshLiveThreadState(threadId);
 
       onClose();
     } catch (e) {
@@ -975,7 +971,9 @@
   // Revert an active fallback hold (mirrors /fallback revert): the PATCH
   // clear_active_fallback flag clears the hold and latches the model-facing
   // end note. The returned config replaces the local snapshot directly (no
-  // initFormFromConfig) so in-flight form edits survive the revert.
+  // initFormFromConfig) so in-flight form edits survive the revert. The
+  // status bar names the model from context stats, which the shared
+  // refresh re-reads (#440).
   let fallbackRevertBusy = $state(false);
   let fallbackRevertError = $state('');
 
@@ -987,6 +985,7 @@
       threadConfig = await threadConfigStore.updateConfig(threadId, {
         clear_active_fallback: true,
       });
+      void refreshLiveThreadState(threadId);
     } catch (e) {
       fallbackRevertError = humanizeErrorText(e, { action: 'update', resource: 'the fallback hold' });
     } finally {
@@ -1006,12 +1005,7 @@
         platform: platformAfterCallableChange(threadId, thread?.platform, false),
       });
 
-      api.getThreadContextStats(threadId).then((stats) => {
-        if (stats && threadsStore.currentThreadId === threadId) {
-          chatStore.setContextStats(stats);
-          chatStore.setActiveModel(stats.model);
-        }
-      });
+      void refreshLiveThreadState(threadId);
 
       onClose();
     } catch (e) {

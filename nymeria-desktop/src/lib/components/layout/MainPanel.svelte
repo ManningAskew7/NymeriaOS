@@ -1,6 +1,7 @@
 <script lang="ts">
   import { adoptCurrentStream, consumeTurnReplay, consumeTurnStream } from '$lib/services/api/chat';
   import { finishPromotedTurn, queuedPromptEvents } from '$lib/services/queuedPrompt';
+  import { runLiveTypedCommand } from '$lib/services/liveThreadState';
   import ChatContainer from '$lib/components/chat/ChatContainer.svelte';
   import InputBar from '$lib/components/chat/InputBar.svelte';
   import ContextStatusBar from '$lib/components/chat/ContextStatusBar.svelte';
@@ -580,19 +581,10 @@
         threadsStore.createThread();
       }
       const threadId = threadsStore.currentThreadId || undefined;
-      try {
-        const result = await api.executeCommand(trimmed, threadId);
-        chatStore.addCommandResult(trimmed, result.markdown, result.success, result.level);
-      } catch (error) {
-        // The card is the ONE error surface for a failed command (backlog
-        // #135): humanized copy, error accent from the store's level
-        // fallback, no toast duplicate (the API layer no longer pushes one).
-        chatStore.addCommandResult(
-          trimmed,
-          humanizeErrorText(error, { action: 'run', resource: `the ${slashRoot} command` }),
-          false
-        );
-      }
+      // Result card, then a refresh of what the command may have changed
+      // (stats, thread config, server settings), so the header chips and
+      // the status bar update now rather than at the next turn's end (#440).
+      await runLiveTypedCommand(trimmed, threadId, slashRoot);
       return;
     }
 

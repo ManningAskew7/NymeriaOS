@@ -10,7 +10,7 @@
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { trapFocus } from '$lib/actions/focus';
-  import { chatStore } from '$lib/stores/chat.svelte';
+  import { refreshLiveThreadState } from '$lib/services/liveThreadState';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
@@ -960,6 +960,9 @@
       }
 
       const result = await threadConfigStore.updateConfig(thread.id, updates);
+      // The write can change the effective model (or end a hold): refresh
+      // the status bar and chips now, before the notepad save can fail (#440).
+      void refreshLiveThreadState(thread.id);
 
       // The notepad is a standalone store (not part of ThreadConfig), so save it
       // separately when it changed. A char-limit violation surfaces as an error.
@@ -979,7 +982,6 @@
       });
 
       onSaved(result);
-      refreshActiveModelChip();
 
       onClose();
     } catch (e) {
@@ -992,7 +994,9 @@
   // Revert an active fallback hold (mirrors /fallback revert): the PATCH
   // clear_active_fallback flag clears the hold and latches the model-facing
   // end note. The store refresh flows back into the threadConfig prop, so
-  // the Model-tab row (and the chat-header chip) drop reactively.
+  // the Model-tab row (and the chat-header chip) drop reactively; the
+  // status bar names the model from context stats, which the shared refresh
+  // re-reads (#440).
   let fallbackRevertBusy = $state(false);
   let fallbackRevertError = $state('');
 
@@ -1002,24 +1006,12 @@
     fallbackRevertError = '';
     try {
       await threadConfigStore.updateConfig(thread.id, { clear_active_fallback: true });
+      void refreshLiveThreadState(thread.id);
     } catch (e) {
       fallbackRevertError = humanizeErrorText(e, { action: 'update', resource: 'the fallback hold' });
     } finally {
       fallbackRevertBusy = false;
     }
-  }
-
-  // The chat header's model chip reads chatStore.activeModel, which only
-  // the context-stats probe refreshes; run it after any write that can
-  // change the thread's effective model (Save, a route apply).
-  function refreshActiveModelChip() {
-    const savedThreadId = thread.id;
-    void api.getThreadContextStats(savedThreadId).then((stats) => {
-      if (stats && threadsStore.currentThreadId === savedThreadId) {
-        chatStore.setContextStats(stats);
-        chatStore.setActiveModel(stats.model);
-      }
-    });
   }
 
   // The CLIProxy walkthrough applied a route SERVER-SIDE (apply-route,
@@ -1047,7 +1039,7 @@
       // Hosts get the fresh config the same way they do after Save (the
       // threadConfig prop is store-backed, so hasChanges() reads clean).
       onSaved(fresh);
-      refreshActiveModelChip();
+      void refreshLiveThreadState(thread.id);
       return true;
     } catch (e) {
       error = humanizeErrorText(e, { action: 'load', resource: 'the updated thread settings' });
@@ -1148,13 +1140,7 @@
         hasCustomizations: false,
       });
 
-      const resetThreadId = thread.id;
-      api.getThreadContextStats(resetThreadId).then((stats) => {
-        if (stats && threadsStore.currentThreadId === resetThreadId) {
-          chatStore.setContextStats(stats);
-          chatStore.setActiveModel(stats.model);
-        }
-      });
+      void refreshLiveThreadState(thread.id);
 
       onClose();
     } catch (e) {
