@@ -768,6 +768,8 @@ def test_the_wizards_compose_calls_run_on_the_written_key_over_a_shell_export(
     assert compose  # the up, the token readback
     assert {_hash12(env.get("NYMERIA_SECRETS_KEY")) for env in compose} == {_hash12(written)}
     assert written not in out and shell_key not in out  # never a key value
+    # Nor in any argv (a process listing shows argv to every local user).
+    assert not [cmd for cmd, _env in calls if any(written in a or shell_key in a for a in cmd)]
 
 
 def test_the_docker_start_now_handoff_names_the_root_to_rerun_setup_in(

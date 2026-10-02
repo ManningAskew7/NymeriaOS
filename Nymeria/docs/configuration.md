@@ -978,8 +978,8 @@ An install's `NYMERIA_SECRETS_KEY` comes only from its own root: the key
 already in one of that root's env files (the one that wins at load, so a
 switch from local to Docker hosting in one root keeps the key, and a local
 config written beside a `.env.docker` takes that file's key, which is the one
-it runs on); else, when the root already holds an install, a key your shell
-exports (that install has been running on it, so it is written into the
+it runs on); else, when the root already holds an install, a valid key your
+shell exports (that install has been running on it, so it is written into the
 config and the export is no longer needed); else a new key. It never copies
 another install's key and never prints one. A new install in a shell that
 exports a different key is told so once. A bare-metal or single-container

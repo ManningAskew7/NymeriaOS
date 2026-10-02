@@ -1411,6 +1411,38 @@ def test_a_fresh_root_beside_a_shell_export_mints_its_own_key_with_one_notice(
     assert shell_key not in out and key not in out  # never a key value
 
 
+@pytest.mark.parametrize("existing", [True, False])
+def test_a_malformed_shell_export_is_never_adopted(monkeypatch, tmp_path, capsys, existing):
+    # D1 (It32 delta review F1): step 2's premise is "the install ran on the
+    # export", which a value Fernet refuses cannot be (every save raised
+    # SecretsKeyInvalid, so no vault exists under it). The `b'...'` form a bare
+    # `print(Fernet.generate_key())` produces is the common case: mint instead,
+    # and never claim the install ran on it.
+    from nymeria.core.secrets import secrets_key_problem
+
+    _stub_llm(monkeypatch)
+    malformed = f"b'{_new_key()}'"
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", malformed)
+    _loaded_from(tmp_path / "launch", "IT32_UNRELATED=1\n")
+    root = tmp_path / "install"
+    if existing:
+        root.mkdir()
+        (root / "config.env").write_text("LLM_MODEL=old-model\n", encoding="utf-8")
+
+    assert setup_main(_key_args(root)) == 0
+
+    key = _written_key(root / "config.env")
+    problem = secrets_key_problem(key)
+    assert problem is None  # a usable key was written (no value in the message)
+    assert _key_hash(key) != _key_hash(malformed)
+    out = capsys.readouterr().out
+    flat = " ".join(out.split())
+    assert flat.count(_SHELL_NOTICE) == 1
+    assert "is not a valid key" in flat
+    assert "has been running on the exported key" not in flat
+    assert malformed not in out and key not in out  # never a key value
+
+
 def test_without_a_shell_export_an_install_with_no_key_gets_a_new_one(
     monkeypatch, tmp_path, capsys
 ):

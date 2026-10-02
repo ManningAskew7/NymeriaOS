@@ -1430,11 +1430,12 @@ def _resolve_secrets_key(
        file's key, which loads last and is the key that install runs on (one
        root, one key).
     2. The root already holds an install whose files name no key, and the
-       SHELL exports one: that install has been running on the export, so it
-       is adopted and written down (minting would orphan its vault; writing it
-       makes the export removable).
+       SHELL exports a valid one: that install has been running on the
+       export, so it is adopted and written down (minting would orphan its
+       vault; writing it makes the export removable). A value Fernet refuses
+       is never adopted: every save under it failed, so no vault exists.
     3. Otherwise a fresh Fernet key, with one notice when the shell exports a
-       key this new install does not use.
+       key this install does not use.
 
     The shell is `launch_environment()`, never `os.environ` (#451, #101 entry
     6): the process environment also holds whatever the LAUNCH root's env
@@ -1454,8 +1455,13 @@ def _resolve_secrets_key(
             if key:
                 return _SecretsKeyChoice(key)
     shell_key = (launch_environment().get("NYMERIA_SECRETS_KEY") or "").strip()
+    shell_key_invalid = bool(shell_key) and nymeria_secrets.secrets_key_problem(shell_key) is not None
     file_name = escape(config_path.name)
-    if shell_key and any((root / env_name).exists() for env_name in ENV_FILENAMES):
+    if (
+        shell_key
+        and not shell_key_invalid
+        and any((root / env_name).exists() for env_name in ENV_FILENAMES)
+    ):
         if console is not None:
             console.print(
                 "[yellow]Your shell exports NYMERIA_SECRETS_KEY and this install's "
@@ -1469,11 +1475,19 @@ def _resolve_secrets_key(
     if not shell_key:
         return _SecretsKeyChoice(minted)
     if console is not None:
-        intro = (
-            "[yellow]Your shell exports NYMERIA_SECRETS_KEY, but this new install "
-            f"gets its own key in {file_name}: an install's vault key comes only from "
-            "its own config."
-        )
+        if shell_key_invalid:
+            intro = (
+                "[yellow]Your shell exports NYMERIA_SECRETS_KEY, but its value is "
+                "not a valid key (a Fernet key is 44 characters ending in '='; a "
+                "b'...' wrapper is the usual cause), so nothing was ever "
+                f"encrypted with it: this install gets a new key in {file_name}."
+            )
+        else:
+            intro = (
+                "[yellow]Your shell exports NYMERIA_SECRETS_KEY, but this new "
+                f"install gets its own key in {file_name}: an install's vault key "
+                "comes only from its own config."
+            )
         if full_stack:
             # docker-compose.yml interpolates the key, and compose reads the
             # environment before --env-file. The wizard's own compose calls
