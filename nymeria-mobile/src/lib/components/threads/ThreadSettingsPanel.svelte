@@ -70,8 +70,11 @@
   // utils/providerGroups.ts.
   let activeTab = $state<Tab>('instructions');
 
-  // Config loaded from API
-  let threadConfig = $state<ThreadConfig | null>(null);
+  // Config loaded from API. Raw, not deep: it is only ever replaced whole,
+  // and the store-sync effect below compares it with the store's (raw)
+  // object; a deep proxy never equals it, so that effect rewrote it forever
+  // (effect_update_depth_exceeded, the panel stuck on "Loading").
+  let threadConfig = $state.raw<ThreadConfig | null>(null);
   let loading = $state(true);
 
   // Form state — Instructions
