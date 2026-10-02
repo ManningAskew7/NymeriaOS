@@ -2309,12 +2309,12 @@ def test_skill_meta_tool_not_found_copy_points_to_install(tmp_path: Path):
 def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):
     agent = object.__new__(NymeriaAgent)
     agent.thread_config_manager = ThreadConfigManager(tmp_path)
+    # A real profile: the hash also folds the #164 new-tool hint, which reads
+    # the profile's status rule.
+    from nymeria.core.user_profile import UserProfile
+
     agent.profile_manager = SimpleNamespace(
-        get_profile=lambda user_id: SimpleNamespace(
-            memories=[],
-            personality_overrides={},
-            tool_preferences=SimpleNamespace(default_thread_tools=None),
-        )
+        get_profile=lambda user_id: UserProfile(user_id=user_id)
     )
     agent.todo_manager = SimpleNamespace(
         get_todos=lambda user_id: SimpleNamespace(

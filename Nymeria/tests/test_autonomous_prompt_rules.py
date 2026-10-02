@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from typing import Any
 
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.prompts import AUTONOMOUS_MODE_RULES, get_autonomous_tail_guidance
 from nymeria.core.thread_config import ThreadConfig
 from nymeria.core.thread_requests import ThreadRequest, format_request_prompt
 from nymeria.core.todo_manager import TodoItem, TodoManager
+from nymeria.core.user_profile import UserProfile
 from nymeria.core.watchdog_sweep import WatchdogSweep
 
 
@@ -24,6 +27,14 @@ def _agent_with_configs(configs: dict[str, ThreadConfig] | None = None) -> Nymer
     agent = NymeriaAgent.__new__(NymeriaAgent)
     agent.thread_config_manager = FakeThreadConfigManager(configs)
     agent._base_system_prompt = "BASE PROMPT"
+    # The prompt build reads the owner's role and profile for the #164
+    # new-tool hint: an unknown account (role "user") with a fresh profile,
+    # which has nothing new.
+    doubles: Any = agent
+    doubles.accounts_repo = SimpleNamespace(get_user_by_id=lambda _uid: None)
+    doubles.profile_manager = SimpleNamespace(
+        get_profile=lambda user_id: UserProfile(user_id=user_id)
+    )
     return agent
 
 
