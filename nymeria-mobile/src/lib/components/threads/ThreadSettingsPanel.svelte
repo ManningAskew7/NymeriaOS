@@ -48,7 +48,7 @@
     supportedRoutesForProvider,
   } from '$lib/utils/providerRoutes';
   import { connectionOverrideForSave } from '$lib/utils/threadLlmSave';
-  import { fallbackRevertLabel } from '$lib/utils/fallbackHold';
+  import { fallbackHoldChip, fallbackHoldExpiresIn, fallbackRevertLabel } from '$lib/utils/fallbackHold';
   import { registerIdentityReloadHook } from '$lib/stores/config.svelte';
   import { onMount, untrack } from 'svelte';
 
@@ -977,6 +977,24 @@
   let fallbackRevertBusy = $state(false);
   let fallbackRevertError = $state('');
 
+  // The hold row shows exactly when the header badge does: an expired hold
+  // the backend has not evicted yet (it evicts lazily) gets no row, past
+  // time or Revert. `holdClock` re-derives it when a dated hold lapses
+  // while the panel is open.
+  let holdClock = $state(0);
+  $effect(() => {
+    const wait = fallbackHoldExpiresIn(threadConfig);
+    if (wait === null) return;
+    const timer = setTimeout(() => { holdClock += 1; }, wait + 250);
+    return () => clearTimeout(timer);
+  });
+  const liveFallbackHold = $derived.by(() => {
+    void holdClock;
+    return fallbackHoldChip(threadConfig, serverSettingsStore.model) !== null
+      ? (threadConfig?.activeLlmFallback ?? null)
+      : null;
+  });
+
   async function revertActiveFallback() {
     if (fallbackRevertBusy) return;
     fallbackRevertBusy = true;
@@ -1326,17 +1344,17 @@
         {/if}
 
       {:else if activeTab === 'model'}
-        {#if threadConfig?.activeLlmFallback}
+        {#if liveFallbackHold}
           <!-- Active fallback hold (llm-fallback-consent): this thread is
                pinned to its fallback model. Revert mirrors /fallback revert
                (the PATCH clear_active_fallback flag) and leaves the
                model-facing end note. -->
           <div class="setting-group active-fallback-row">
             <span class="active-fallback-text">
-              Fallback active: <strong>{threadConfig.activeLlmFallback.model}</strong>
-              {threadConfig.activeLlmFallback.reason === 'refusal' ? 'after a refusal' : 'after provider errors'}
-              {#if threadConfig.activeLlmFallback.expiresAt}
-                (until {new Date(threadConfig.activeLlmFallback.expiresAt).toLocaleString()})
+              Fallback active: <strong>{liveFallbackHold.model}</strong>
+              {liveFallbackHold.reason === 'refusal' ? 'after a refusal' : 'after provider errors'}
+              {#if liveFallbackHold.expiresAt}
+                (until {new Date(liveFallbackHold.expiresAt).toLocaleString()})
               {:else}
                 (until reverted)
               {/if}
@@ -1745,9 +1763,17 @@
           {#if mcpServersForThread.length === 0 && mcpServersStore.forbidden}
             <div class="loading-state">MCP servers are managed by an admin.</div>
           {:else if mcpServersForThread.length === 0 && mcpServersStore.error}
-            <!-- #445: a failed list load is not "none installed"; reopening
-                 the panel is the retry (the open effect refreshes it). -->
-            <div class="loading-state" role="alert">{mcpServersStore.error} Reopen Thread Settings to try again.</div>
+            <!-- #445: a failed list load is not "none installed": the error
+                 with a visible Retry (reopening the panel retries too). -->
+            <div class="mcp-load-error" role="alert">
+              <p><Icon name="warning" size={16} /><span>{mcpServersStore.error}</span></p>
+              <button
+                class="mcp-retry-btn"
+                type="button"
+                onclick={() => mcpServersStore.refresh()}
+                disabled={mcpServersStore.loading}
+              >Retry</button>
+            </div>
           {:else if mcpServersForThread.length === 0}
             <div class="loading-state">No MCP servers installed. Install one in Settings → MCP.</div>
           {:else}
@@ -2051,6 +2077,54 @@
 
   .revert-error {
     color: var(--error, #e5484d);
+  }
+
+  /* MCP tab list-load failure (#445): MCPServerPanel's error line, text and
+     icon plus a 44px Retry. */
+  .mcp-load-error {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-left: 3px solid var(--error);
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+    border-radius: var(--radius-sm);
+  }
+
+  .mcp-load-error p {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    line-height: 1.4;
+  }
+
+  .mcp-load-error p :global(svg) {
+    flex-shrink: 0;
+    margin-top: 0.1em;
+    color: var(--error);
+  }
+
+  .mcp-retry-btn {
+    min-height: var(--touch-target-min);
+    padding: 0 var(--spacing-md);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+  }
+
+  .mcp-retry-btn:active:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .mcp-retry-btn:disabled {
+    opacity: 0.55;
   }
 
   .thread-settings-modal {

@@ -265,7 +265,7 @@
     <p class="empty-state">MCP servers are managed by an admin.</p>
   {:else if mcpServersStore.error && mcpServersStore.servers.length === 0}
     <div class="load-error" role="alert">
-      <p>{mcpServersStore.error}</p>
+      <p><Icon name="warning" size={16} /><span>{mcpServersStore.error}</span></p>
       <button class="retry-btn" type="button" onclick={() => mcpServersStore.refresh()}>Retry</button>
     </div>
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
@@ -275,7 +275,7 @@
       <!-- A refresh failed after a good load: the list shown is the last one
            this backend served, so say it may be out of date. -->
       <div class="load-error" role="alert">
-        <p>{mcpServersStore.error} This list may be out of date.</p>
+        <p><Icon name="warning" size={16} /><span>{mcpServersStore.error} This list may be out of date.</span></p>
         <button class="retry-btn" type="button" onclick={() => mcpServersStore.refresh()}>Retry</button>
       </div>
     {/if}
@@ -455,10 +455,21 @@
   }
 
   .load-error p {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
     margin: 0;
     color: var(--text-primary);
     font-size: 0.85rem;
     line-height: 1.4;
+  }
+
+  /* The warning icon desktop's error line has: a visual change beyond the
+     text alone (repair guide), tinted like the border. */
+  .load-error p :global(svg) {
+    flex-shrink: 0;
+    margin-top: 0.1em;
+    color: var(--error);
   }
 
   .retry-btn {

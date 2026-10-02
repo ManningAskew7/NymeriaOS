@@ -15,7 +15,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import Modal from '$lib/components/common/Modal.svelte';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
-  import { fallbackRevertLabel } from '$lib/utils/fallbackHold';
+  import { fallbackHoldChip, fallbackHoldExpiresIn, fallbackRevertLabel } from '$lib/utils/fallbackHold';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
@@ -152,6 +152,21 @@
   const revertFallbackLabel = $derived(
     fallbackRevertLabel(threadId ? threadConfigStore.getConfig(threadId) : null, globalModel)
   );
+  // The hold row shows exactly when the header chip does: an expired hold
+  // the backend has not evicted yet (it evicts lazily) gets no row, past
+  // time or Revert. `holdClock` re-derives it when a dated hold lapses
+  // while the tab is open.
+  let holdClock = $state(0);
+  $effect(() => {
+    const wait = fallbackHoldExpiresIn({ activeLlmFallback: activeFallback });
+    if (wait === null) return;
+    const timer = setTimeout(() => { holdClock += 1; }, wait + 250);
+    return () => clearTimeout(timer);
+  });
+  const liveFallback = $derived.by(() => {
+    void holdClock;
+    return fallbackHoldChip({ activeLlmFallback: activeFallback }, globalModel) !== null ? activeFallback : null;
+  });
   const fastTierRef = $derived(serverSettingsStore.fastModelResolved || '');
   const smartTierRef = $derived(serverSettingsStore.smartModelResolved || '');
 
@@ -262,16 +277,16 @@
 
 <div class="tab-body">
   {#if section === 'provider'}
-    {#if activeFallback}
+    {#if liveFallback}
       <!-- Active fallback hold (llm-fallback-consent): this thread is pinned
            to its fallback model. Revert mirrors /fallback revert (the PATCH
            clear_active_fallback flag) and leaves the model-facing end note. -->
       <div class="active-fallback-row">
         <span class="active-fallback-text">
-          Fallback active: <strong>{activeFallback.model}</strong>
-          {activeFallback.reason === 'refusal' ? 'after a refusal' : 'after provider errors'}
-          {#if activeFallback.expiresAt}
-            (until {new Date(activeFallback.expiresAt).toLocaleString()})
+          Fallback active: <strong>{liveFallback.model}</strong>
+          {liveFallback.reason === 'refusal' ? 'after a refusal' : 'after provider errors'}
+          {#if liveFallback.expiresAt}
+            (until {new Date(liveFallback.expiresAt).toLocaleString()})
           {:else}
             (until reverted)
           {/if}
