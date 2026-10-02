@@ -962,6 +962,23 @@ optional Redis/voice setup, bundled frontend, and API port. Use
 `nymeria doctor --skip-llm-test` when diagnosing an offline system or when
 provider credentials are intentionally unavailable.
 
+When any account's default tools include `web_search_searxng` (or, before the
+bootstrap admin's profile exists, the `NYMERIA_INIT_DEFAULT_THREAD_TOOLS` list
+`nymeria init` wrote for it), doctor adds a `SearXNG` row: one test search
+(`q=wikipedia`, JSON, 3 second connect and 10 second read timeouts) against
+`SEARXNG_BASE_URL`. A user's own saved SearXNG address is never checked. It
+passes when results come back (naming any engines that failed alongside), and
+warns when the URL is unset or malformed, the instance is unreachable or slow, it answers
+HTTP 403 (`search.formats` lacks `json`), 429 (its rate limiter) or another
+error status, it answers without JSON, or the search came back empty, naming
+the engines that failed when it did. It is a search, not a `/healthz` check,
+because an instance whose every engine is blocked still answers `/healthz` OK.
+A Docker service hostname such as `http://searxng:8080` resolves only inside the
+stack, so doctor run on the host warns "not checked from the host" and sends
+nothing; run it inside the API container (`docker exec <api container> python
+run.py doctor`) to probe it. The row never fails the run, so it never stops
+`nymeria init` from starting the backend.
+
 Runtime settings updates choose the highest-precedence existing config file:
 `.env.docker`, then `config.env`, then `.env`. If no config file exists yet,
 source checkouts create `.env`; packaged installs create `config.env`.

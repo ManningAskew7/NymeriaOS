@@ -193,7 +193,8 @@ For unattended setup, `nymeria init --non-interactive` takes flags instead of
 prompting (see "Scripted setup" below). `nymeria doctor` checks the installed
 Python version, config files, data directory, LLM connectivity, local databases,
 optional Redis/voice setup, bundled frontend, and API port before you start the
-server.
+server, plus the SearXNG search backend with one test search when SearXNG is in
+your default tools.
 
 Packaged installs store config and writable data under `~/.nymeria/` by
 default. After `nymeria api` starts, open `http://localhost:8000`; the backend

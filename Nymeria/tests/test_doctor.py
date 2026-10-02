@@ -520,3 +520,587 @@ def test_settings_file_row_is_wired_into_settings_checks(monkeypatch, tmp_path: 
     )
 
     assert _result(results, "Settings file").status == "pass"
+
+
+# --- #296: the SearXNG row ------------------------------------------------------
+#
+# One canary search against the operator's SEARXNG_BASE_URL, only when some
+# default toolset carries web_search_searxng. A real loopback HTTP server stands
+# in for the instance (the network boundary), so the probe's own request,
+# parsing and redaction all run for real. Skipped on purpose: a live SearXNG
+# (the live leg runs one), and wall-clock timing (the timeout CONFIG is pinned
+# instead, in test_searxng_probe_uses_the_policy_client_with_short_timeouts).
+
+
+@dataclass
+class SearxSettings(FakeSettings):
+    searxng_base_url: str | None = None
+
+
+# The zero-egress copy of the pinned image, measured 2026-10-02 (the mates
+# incident's shape: HTTP 200, no results, every engine failed).
+_MEASURED_ALL_FAILED = {
+    "query": "wikipedia",
+    "results": [],
+    "answers": [],
+    "unresponsive_engines": [
+        ["brave", "HTTP connection error"],
+        ["duckduckgo", "HTTP connection error"],
+        ["google", "HTTP connection error"],
+        ["startpage", "HTTP connection error"],
+        ["wikipedia", "HTTP connection error"],
+    ],
+}
+
+
+def _hits(n: int) -> list[dict]:
+    return [{"title": f"R{i}", "url": f"https://r{i}.example", "content": "x"} for i in range(n)]
+
+
+def _write_user_profile(data_dir: Path, user_id: str, tools) -> None:
+    import json
+
+    profile_dir = data_dir / "users" / user_id
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "profile.json").write_text(
+        json.dumps({"user_id": user_id, "tool_preferences": {"default_thread_tools": tools}}),
+        encoding="utf-8",
+    )
+
+
+def _closed_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.fixture
+def searxng_stub():
+    """A loopback SearXNG stand-in that records every request it serves."""
+    import http.server
+    import json
+    import threading
+    from types import SimpleNamespace
+    from urllib.parse import parse_qs, urlsplit
+
+    state = {"status": 200, "body": b"{}", "type": "application/json"}
+    seen: list[tuple[str, str, dict]] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            parts = urlsplit(self.path)
+            query = {key: values[0] for key, values in parse_qs(parts.query).items()}
+            seen.append(("GET", parts.path, query))
+            self.send_response(state["status"])
+            self.send_header("Content-Type", state["type"])
+            self.send_header("Content-Length", str(len(state["body"])))
+            self.end_headers()
+            self.wfile.write(state["body"])
+
+        def log_message(self, format: str, *args) -> None:  # noqa: A002 - base signature
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def serve(payload=None, *, status=200, html=None):
+        if html is not None:
+            state.update(status=status, body=html.encode("utf-8"), type="text/html")
+        else:
+            state.update(
+                status=status, body=json.dumps(payload).encode("utf-8"), type="application/json"
+            )
+
+    try:
+        yield SimpleNamespace(
+            url=f"http://127.0.0.1:{server.server_address[1]}", seen=seen, serve=serve
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def searxng_data(monkeypatch, tmp_path: Path) -> Path:
+    """Hermetic gate inputs: no init-seed carrier in the environment, an empty data dir."""
+    monkeypatch.delenv("NYMERIA_INIT_DEFAULT_THREAD_TOOLS", raising=False)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    return data_dir
+
+
+def _in_use(data_dir: Path) -> None:
+    _write_user_profile(
+        data_dir, "default", ["bash_execute", "web_search_searxng", "fetch_url_nymeria"]
+    )
+
+
+def _probe_row(data_dir: Path, url: str | None, **kwargs) -> doctor.CheckResult | None:
+    return doctor._check_searxng(SearxSettings(data_dir=data_dir, searxng_base_url=url), **kwargs)
+
+
+def test_searxng_row_is_absent_and_sends_nothing_when_no_default_toolset_uses_it(
+    searxng_stub, searxng_data
+) -> None:
+    searxng_stub.serve({"results": _hits(1)})
+
+    # No profile at all: the fresh defaults (ddgs) apply.
+    assert _probe_row(searxng_data, searxng_stub.url) is None
+    # Profiles that do not carry it, the bootstrap admin's included.
+    _write_user_profile(searxng_data, "default", ["web_search_ddgs", "fetch_url_nymeria"])
+    _write_user_profile(searxng_data, "alice", None)
+    assert _probe_row(searxng_data, searxng_stub.url) is None
+    # The compose files set SEARXNG_BASE_URL on every full stack, so the URL
+    # alone must never cost a request.
+    assert searxng_stub.seen == []
+
+
+@pytest.mark.parametrize("url", [None, "", "   "], ids=["none", "empty", "blank"])
+def test_searxng_row_warns_without_a_base_url_and_sends_nothing(
+    searxng_stub, searxng_data, url
+) -> None:
+    _in_use(searxng_data)
+
+    row = _probe_row(searxng_data, url)
+
+    assert row is not None and row.name == "SearXNG"
+    assert row.status == "warn"
+    assert row.detail.startswith(
+        "web_search_searxng is in the default tools but SEARXNG_BASE_URL is not set"
+    )
+    assert "not checked here" in row.detail and "nymeria init" in row.detail
+    assert searxng_stub.seen == []
+
+
+def test_searxng_settings_without_the_field_do_not_raise(searxng_data) -> None:
+    _in_use(searxng_data)
+
+    row = doctor._check_searxng(FakeSettings(data_dir=searxng_data))
+
+    assert row is not None and row.status == "warn"
+    assert "SEARXNG_BASE_URL is not set" in row.detail
+
+
+class _RefusingClient:
+    """A policy client whose every GET is refused at the network boundary."""
+
+    def __init__(self, calls: list[str], message: str) -> None:
+        self.calls = calls
+        self.message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, **_kwargs):
+        import httpx
+
+        self.calls.append(url)
+        raise httpx.ConnectError(self.message)
+
+
+def test_searxng_docker_service_host_is_not_checked_from_the_host(
+    monkeypatch, searxng_data
+) -> None:
+    from nymeria.core import http_policy
+
+    _in_use(searxng_data)
+
+    def no_request(**_kwargs):
+        raise AssertionError("a Docker service host must not be probed from the host")
+
+    monkeypatch.setattr(settings_module, "_in_container", lambda: False)
+    monkeypatch.setattr(http_policy, "policy_http_client", no_request)
+
+    row = _probe_row(searxng_data, "http://searxng:8080")
+
+    assert row is not None
+    assert row.status == "warn"  # never a pass for a backend nobody checked
+    assert row.detail.startswith("not checked from the host:")
+    assert "'searxng'" in row.detail
+    assert "docker exec <api container> python run.py doctor" in row.detail
+
+    # Inside a container the same address resolves, so it IS probed.
+    calls: list[str] = []
+    monkeypatch.setattr(settings_module, "_in_container", lambda: True)
+    monkeypatch.setattr(
+        http_policy,
+        "policy_http_client",
+        lambda **_kwargs: _RefusingClient(calls, "[Errno -2] Name or service not known"),
+    )
+
+    inside = _probe_row(searxng_data, "http://searxng:8080")
+
+    assert calls == ["http://searxng:8080/search"]
+    assert inside is not None and inside.status == "warn"
+    assert inside.detail.startswith(
+        "cannot reach http://searxng:8080 ([Errno -2] Name or service not known)"
+    )
+
+
+def test_searxng_probe_uses_the_policy_client_with_short_timeouts(
+    monkeypatch, searxng_data
+) -> None:
+    from nymeria.core import http_policy
+
+    _in_use(searxng_data)
+    built: list[dict] = []
+    calls: list[str] = []
+
+    def capture(**kwargs):
+        built.append(kwargs)
+        return _RefusingClient(calls, "[Errno 111] Connection refused")
+
+    monkeypatch.setattr(http_policy, "policy_http_client", capture)
+
+    _probe_row(searxng_data, "http://127.0.0.1:9")
+
+    # The env-proxy-neutralising factory, a 3s connect and 10s read bound, and
+    # redirects followed the way the tool follows them.
+    assert len(built) == 1 and len(calls) == 1
+    timeout = built[0]["timeout"]
+    assert (timeout.connect, timeout.read) == (3.0, 10.0)
+    assert built[0]["follow_redirects"] is True
+
+
+def test_searxng_slow_instance_warns_as_a_timeout(monkeypatch, searxng_data) -> None:
+    import httpx
+
+    from nymeria.core import http_policy
+
+    _in_use(searxng_data)
+
+    class SlowClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **_kwargs):
+            raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(http_policy, "policy_http_client", lambda **_kwargs: SlowClient())
+
+    row = _probe_row(searxng_data, "http://127.0.0.1:9")
+
+    assert row == doctor.CheckResult(
+        "SearXNG", "warn", "http://127.0.0.1:9 did not answer a test search within 10s (timed out)"
+    )
+
+
+def test_searxng_check_never_raises(monkeypatch, searxng_data) -> None:
+    from nymeria.core import searxng_health
+
+    _in_use(searxng_data)
+
+    def boom(_url, **_kwargs):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(searxng_health, "probe_searxng", boom)
+
+    row = _probe_row(searxng_data, "http://127.0.0.1:9")
+
+    assert row == doctor.CheckResult("SearXNG", "warn", "check failed: probe exploded")
+    # A settings object the gate cannot read means "cannot tell": no row.
+    assert doctor._check_searxng(SearxSettings(data_dir=object())) is None  # type: ignore[arg-type]
+
+
+def test_searxng_unreachable_instance_warns_with_the_remedy(searxng_data) -> None:
+    _in_use(searxng_data)
+    url = f"http://127.0.0.1:{_closed_port()}"
+
+    row = _probe_row(searxng_data, url)
+
+    assert row is not None and row.status == "warn"
+    assert row.detail.startswith(f"cannot reach {url} (")
+    assert "Connection refused" in row.detail
+    assert "docker compose --profile search up -d searxng" in row.detail
+    assert "fix SEARXNG_BASE_URL" in row.detail
+
+
+def test_searxng_answering_instance_passes_with_one_canary_request(
+    searxng_stub, searxng_data
+) -> None:
+    _in_use(searxng_data)
+    searxng_stub.serve({"results": _hits(3), "unresponsive_engines": []})
+
+    row = _probe_row(searxng_data, searxng_stub.url + "/")
+
+    assert row == doctor.CheckResult(
+        "SearXNG", "pass", f"{searxng_stub.url}/ answered a test search with 3 result(s)"
+    )
+    # Exactly one request, the tool's own shape, with a non-identifying query.
+    assert searxng_stub.seen == [
+        (
+            "GET",
+            "/search",
+            {
+                "q": "wikipedia",
+                "format": "json",
+                "categories": "general",
+                "safesearch": "1",
+                "pageno": "1",
+            },
+        )
+    ]
+
+
+def test_searxng_partial_engine_failure_still_passes_and_names_them(
+    searxng_stub, searxng_data
+) -> None:
+    _in_use(searxng_data)
+    searxng_stub.serve(
+        {"results": _hits(2), "unresponsive_engines": [["brave", "timeout"], ["google", "CAPTCHA"]]}
+    )
+
+    row = _probe_row(searxng_data, searxng_stub.url)
+
+    assert row is not None and row.status == "pass"
+    assert row.detail == (
+        f"{searxng_stub.url} answered a test search with 2 result(s); "
+        "2 engine(s) failed: brave (timeout), google (CAPTCHA)"
+    )
+
+
+def test_searxng_every_engine_failed_warns_naming_them(searxng_stub, searxng_data) -> None:
+    # The mates incident: the sidecar reported healthy for weeks while this was
+    # the answer to every search.
+    _in_use(searxng_data)
+    searxng_stub.serve(_MEASURED_ALL_FAILED)
+
+    row = _probe_row(searxng_data, searxng_stub.url)
+
+    assert row is not None and row.status == "warn"
+    assert row.detail.startswith(
+        f"{searxng_stub.url} is up, but its engines failed a test search with no results: "
+        "brave (HTTP connection error), duckduckgo (HTTP connection error), "
+        "google (HTTP connection error), startpage (HTTP connection error), "
+        "wikipedia (HTTP connection error). "
+    )
+    assert "newer SearXNG image" in row.detail
+    assert "make web_search_ddgs the default" in row.detail
+
+
+def test_searxng_empty_answer_without_engine_errors_warns(searxng_stub, searxng_data) -> None:
+    _in_use(searxng_data)
+    searxng_stub.serve({"results": [], "unresponsive_engines": []})
+
+    row = _probe_row(searxng_data, searxng_stub.url)
+
+    assert row is not None and row.status == "warn"
+    assert row.detail == (
+        f"{searxng_stub.url} answered a test search with no results and no engine "
+        "errors; check the instance's enabled engines"
+    )
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        (
+            403,
+            "refused a JSON test search (HTTP 403); the instance's search.formats "
+            "setting must include json",
+        ),
+        (
+            429,
+            "rate-limited the test search (HTTP 429); a private instance should set "
+            "server.limiter: false",
+        ),
+        (500, "answered the test search with HTTP 500"),
+    ],
+)
+def test_searxng_http_errors_warn_with_their_hint(
+    searxng_stub, searxng_data, status, expected
+) -> None:
+    _in_use(searxng_data)
+    searxng_stub.serve({"error": "x"}, status=status)
+
+    row = _probe_row(searxng_data, searxng_stub.url)
+
+    assert row == doctor.CheckResult("SearXNG", "warn", f"{searxng_stub.url} {expected}")
+
+
+@pytest.mark.parametrize(
+    "html, payload",
+    [("<html>login</html>", None), (None, ["not", "an", "object"])],
+    ids=["html", "json-list"],
+)
+def test_searxng_non_searxng_answer_warns(searxng_stub, searxng_data, html, payload) -> None:
+    _in_use(searxng_data)
+    searxng_stub.serve(payload, html=html)
+
+    row = _probe_row(searxng_data, searxng_stub.url)
+
+    assert row == doctor.CheckResult(
+        "SearXNG",
+        "warn",
+        f"{searxng_stub.url} answered without JSON; is SEARXNG_BASE_URL a SearXNG instance?",
+    )
+
+
+def test_searxng_row_never_prints_url_credentials(searxng_stub, searxng_data) -> None:
+    _in_use(searxng_data)
+    searxng_stub.serve({"results": _hits(1)})
+    port = searxng_stub.url.rsplit(":", 1)[1]
+
+    answered = _probe_row(searxng_data, f"http://sx-user:s3cret@127.0.0.1:{port}")
+    refused = _probe_row(searxng_data, f"http://sx-user:s3cret@127.0.0.1:{_closed_port()}")
+
+    assert answered is not None and answered.status == "pass"
+    assert answered.detail.startswith(f"http://sx-user:***@127.0.0.1:{port} answered")
+    assert refused is not None and refused.status == "warn"
+    assert refused.detail.startswith("cannot reach http://sx-user:***@127.0.0.1:")
+    for row in (answered, refused):
+        assert "s3cret" not in row.detail
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://sx-user:s3cret@[bad", "http://sx-user:s3cret@127.0.0.1:99999"],
+    ids=["bracket", "port-out-of-range"],
+)
+def test_searxng_malformed_url_is_reported_unechoed_and_unprobed(
+    monkeypatch, searxng_data, url
+) -> None:
+    from nymeria.core import http_policy
+
+    _in_use(searxng_data)
+
+    def no_request(**_kwargs):
+        raise AssertionError("a malformed URL must not be probed")
+
+    monkeypatch.setattr(http_policy, "policy_http_client", no_request)
+
+    row = _probe_row(searxng_data, url)
+
+    assert row == doctor.CheckResult(
+        "SearXNG",
+        "warn",
+        "SEARXNG_BASE_URL is not a valid URL, so web_search_searxng cannot use it; "
+        "fix it or rerun `nymeria init`",
+    )
+
+
+def test_searxng_row_never_fails_the_doctor_run(monkeypatch, searxng_stub, searxng_data) -> None:
+    # A FAIL would make `nymeria init`'s final doctor skip start-now, and
+    # search is optional: WARN is the ceiling, so the run still exits 0.
+    _in_use(searxng_data)
+    searxng_stub.serve(_MEASURED_ALL_FAILED)
+    row = _probe_row(searxng_data, searxng_stub.url)
+    assert row is not None and row.status == "warn"
+    monkeypatch.setattr(
+        doctor,
+        "collect_checks",
+        lambda _args: [doctor.CheckResult("Python", "pass", "3.12"), row],
+    )
+
+    assert doctor.run_doctor(argparse.Namespace(skip_llm_test=True)) == 0
+
+
+def test_searxng_gate_reads_every_profile_and_the_init_seed_carrier(
+    monkeypatch, searxng_stub, searxng_data, tmp_path: Path
+) -> None:
+    searxng_stub.serve({"results": _hits(1)})
+
+    # A non-admin account carrying SearXNG counts (the mates shape), and a
+    # corrupt profile beside it is skipped, not fatal.
+    (searxng_data / "users" / "broken").mkdir(parents=True)
+    (searxng_data / "users" / "broken" / "profile.json").write_text("{not json", encoding="utf-8")
+    assert _probe_row(searxng_data, searxng_stub.url) is None
+    _write_user_profile(searxng_data, "mates", ["web_search_searxng"])
+    mates = _probe_row(searxng_data, searxng_stub.url)
+    assert mates is not None and mates.status == "pass"
+
+    # No bootstrap profile yet (a Docker host: it lives in the volume): the
+    # carrier the wizard wrote counts.
+    fresh = tmp_path / "fresh-data"
+    fresh.mkdir()
+    assert _probe_row(fresh, searxng_stub.url) is None
+    monkeypatch.setenv("NYMERIA_INIT_DEFAULT_THREAD_TOOLS", "bash_execute:web_search_searxng")
+    seeded = _probe_row(fresh, searxng_stub.url)
+    assert seeded is not None and seeded.status == "pass"
+
+    # Once the bootstrap profile exists the carrier is spent and ignored.
+    _write_user_profile(fresh, "default", ["web_search_ddgs"])
+    assert _probe_row(fresh, searxng_stub.url) is None
+    assert len(searxng_stub.seen) == 2
+
+
+def test_searxng_gate_reads_another_roots_carrier(searxng_stub, searxng_data, tmp_path: Path) -> None:
+    # The wizard's final doctor inspects the root it just configured, whose
+    # carrier may live only in that root's env file.
+    searxng_stub.serve({"results": _hits(1)})
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    (other_root / ".env.docker").write_text(
+        "NYMERIA_INIT_DEFAULT_THREAD_TOOLS=web_search_searxng:fetch_url_nymeria\n",
+        encoding="utf-8",
+    )
+
+    there = _probe_row(searxng_data, searxng_stub.url, project_root=other_root)
+
+    assert there is not None and there.status == "pass"
+    # This process's own root does not read another root's files.
+    assert _probe_row(searxng_data, searxng_stub.url) is None
+
+
+def test_searxng_row_is_wired_after_the_web_search_row(
+    monkeypatch, searxng_stub, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("NYMERIA_INIT_DEFAULT_THREAD_TOOLS", raising=False)
+    data_dir = tmp_path / "data"
+    _write_sqlite_state(data_dir)
+    _in_use(data_dir)
+    searxng_stub.serve({"results": _hits(4)})
+    settings = SearxSettings(data_dir=data_dir, searxng_base_url=searxng_stub.url)
+    _stub_static_checks(monkeypatch, tmp_path, settings)
+
+    results = doctor.collect_checks(argparse.Namespace(skip_llm_test=True))
+
+    names = [result.name for result in results]
+    assert names[names.index("Web search") + 1] == "SearXNG"
+    assert _result(results, "SearXNG").detail.endswith("with 4 result(s)")
+
+
+@pytest.mark.timeout(300)
+def test_doctor_searxng_check_never_loads_the_tools_package(tmp_path: Path) -> None:
+    """The row's code path stays out of `nymeria.tools` (+7s, measured 2026-10-02).
+
+    A subprocess, because this test process has long since imported the tools
+    package for other tests. The probe line guards against a vacuous pass: a
+    run that never reached the probe must not look clean.
+    """
+    import subprocess
+    import sys
+
+    data_dir = tmp_path / "data"
+    _in_use(data_dir)
+    code = (
+        "import sys, types\n"
+        "from pathlib import Path\n"
+        "from nymeria import doctor\n"
+        f"settings = types.SimpleNamespace(data_dir=Path({str(data_dir)!r}), "
+        f"searxng_base_url='http://127.0.0.1:{_closed_port()}')\n"
+        "row = doctor._check_searxng(settings)\n"
+        "print('ROW=' + row.status + ':' + row.detail[:20])\n"
+        "loaded = sorted(m for m in sys.modules if m == 'nymeria.tools' or m.startswith('nymeria.tools.'))\n"
+        "print('TOOLS=' + ','.join(loaded))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert lines.get("ROW") == "warn:cannot reach http://"
+    assert lines.get("TOOLS") == ""

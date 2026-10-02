@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
+from urllib.parse import urlsplit
 
 from langchain_core.messages import HumanMessage
 from rich.console import Console
@@ -98,6 +99,13 @@ def _append_settings_checks(
             _check_data_dir(settings),
             _check_secrets_key(project_root=_project_root_override(args)),
             _check_web_search(settings),
+        ]
+    )
+    searxng = _check_searxng(settings, project_root=_project_root_override(args))
+    if searxng is not None:
+        results.append(searxng)
+    results.extend(
+        [
             _check_llm(settings, skip=bool(getattr(args, "skip_llm_test", False))),
             _check_database(settings),
             _check_redis(settings),
@@ -337,6 +345,168 @@ def _check_web_search(settings: Any) -> CheckResult:
             "self-hosted SearXNG upgrades quality",
         )
     return CheckResult("Web search", "pass", ", ".join(sorted(search)))
+
+
+_SEARXNG_TOOL = "web_search_searxng"
+
+
+def _searxng_in_default_tools(settings: Any, project_root: Path | None) -> bool:
+    """Whether any account's default toolset carries ``web_search_searxng``.
+
+    Raw reads of every ``data/users/*/profile.json`` (never UserProfileManager,
+    which seeds a missing profile as a side effect), so a non-admin account
+    carrying SearXNG counts too. When the bootstrap admin's profile does not
+    exist yet, the init-seed carrier (``NYMERIA_INIT_DEFAULT_THREAD_TOOLS``,
+    what that profile will be seeded with) counts as well: on a Docker host the
+    profile lives in the container's volume and the wizard's picks ride in the
+    env file. The process environment wins; another root's own env files fill
+    in, as for the secrets key. With neither, the fresh defaults apply, and
+    they carry no SearXNG. A per-thread enable is not covered here; the tool's
+    own ``[Error]`` covers it at run time.
+    """
+    import json
+
+    from .config.init_seed_env import INIT_DEFAULT_THREAD_TOOLS_ENV, parse_init_name_list
+    from .core.accounts import BOOTSTRAP_USER_ID
+
+    data_dir = getattr(settings, "data_dir", None)
+    users_dir = Path(data_dir) / "users" if data_dir else None
+    profiles: list[Path] = []
+    if users_dir is not None:
+        try:
+            profiles = sorted(users_dir.glob("*/profile.json"))
+        except OSError:
+            profiles = []
+    for path in profiles:
+        try:
+            raw = json.loads(path.read_bytes())
+            names = (raw.get("tool_preferences") or {}).get("default_thread_tools")
+        except Exception:  # noqa: BLE001 - a bad profile is another check's finding
+            continue
+        if isinstance(names, list) and _SEARXNG_TOOL in names:
+            return True
+    if users_dir is not None and (users_dir / BOOTSTRAP_USER_ID / "profile.json").exists():
+        return False
+    carrier = os.environ.get(INIT_DEFAULT_THREAD_TOOLS_ENV) or ""
+    if not carrier and project_root is not None:
+        from dotenv import dotenv_values
+
+        for env_path in get_env_file_paths(project_root):
+            try:
+                if env_path.is_file():
+                    carrier = dotenv_values(env_path).get(INIT_DEFAULT_THREAD_TOOLS_ENV) or carrier
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+    return _SEARXNG_TOOL in parse_init_name_list(carrier)
+
+
+def _check_searxng(settings: Any, *, project_root: Path | None = None) -> CheckResult | None:
+    """The SearXNG backend, when a default toolset uses it (#296).
+
+    ``None`` unless :func:`_searxng_in_default_tools`: the compose files set
+    ``SEARXNG_BASE_URL`` on every full stack, so the URL alone says nothing
+    about use. One canary search (``core/searxng_health.probe_searxng``)
+    against the OPERATOR's ``SEARXNG_BASE_URL`` only; a user's saved address
+    is never read. A search, not ``/healthz``: an instance whose every engine
+    is blocked answers healthz OK (measured), which is the incident this row
+    exists for. A Docker service host seen from outside a container is not
+    probed (it does not resolve here) and the row says so rather than passing.
+    WARN at most, never FAIL: search is optional, and a FAIL in the wizard's
+    final doctor would skip start-now.
+    """
+    try:
+        if not _searxng_in_default_tools(settings, project_root):
+            return None
+    except Exception:  # noqa: BLE001 - cannot tell whether SearXNG is used: no row
+        return None
+    try:
+        return _searxng_row(settings)
+    except Exception as exc:  # noqa: BLE001 - diagnostics report, never raise
+        return CheckResult("SearXNG", "warn", f"check failed: {_compact_error(exc)}")
+
+
+def _searxng_row(settings: Any) -> CheckResult:
+    from .config.settings import _docker_service_host, _in_container
+    from .core.searxng_health import PROBE_TIMEOUT_SECONDS, describe_engines, probe_searxng
+
+    base_url = str(getattr(settings, "searxng_base_url", None) or "").strip()
+    if not base_url:
+        return CheckResult(
+            "SearXNG",
+            "warn",
+            f"{_SEARXNG_TOOL} is in the default tools but SEARXNG_BASE_URL is not "
+            "set, so it fails unless a user saved their own SearXNG address (not "
+            "checked here); set SEARXNG_BASE_URL or rerun `nymeria init`",
+        )
+    try:
+        parts = urlsplit(base_url)
+        parts.port  # noqa: B018 - raises on a malformed port
+    except ValueError:
+        # Never echoed: a malformed URL can still carry credentials.
+        return CheckResult(
+            "SearXNG",
+            "warn",
+            "SEARXNG_BASE_URL is not a valid URL, so web_search_searxng cannot use "
+            "it; fix it or rerun `nymeria init`",
+        )
+    service_host = _docker_service_host(base_url)
+    if service_host and not _in_container():
+        return CheckResult(
+            "SearXNG",
+            "warn",
+            f"not checked from the host: SEARXNG_BASE_URL names the Docker service "
+            f"host '{service_host}', which resolves only inside the stack's network. "
+            "Check it there: `docker exec <api container> python run.py doctor`",
+        )
+
+    shown = redact_url_credentials(base_url)
+    probe = probe_searxng(base_url)
+    if probe.outcome == "unreachable":
+        detail = (
+            f"cannot reach {shown} ({probe.reason}); start the sidecar (Docker: "
+            "`docker compose --profile search up -d searxng`) or fix SEARXNG_BASE_URL"
+        )
+    elif probe.outcome == "timeout":
+        detail = (
+            f"{shown} did not answer a test search within "
+            f"{PROBE_TIMEOUT_SECONDS:g}s ({probe.reason})"
+        )
+    elif probe.outcome == "http_error" and probe.status_code == 403:
+        detail = (
+            f"{shown} refused a JSON test search (HTTP 403); the instance's "
+            "search.formats setting must include json"
+        )
+    elif probe.outcome == "http_error" and probe.status_code == 429:
+        detail = (
+            f"{shown} rate-limited the test search (HTTP 429); a private instance "
+            "should set server.limiter: false"
+        )
+    elif probe.outcome == "http_error":
+        detail = f"{shown} answered the test search with HTTP {probe.status_code}"
+    elif probe.outcome == "not_json":
+        detail = f"{shown} answered without JSON; is SEARXNG_BASE_URL a SearXNG instance?"
+    elif probe.result_count:
+        detail = f"{shown} answered a test search with {probe.result_count} result(s)"
+        if probe.failed_engines:
+            detail += (
+                f"; {len(probe.failed_engines)} engine(s) failed: "
+                f"{describe_engines(probe.failed_engines)}"
+            )
+        return CheckResult("SearXNG", "pass", detail)
+    elif probe.failed_engines:
+        detail = (
+            f"{shown} is up, but its engines failed a test search with no results: "
+            f"{describe_engines(probe.failed_engines)}. Upstream engines are refusing "
+            "or unreachable from the instance (common on datacenter IPs): try a newer "
+            "SearXNG image or other engines, or make web_search_ddgs the default "
+            "(Settings -> Tools)"
+        )
+    else:
+        detail = (
+            f"{shown} answered a test search with no results and no engine errors; "
+            "check the instance's enabled engines"
+        )
+    return CheckResult("SearXNG", "warn", detail)
 
 
 def _check_llm(settings: Any, *, skip: bool) -> CheckResult:
