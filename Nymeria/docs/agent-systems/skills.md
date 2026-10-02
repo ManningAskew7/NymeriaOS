@@ -345,16 +345,23 @@ and listed as one of:
   or a protected tool a live kit TTL bound), so it is called directly.
 - bind-only: a protected management tool (`tool_search`, `tool_manage`,
   `hook_config`, ...) or another name the gate never dispatches by name. It
-  runs only once bound, so the line points at `Skill(name=..., ttl=...)`.
+  runs only once the kit is bound.
 - unavailable: blocked for the caller's role or by the thread's
-  `disabled_tools`, listed with the gate's reason and no bind steer (a kit
-  bind cannot lift a role gate, and would un-disable the tool).
+  `disabled_tools`, listed with the gate's reason and no recipe.
+
+The kit-level steer, `Skill(name=..., ttl=...)`, appears once per result
+block and only where that bind would work: a kit bind is strict, so one
+role-blocked tool refuses the whole kit, and then every steer is replaced by
+that explanation. When the kit holds a thread-disabled tool, the steer says
+the bind would re-enable it (a kit bind un-disables before binding).
 
 When none of a kit's tools is runnable or bound and it declares no thread
 templates or nested skills (today `tool-management`, `skill-management` and
 `mcp-management` on a fresh thread), defer is refused up front: the result
-lists each tool's reason and points at `Skill(name=..., ttl=...)`, and
-carries no kit body (the bind returns it).
+lists each tool's reason and carries no kit body (the bind returns it). It
+points at `Skill(name=..., ttl=...)` only when some tool is bind-only and
+none is role-blocked; a kit blocked only by disables gets no steer, since the
+bind would work only by reversing the user's decision.
 
 One exception to "binds nothing" (backlog #170): when a runnable tool or a
 thread template needs `tool_invoke` and the thread cannot call it, the
@@ -362,7 +369,7 @@ activation binds just `tool_invoke` on a self-cleaning 7-day TTL and
 announces it in the result, so defer never points the model at an executor
 it lacks. A kit whose tools are all bound or bind-only binds nothing. A
 thread that explicitly disabled `tool_invoke` is never silently un-disabled: the result says so and steers to
-`ttl` binding instead. On threads running permissive dynamic binding
+`ttl` binding instead (unless a role-blocked kit tool makes that bind refuse). On threads running permissive dynamic binding
 (`allow_unbound_tool_calls` together with `dynamic_tool_binding`), the
 deferred result instead instructs calling the tools directly by name and
 nothing binds. See

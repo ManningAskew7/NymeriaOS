@@ -119,8 +119,9 @@ generic dispatch idiom they are trained on and guess arguments by tool name
   schema and recipe: already-bound tools are named as callable directly,
   protected management tools as bind-only, role-blocked or thread-disabled
   ones as unavailable with the gate's reason, and a kit with nothing runnable
-  or bound is refused up front with no body, pointing at the `ttl` bind
-  (backlog #417; the partition is described in
+  or bound is refused up front with no body, pointing at the `ttl` bind when
+  that bind would work (never with a role-blocked tool in the kit)
+  (backlog #417; the partition and the steer rules are described in
   [skills.md](./skills.md#deferred-skill-kits-defertrue)). One exception to
   "binds nothing" (backlog #170): when a runnable tool needs `tool_invoke`
   and the thread cannot call it (e.g. an account whose curated
@@ -132,7 +133,7 @@ generic dispatch idiom they are trained on and guess arguments by tool name
   cache-preserving.
   A thread that explicitly disabled `tool_invoke` is never silently
   un-disabled: the result says so and steers to `ttl` binding, which needs no
-  `tool_invoke`. Reachability is resolved from thread config
+  `tool_invoke` (unless a role-blocked kit tool makes that bind refuse). Reachability is resolved from thread config
   (`tool_search.thread_tool_reachability`), never from the built tool list,
   which the permissive mode below deliberately strips `tool_invoke` from; in
   that mode the deferred result instructs calling the tools directly by name

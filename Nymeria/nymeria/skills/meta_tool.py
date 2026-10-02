@@ -34,6 +34,7 @@ from . import (
 if TYPE_CHECKING:
     # Annotation-only; imported function-locally at runtime in
     # _bind_skill_kit_tools to avoid the tools.tool_search import cycle.
+    from ..core.tool_execution import ByNameRefusalKind
     from ..tools.tool_search import ToolBindingResult
 
 logger = logging.getLogger(__name__)
@@ -435,12 +436,16 @@ class _DeferredKitTool(NamedTuple):
     """One kit tool as a deferred activation will present it (backlog #417).
 
     ``reason`` is the by-name gate's own copy for ``bind_only`` and
-    ``unavailable`` entries, empty otherwise.
+    ``unavailable`` entries, empty otherwise; ``kind`` is that refusal's kind
+    (``by_name_gate_refusals``), which decides whether the kit-level bind
+    steer is honest (``_kit_bind_refused_for_role``,
+    ``_kit_bind_reenable_note``).
     """
 
     name: str
     state: DeferredToolState
     reason: str = ""
+    kind: Optional["ByNameRefusalKind"] = None
 
 
 def _classify_deferred_kit_tools(
@@ -457,15 +462,17 @@ def _classify_deferred_kit_tools(
     plus the thread's bind state (``tool_search.thread_tool_reachability``):
 
     - ``unavailable``: refused for role or ``disabled_tools`` (or the
-      allowlist, when unbound). Listed with the gate's reason, never a recipe
-      and never a bind steer: a kit bind cannot lift a role gate, and would
-      silently un-disable a thread-disabled tool (``bind_tools_for_thread``).
+      allowlist, when unbound). Listed with the gate's reason and never a
+      recipe. A kit bind cannot lift a role gate (one role-blocked tool
+      refuses the WHOLE strict kit bind, so no kit-level steer is shown at
+      all then), and it would silently un-disable a thread-disabled tool
+      (``bind_tools_for_thread``), so the kit steer says so.
     - ``bound``: already reachable on the thread (a protected tool bound by a
       live kit TTL, a seed tool such as ``spawn_thread``): call it directly.
       A bound call never runs the by-name gate, and ``tool_invoke``'s own
       description forbids routing a bound tool through it.
     - ``bind_only``: refused as protected or excluded, and unbound. It runs
-      only once bound, so the steer is the kit bind, ``Skill(name, ttl=...)``.
+      only once bound, through the kit bind, ``Skill(name, ttl=...)``.
     - ``runnable``: the gate allows it and it is unbound: schema and recipe.
 
     A gate that raises fails CLOSED on the static protected and excluded sets
@@ -500,11 +507,15 @@ def _classify_deferred_kit_tools(
                 classified.append(_DeferredKitTool(name, "bound"))
             elif name in PROTECTED_MANAGEMENT_TOOL_NAMES:
                 classified.append(
-                    _DeferredKitTool(name, "bind_only", "protected management tool")
+                    _DeferredKitTool(
+                        name, "bind_only", "protected management tool", "protected"
+                    )
                 )
             elif name in BY_NAME_EXCLUDED_TOOL_NAMES:
                 classified.append(
-                    _DeferredKitTool(name, "bind_only", "cannot be dispatched by name")
+                    _DeferredKitTool(
+                        name, "bind_only", "cannot be dispatched by name", "excluded"
+                    )
                 )
             else:
                 classified.append(_DeferredKitTool(name, "runnable"))
@@ -517,18 +528,70 @@ def _classify_deferred_kit_tools(
             (r for r in refusals if r.kind in ("excluded", "protected")), None
         )
         if blocking is not None:
-            classified.append(_DeferredKitTool(name, "unavailable", blocking.reason))
+            classified.append(
+                _DeferredKitTool(name, "unavailable", blocking.reason, blocking.kind)
+            )
         elif bound:
             classified.append(_DeferredKitTool(name, "bound"))
         elif bind_only is not None:
-            classified.append(_DeferredKitTool(name, "bind_only", bind_only.reason))
-        elif refusals:
             classified.append(
-                _DeferredKitTool(name, "unavailable", refusals[0].reason)
+                _DeferredKitTool(name, "bind_only", bind_only.reason, bind_only.kind)
+            )
+        elif refusals:
+            # Only the allowlist arm reaches here (inert today: tool_allowlist
+            # returns None). Its refusal is classed "unavailable" BY POLICY,
+            # not because a bind cannot help: the allowlist governs by-name
+            # calls only, so a kit bind WOULD make the tool runnable, and this
+            # pass deliberately does not steer around a user-set allowlist.
+            # Whoever populates the arm owns revisiting that choice (and the
+            # kit-level steer, which this kind does not suppress).
+            classified.append(
+                _DeferredKitTool(
+                    name, "unavailable", refusals[0].reason, refusals[0].kind
+                )
             )
         else:
             classified.append(_DeferredKitTool(name, "runnable"))
     return classified
+
+
+_KIT_BIND_TTL_CHOICE = (
+    'choosing the ttl for how long you expect to need them (Nm/Nh/Nd/Nw or '
+    '"permanent")'
+)
+_KIT_BIND_REFUSED_FOR_ROLE = (
+    "Binding the kit is no remedy for you: a kit bind is refused as a whole "
+    "while any of its tools is blocked for your role."
+)
+
+
+def _kit_bind_refused_for_role(tool_states: List[_DeferredKitTool]) -> bool:
+    """True when ``Skill(name, ttl=...)`` would be refused outright (#417).
+
+    A kit bind is strict (``bind_tools_for_thread(strict=True)``) and the
+    admin/developer gates in ``tool_search._validate_and_gate_tools`` refuse
+    the WHOLE request on one blocked name, so a single role-blocked tool
+    makes every kit-level bind steer point at a bind that fails. No deferred
+    surface may offer it then; they say ``_KIT_BIND_REFUSED_FOR_ROLE``.
+    """
+    return any(t.state == "unavailable" and t.kind == "role" for t in tool_states)
+
+
+def _kit_bind_reenable_note(tool_states: List[_DeferredKitTool]) -> str:
+    """The caveat a kit bind steer carries when it would un-disable tools.
+
+    A kit bind un-disables a thread-disabled tool before binding it
+    (``tool_search._classify_bindings``), silently reversing a per-thread
+    decision, so a steer toward it must say which tools it would re-enable.
+    Empty when none would be.
+    """
+    disabled = [t.name for t in tool_states if t.kind == "disabled"]
+    if not disabled:
+        return ""
+    return (
+        f" That bind also re-enables {', '.join(disabled)}, which this thread "
+        "has disabled, so ask the user first."
+    )
 
 
 def _defer_refusal(
@@ -545,8 +608,11 @@ def _defer_refusal(
     the bind, which returns the body anyway, so loading it here would only
     pay for it twice. Nothing is loaded or bound, and no ``tool_invoke``
     executor is auto-bound for tools that could never use it. The bind steer
-    appears only when some tool is bind-only: for role-blocked or disabled
-    tools a bind is no remedy.
+    appears only when some tool is bind-only AND no tool is role-blocked
+    (the strict kit bind would refuse the whole kit); when it appears it
+    names any thread-disabled tool the bind would re-enable. A kit blocked
+    only by disables (or the allowlist) gets no steer: the bind would work,
+    but by reversing the user's own decision.
     """
     if not tool_states or skill.thread_templates or skill.required_skills:
         return None
@@ -558,23 +624,32 @@ def _defer_refusal(
         "deferred load was refused and nothing was loaded or bound:",
     ]
     lines.extend(f"  - {t.name}: {t.reason}" for t in tool_states)
-    if any(t.state == "bind_only" for t in tool_states):
+    if _kit_bind_refused_for_role(tool_states):
+        lines.append(
+            f"{_KIT_BIND_REFUSED_FOR_ROLE} Tell the user what blocks them "
+            "(each reason above)."
+        )
+    elif any(t.state == "bind_only" for t in tool_states):
         lines.append(
             "These run only when bound: activate the kit with "
             f'Skill(name="{skill.name}", ttl=...) instead, which binds its '
-            "tools and returns its instructions, choosing the ttl for how "
-            'long you expect to need them (Nm/Nh/Nd/Nw or "permanent").'
+            f"tools and returns its instructions, {_KIT_BIND_TTL_CHOICE}."
+            + _kit_bind_reenable_note(tool_states)
         )
     else:
         lines.append(
-            "Binding the kit would not make them runnable here; tell the "
-            "user what blocks them (each reason above)."
+            "Tell the user what blocks them (each reason above) rather than "
+            "binding the kit around a block the user set."
         )
     return "\n".join(lines)
 
 
 def _ensure_deferred_executor(
-    skill: Skill, config: RunnableConfig, use_direct: bool, needs_executor: bool
+    skill: Skill,
+    config: RunnableConfig,
+    use_direct: bool,
+    needs_executor: bool,
+    tool_states: Optional[List[_DeferredKitTool]] = None,
 ) -> tuple[str, bool, bool]:
     """Guarantee the executor a deferred activation tells the model to use.
 
@@ -599,6 +674,11 @@ def _ensure_deferred_executor(
       so. A bind failure never fails the activation: the instructions still
       return, with a steer note.
 
+    Both steer notes offer the kit bind only when it would work: never with
+    a role-blocked kit tool in ``tool_states`` (the strict bind refuses the
+    whole kit), and naming any thread-disabled kit tool it would re-enable
+    (#417 review).
+
     Returns ``(note_block, emit_reload_command, executor_bound)``.
     ``emit_reload_command`` is True only when the auto-bind was persisted on
     the legacy rebuild path, so the caller must wrap the accumulated body in
@@ -617,20 +697,32 @@ def _ensure_deferred_executor(
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
 
+    states = tool_states or []
+    bind_refused = _kit_bind_refused_for_role(states)
+
     state = thread_tool_reachability("tool_invoke", thread_id, user_id)
     if state == "bound":
         return "", False, False
     if state == "disabled":
+        if bind_refused:
+            remedy = (
+                "Ask the user to re-enable tool_invoke. "
+                + _KIT_BIND_REFUSED_FOR_ROLE
+            )
+        else:
+            remedy = (
+                "To use this kit's tools, activate the kit again with "
+                f'Skill(name="{skill.name}", ttl=...) to bind them '
+                f"first-class (no tool_invoke needed), {_KIT_BIND_TTL_CHOICE}, "
+                "or ask the user to re-enable tool_invoke."
+                + _kit_bind_reenable_note(states)
+            )
         return (
             "\n\n---\n"
             "[tool_invoke disabled on this thread] The deferred instructions "
             "above rely on tool_invoke, which this thread has explicitly "
             "disabled (disabled_tools is authoritative; it was NOT "
-            "overridden). To use this kit's tools, activate the kit again "
-            f'with Skill(name="{skill.name}", ttl=...) to bind them '
-            "first-class (no tool_invoke needed), choosing the ttl for how "
-            'long you expect to need them (Nm/Nh/Nd/Nw or "permanent"), or '
-            "ask the user to re-enable tool_invoke.",
+            f"overridden). {remedy}",
             False,
             False,
         )
@@ -647,14 +739,19 @@ def _ensure_deferred_executor(
         reason="deferred activation requires the tool_invoke executor",
     )
     if not binding.ok:
+        if bind_refused:
+            remedy = _KIT_BIND_REFUSED_FOR_ROLE
+        else:
+            remedy = (
+                f'Activate the kit again with Skill(name="{skill.name}", '
+                "ttl=...) to bind its tools first-class instead, "
+                f"{_KIT_BIND_TTL_CHOICE}." + _kit_bind_reenable_note(states)
+            )
         return (
             "\n\n---\n"
             "[note] tool_invoke is not bound on this thread and auto-binding "
             f"it failed:\n{binding.text}\n"
-            "The deferred instructions above cannot run as written. Activate "
-            f'the kit again with Skill(name="{skill.name}", ttl=...) to bind '
-            "its tools first-class instead, choosing the ttl for how long "
-            'you expect to need them (Nm/Nh/Nd/Nw or "permanent").',
+            f"The deferred instructions above cannot run as written. {remedy}",
             False,
             False,
         )
@@ -702,8 +799,11 @@ def _defer_kit_tools_block(
     tool list); bind-only and unavailable tools get one line with the gate's
     reason and no recipe, so the model is never told to run a name the
     by-name gate refuses. Skills that bind no tools get a short no-op note
-    instead. The repeat-use steer is the kit-level one, a second ``Skill()``
-    call with a ``ttl``, never a ``tool_manage`` detour (backlog #170). When
+    instead. The kit-level steer, a second ``Skill()`` call with a ``ttl``
+    (never a ``tool_manage`` detour, backlog #170), appears ONCE, in the
+    header, and covers the bind-only tools too; it is replaced by why a bind
+    is no remedy when a role-blocked tool would make the strict kit bind
+    refuse, and names any thread-disabled tool the bind would re-enable. When
     ``executor_bound`` (the activation auto-bound ``tool_invoke``), the
     cache-safe framing is dropped: the tools prefix DID change, and the
     auto-bound note explains why.
@@ -719,15 +819,30 @@ def _defer_kit_tools_block(
     from ..tools.schema_render import render_tool_args_schema
     from ..tools.tool_search import _resolve_tool_object
 
-    bind_call = f'Skill(name="{skill.name}", ttl=...)'
-    lines = [
+    header = (
         "\n\n---\n"
         "[Skill Kit deferred] None of this kit's tools were bound by this "
-        "activation. If this becomes a multi-step task or you will use the "
-        f"kit again later, activate it again with {bind_call} to bind its "
-        "tools first-class instead, choosing the ttl for how long you expect "
-        'to need them (Nm/Nh/Nd/Nw or "permanent").',
-    ]
+        "activation. "
+    )
+    if _kit_bind_refused_for_role(tool_states):
+        header += (
+            f"{_KIT_BIND_REFUSED_FOR_ROLE} The blocked ones are listed under "
+            "Unavailable below."
+        )
+    else:
+        when = (
+            "If you need a bind-only tool below, this becomes a multi-step "
+            "task, or you will use the kit again later"
+            if any(t.state == "bind_only" for t in tool_states)
+            else "If this becomes a multi-step task or you will use the kit "
+            "again later"
+        )
+        header += (
+            f'{when}, activate it again with Skill(name="{skill.name}", '
+            f"ttl=...) to bind its tools first-class instead, "
+            f"{_KIT_BIND_TTL_CHOICE}." + _kit_bind_reenable_note(tool_states)
+        )
+    lines = [header]
 
     runnable = [t for t in tool_states if t.state == "runnable"]
     if runnable:
@@ -766,8 +881,8 @@ def _defer_kit_tools_block(
     bind_only = [t for t in tool_states if t.state == "bind_only"]
     if bind_only:
         lines.append(
-            "Bind-only: these refuse by-name calls and run only once bound; "
-            f"activate {bind_call} to bind the kit before using them:"
+            "Bind-only: these refuse by-name calls and run only once the kit "
+            "is bound:"
         )
         lines.extend(f"  - {t.name}: {t.reason}" for t in bind_only)
 
@@ -1145,7 +1260,7 @@ def create_skill_meta_tool(
                 t.state == "runnable" for t in tool_states
             )
             executor_note, emit_reload, executor_bound = _ensure_deferred_executor(
-                skill, config, use_direct, needs_executor
+                skill, config, use_direct, needs_executor, tool_states
             )
             body += _defer_kit_tools_block(
                 skill, tool_states, use_direct, executor_bound=executor_bound

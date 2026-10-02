@@ -1895,6 +1895,233 @@ def test_defer_gate_failure_never_offers_protected_or_excluded_recipes(
     assert "install_skill args:" not in text
 
 
+# The kit-level bind steer, Skill(name, ttl=...), is honest only when that
+# bind would work and do what it says (#417 review LOW-1): a kit bind is
+# strict, so ONE role-blocked tool refuses the whole kit, and it un-disables
+# a thread-disabled tool before binding it. Edge skipped: the allowlist arm
+# (inert today, classed unavailable by policy, see the classifier).
+
+ROLE_MIXED_KIT_MD = """---
+name: role-mixed-kit
+description: One protected, one developer-only, one ordinary tool.
+metadata:
+  nymeria:
+    required_tools:
+      - hook_config
+      - hello_test
+      - memory_clear_all
+    tool_ttl: 30m
+---
+
+# Role Mixed Kit
+"""
+
+PROTECTED_PLAIN_KIT_MD = """---
+name: protected-plain-kit
+description: One protected tool and one ordinary tool.
+metadata:
+  nymeria:
+    required_tools:
+      - tool_search
+      - memory_clear_all
+    tool_ttl: 30m
+---
+
+# Protected Plain Kit
+"""
+
+
+def _activate(skill_name: str, skill, *, ttl: str = "2h"):
+    """A non-deferred activation, the bind the deferred steer points at."""
+    skill_tool = cast(StructuredTool, create_skill_meta_tool([skill]))
+    assert skill_tool.func is not None
+    return skill_tool.func(
+        skill_name,
+        ttl=ttl,
+        defer=False,
+        tool_call_id="call-2",
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+
+def test_defer_refusal_with_a_role_blocked_tool_drops_the_kit_bind_steer(
+    tmp_path: Path,
+):
+    """Bind-only plus role-blocked, nothing runnable: the refusal must not
+    point at the kit bind, because that bind is refused for the same role
+    (shown by following the old steer), and it says why instead."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "guarded-kit", GUARDED_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _agent_with(tmp_path, role="user", default_tools=["bash_execute"],
+                        dynamic=True)
+    with _as_current(agent):
+        result = _defer_call("guarded-kit", skill)
+        bind_attempt = _activate("guarded-kit", skill)
+
+    assert isinstance(result, str)
+    assert result.startswith("[Skill Kit defer not possible: guarded-kit]")
+    listing = _deferred_listing(result)
+    assert listing["refused"] == ["hook_config", "install_skill", "hello_test"]
+    assert "tool 'hello_test' is developer-only" in result
+    assert "ttl=" not in result
+    assert "blocked for your role" in result
+    # The premise: the bind the old copy steered to is refused outright.
+    assert isinstance(bind_attempt, str)
+    assert bind_attempt.startswith("[Skill Kit activation failed: guarded-kit]")
+    assert "Developer-only" in bind_attempt
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_defer_block_with_a_role_blocked_tool_drops_the_kit_bind_steer(
+    tmp_path: Path,
+):
+    """Runnable plus bind-only plus role-blocked: the deferred block keeps the
+    runnable recipe but steers to no kit bind, in the header or the
+    bind-only section, and says why."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "role-mixed-kit", ROLE_MIXED_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _agent_with(tmp_path, role="user", default_tools=["bash_execute"],
+                        dynamic=True)
+    with _as_current(agent):
+        result = _defer_call("role-mixed-kit", skill)
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    assert listing["runnable"] == ["memory_clear_all"]
+    assert listing["bind_only"] == ["hook_config"]
+    assert listing["unavailable"] == ["hello_test"]
+    assert "memory_clear_all args:" in text
+    assert "ttl=..." not in text
+    assert "blocked for your role" in text
+
+
+@pytest.mark.parametrize("executor_path", ["disabled", "bind_failed"])
+def test_defer_executor_notes_drop_the_kit_bind_steer_for_a_role_blocked_kit(
+    tmp_path: Path, monkeypatch, executor_path
+):
+    """The tool_invoke notes (disabled on the thread, auto-bind failed) offer
+    the kit bind as the alternative; with a role-blocked tool in the kit that
+    alternative is refused, so neither note may offer it."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "plain-tools-kit", PLAIN_TOOLS_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    if executor_path == "disabled":
+        agent = _agent_with(tmp_path, role="user")  # seed defaults: tool_invoke
+        tc = ThreadConfig(thread_id="thread-a")
+        tc.disabled_tools = ["tool_invoke"]
+        agent.thread_config_manager.save_config(tc)
+        marker = "[tool_invoke disabled on this thread]"
+    else:
+        agent = _agent_with(tmp_path, role="user", default_tools=["bash_execute"],
+                            dynamic=True)
+        monkeypatch.setattr(
+            tool_search_module,
+            "bind_tools_for_thread",
+            lambda *a, **k: ToolBindingResult(ok=False, text="[Error]: nope"),
+        )
+        marker = "auto-binding it failed"
+    with _as_current(agent):
+        result = _defer_call("plain-tools-kit", skill)
+
+    text = _defer_text(result)
+    assert _deferred_listing(text)["unavailable"] == ["hello_test"]
+    note = text[text.index(marker):]
+    assert "ttl=..." not in note
+    assert "blocked for your role" in note
+    assert "ttl=..." not in text
+
+
+def test_defer_kit_bind_steer_says_it_reenables_a_disabled_tool(tmp_path: Path):
+    """Bind-only plus thread-disabled: the steer stays (the bind works) but
+    says it also re-enables the disabled tool, in the refusal, the deferred
+    block's one steer, and the executor note's alternative."""
+    refused_kit = load_skill_directory(
+        _write_skill(tmp_path, "protected-plain-kit", PROTECTED_PLAIN_KIT_MD),
+        scope="bundled",
+    )
+    guarded = load_skill_directory(
+        _write_skill(tmp_path, "guarded-kit", GUARDED_KIT_MD), scope="bundled"
+    )
+    assert refused_kit is not None and guarded is not None
+    agent = _FakeAgent(tmp_path / "data")
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["hook_config", "memory_clear_all", "tool_invoke"]
+    agent.thread_config_manager.save_config(tc)
+    with _as_current(agent):
+        refusal = _defer_call("protected-plain-kit", refused_kit)
+        loaded = _defer_call("guarded-kit", guarded)
+
+    assert isinstance(refusal, str)
+    assert refusal.startswith("[Skill Kit defer not possible: protected-plain-kit]")
+    assert 'Skill(name="protected-plain-kit", ttl=...)' in refusal
+    assert "also re-enables memory_clear_all" in refusal
+
+    text = _defer_text(loaded)
+    listing = _deferred_listing(text)
+    assert listing["unavailable"] == ["hook_config"]
+    assert listing["bind_only"] == ["install_skill"]
+    block, _, note = text.partition("[tool_invoke disabled on this thread]")
+    assert note, "the executor note is missing"
+    assert block.count("also re-enables hook_config") == 1
+    assert "also re-enables hook_config" in note
+    after = agent.thread_config_manager.get_config("thread-a")
+    assert after is not None
+    assert after.disabled_tools == ["hook_config", "memory_clear_all", "tool_invoke"]
+
+
+def test_defer_refusal_for_disabled_tools_only_does_not_claim_a_bind_cannot_help(
+    tmp_path: Path,
+):
+    """Every kit tool thread-disabled: no bind steer (a bind would quietly
+    reverse the user's disable), and no false claim that a bind could not
+    make them runnable (it would, by un-disabling them)."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "plain-tools-kit", PLAIN_TOOLS_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["hello_test", "memory_clear_all"]
+    agent.thread_config_manager.save_config(tc)
+    with _as_current(agent):
+        result = _defer_call("plain-tools-kit", skill)
+
+    assert isinstance(result, str)
+    assert result.startswith("[Skill Kit defer not possible: plain-tools-kit]")
+    assert _deferred_listing(result)["refused"] == ["hello_test", "memory_clear_all"]
+    assert "ttl=" not in result
+    assert "would not make them runnable" not in result
+    assert "tell the user what blocks" in result.lower()
+
+
+def test_defer_block_steers_to_the_kit_bind_once(tmp_path: Path):
+    """One steer per block (#417 review NIT-4): the header carries the kit
+    bind; the bind-only section no longer repeats it."""
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "guarded-kit", GUARDED_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")  # seed defaults carry tool_invoke
+    with _as_current(agent):
+        result = _defer_call("guarded-kit", skill)
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    assert listing["runnable"] == ["hello_test"]
+    assert listing["bind_only"] == ["hook_config", "install_skill"]
+    assert text.count('Skill(name="guarded-kit", ttl=...)') == 1
+    header = next(
+        line for line in text.splitlines() if line.startswith("[Skill Kit deferred]")
+    )
+    assert 'Skill(name="guarded-kit", ttl=...)' in header
+    assert "bind-only tool" in header
+
+
 def _bundled_kit_names() -> list[str]:
     import nymeria
 

@@ -51,10 +51,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TTL = "2h"
 # Tools that reconfigure the agent's own capability or policy surface. Members
-# must be bound to the thread to be callable: the deferred paths (`tool_invoke`
-# and the `nym.tools.*` workflow verb) refuse them outright, so a turn cannot
-# reach one by name without it first being part of the thread's tool set.
-# Enforced in `core/workflows/verbs_tools.py::_gate_reason`.
+# must be bound to the thread to be callable: the by-name paths (`tool_invoke`,
+# permissive direct unbound calls, `self_invoke_tool` and the `nym.tools.*`
+# workflow verb) refuse them outright, so a turn cannot reach one by name
+# without it first being part of the thread's tool set. Enforced in the one
+# shared by-name gate, `core/tool_execution.py::by_name_gate_refusals`.
 #
 # `hook_config` is here because the lifecycle-hook store is the policy plane:
 # `require_approval` and `block_if_matches` are the guardrails a user authors
