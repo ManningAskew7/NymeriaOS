@@ -70,6 +70,8 @@ def create_unified_tools_router(
         # materializes the list); the canonical helper keeps the fallback
         # correct regardless.
         dtt_set = set(resolve_default_tool_names(tool_prefs.default_thread_tools))
+        # #164: the same per-account standing GET /tools/defaults stamps.
+        core_statuses = profile.core_tool_statuses(user.role)
 
         unified_tools = []
         seen = set()
@@ -90,6 +92,7 @@ def create_unified_tools_router(
                 "config_schema": meta.config_schema if meta else None,
                 "user_config": tool_prefs.get_tool_config(tool.name),
                 "globally_disabled": False,
+                "core_status": core_statuses.get(tool.name),
             }
             unified_tools.append(builtin_tool_to_unified(tool_info, tool_prefs))
             seen.add(tool.name)
@@ -269,9 +272,10 @@ def create_unified_tools_router(
             # Effectively unreachable fallback since the lazy profile
             # migration materializes the list; kept as the canonical helper
             # so the pattern stays correct if that ever changes.
-            dtt = resolve_default_tool_names(
+            before = resolve_default_tool_names(
                 profile.tool_preferences.default_thread_tools
             )
+            dtt = list(before)
 
             if request.enabled:
                 if tool_id not in dtt:
@@ -280,6 +284,14 @@ def create_unified_tools_router(
                 if tool_id in dtt:
                     dtt.remove(tool_id)
 
+            # #164: switching a core seed tool off records the decline (so it
+            # is never offered as new again), even when it was already off;
+            # switching it on clears it.
+            profile.tool_preferences.note_default_tools_change(
+                before,
+                dtt,
+                declined=() if request.enabled else (tool_id,),
+            )
             profile.tool_preferences.default_thread_tools = dtt
             profile.updated_at = utc_now()
 

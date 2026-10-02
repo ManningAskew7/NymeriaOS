@@ -55,6 +55,10 @@ class UnifiedToolResponse(BaseModel):
     # required): connected / pending / needs_setup / optional.
     auth_status: str | None = None
     auth_provider: str | None = None
+    # Core seed tools only (backlog #164; None otherwise): this account's
+    # standing for the tool, default / new / declined / absent, the same
+    # value GET /tools/defaults stamps (tools.core_tool_statuses).
+    core_status: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -131,6 +135,7 @@ def builtin_tool_to_unified(
         group_label=grouping["group_label"],
         service=grouping["service"],
         service_label=grouping["service_label"],
+        core_status=tool_info.get("core_status"),
         created_at=None,
         updated_at=None,
     )

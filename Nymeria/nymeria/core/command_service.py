@@ -1121,15 +1121,19 @@ class CommandHttpClient:
     async def get_default_tools(self, user_id: str = "default") -> dict:
         return await self._get("/tools/defaults", params={"user_id": user_id}, act_as=user_id)
 
-    async def set_default_tools(self, user_id: str, tool_names: list[str]) -> dict:
+    async def set_default_tools(
+        self,
+        user_id: str,
+        tool_names: list[str],
+        declined_core_tools: Optional[list[str]] = None,
+    ) -> dict:
         # The route derives admin-ness from the authenticated identity behind
         # act_as, so the admin-only/developer-only gates cannot be influenced by
         # what the caller believes its own role to be.
-        return await self._put(
-            "/tools/defaults",
-            json={"tool_names": list(tool_names)},
-            act_as=user_id,
-        )
+        body: dict[str, Any] = {"tool_names": list(tool_names)}
+        if declined_core_tools:
+            body["declined_core_tools"] = list(declined_core_tools)
+        return await self._put("/tools/defaults", json=body, act_as=user_id)
 
     async def get_tool_categories(self) -> dict:
         return await self._get("/tools/categories")
@@ -1925,7 +1929,12 @@ class CommandBackendClient:
             self.agent, user_id=target_user_id, role=self.user.role
         )
 
-    async def set_default_tools(self, user_id: str, tool_names: list[str]) -> dict:
+    async def set_default_tools(
+        self,
+        user_id: str,
+        tool_names: list[str],
+        declined_core_tools: Optional[list[str]] = None,
+    ) -> dict:
         # Shared write with PUT /tools/defaults, same reason as the read above.
         # `is_admin` comes from THIS client's authenticated user, never from the
         # command executor: an agent's `is_admin` is None, so a caller-supplied
@@ -1947,6 +1956,7 @@ class CommandBackendClient:
                 user_id=target_user_id,
                 tool_names=list(tool_names),
                 is_admin=is_admin,
+                declined_core_tools=list(declined_core_tools or ()),
             )
         except DefaultToolsUpdateError as exc:
             raise ValueError(exc.detail) from exc
@@ -7375,14 +7385,35 @@ class _CommandExecutor(
         data = await self.api.get_default_tools(self.user_id)
         default_names = set(data.get("default_tools", []))
         available = data.get("available_tools", [])
+
+        def row(t: dict) -> str:
+            desc = (t.get("description") or "").split("\n")[0][:60]
+            return f"  {t['name']}: {desc}" if desc else f"  {t['name']}"
+
         lines = [f"Core Tools: {len(default_names)} tools"]
         for t in available:
             if t.get("name") in default_names:
-                desc = (t.get("description") or "").split("\n")[0][:60]
-                if desc:
-                    lines.append(f"  {t['name']}: {desc}")
-                else:
-                    lines.append(f"  {t['name']}")
+                lines.append(row(t))
+        # #164: the standard (seed) tools this account does not have, split
+        # by whether they shipped after it was set up. A seed tool it removed
+        # or dismissed is never "new"; it sits with the neutral rest.
+        new = [t for t in available if t.get("core_status") == "new"]
+        other = [
+            t for t in available if t.get("core_status") in ("absent", "declined")
+        ]
+        if new:
+            lines.append("")
+            lines.append(f"New since this account was set up ({len(new)}):")
+            lines.extend(row(t) for t in new)
+            lines.append(
+                "  Turn one on with `/tools enable <name> global`; "
+                "`/tools disable <name> global` stops listing it as new."
+            )
+        if other:
+            lines.append("")
+            lines.append(f"Other standard tools not in your defaults ({len(other)}):")
+            lines.extend(row(t) for t in other)
+            lines.append("  Turn one on with `/tools enable <name> global`.")
         return "\n".join(lines)
 
     async def _tools_optional_markdown(self, *, every_name: bool = False) -> str | CommandOutput:
@@ -7453,6 +7484,17 @@ class _CommandExecutor(
         else:
             lines.append("")
             lines.append("Optional enabled: none")
+        # #164: one line, only when a standard tool shipped after this account
+        # was set up and is neither in its defaults nor dismissed.
+        new_core = [
+            name for name in data.get("new_core_tools") or [] if isinstance(name, str)
+        ]
+        if new_core:
+            lines.append("")
+            lines.append(
+                f"New standard tools since this account was set up: "
+                f"{', '.join(new_core)} (`/tools list core` to review)."
+            )
         return "\n".join(lines)
 
     async def _tools_category_markdown(
@@ -7536,6 +7578,7 @@ class _CommandExecutor(
         current: set[str],
         *,
         enable: bool,
+        declines: list[str] | None = None,
     ) -> str | None:
         """Add or remove ``tool_names`` in the account's default tool set.
 
@@ -7544,12 +7587,20 @@ class _CommandExecutor(
         rather than fetched twice. Returns the refusal text, or ``None`` on
         success. The admin-only and developer-only gates live below this, in the
         one writer both client shapes call, so this only has to RENDER them.
+        ``declines`` are standard tools ABSENT from the list to record as
+        declined (#164); they make a write happen even when the list itself
+        does not change, which is the point of disabling a tool that is off.
         """
         updated = current | set(tool_names) if enable else current - set(tool_names)
-        if updated == current:
+        if updated == current and not declines:
             return None
         try:
-            await self.api.set_default_tools(self.user_id, sorted(updated))
+            if declines:
+                await self.api.set_default_tools(
+                    self.user_id, sorted(updated), declined_core_tools=list(declines)
+                )
+            else:
+                await self.api.set_default_tools(self.user_id, sorted(updated))
         except ValueError as exc:
             # The in-process client's refusal; its message is already the detail.
             return str(exc) or "Could not update the account-wide tool set."
@@ -7635,8 +7686,17 @@ class _CommandExecutor(
                     tool_names, set_phrase, set_key, error = ([literal], None, None, None)
                 else:
                     return command_error(error)
+            # #164: a standard tool that is off already (new, or absent) is
+            # recorded as declined, so it stops being offered as new. Before,
+            # this was a silent no-op that still answered "Removed".
+            declinable = {
+                str(t.get("name"))
+                for t in defaults.get("available_tools") or []
+                if isinstance(t, dict) and t.get("core_status") in ("new", "absent")
+            }
+            declines = sorted(set(tool_names) & declinable)
             write_error = await self._set_default_tool_names(
-                tool_names, current, enable=False
+                tool_names, current, enable=False, declines=declines
             )
             if write_error:
                 return command_error(write_error)
@@ -7649,6 +7709,17 @@ class _CommandExecutor(
                     f"Removed {set_phrase} "
                     f"from this account's defaults.{suffix}"
                     + (self._custom_category_note() if set_key == "custom" else "")
+                )
+            if tool_names[0] not in current:
+                if declines:
+                    return command_success(
+                        f"Tool '{tool_names[0]}' was not in this account's "
+                        "defaults; recorded as declined, so it is not offered "
+                        "as a new standard tool."
+                    )
+                return command_success(
+                    f"Tool '{tool_names[0]}' is not in this account's defaults; "
+                    "nothing changed."
                 )
             return command_success(
                 f"Removed tool '{tool_names[0]}' from this account's defaults.{suffix}"

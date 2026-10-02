@@ -36,8 +36,12 @@ a FRESH profile; an existing profile's saved ``default_thread_tools`` list is
 only normalized on reload, never extended, so an already-seeded user enables a
 new seed tool per thread, with ``/tools enable``, or via ``PUT /tools/defaults``)
 or in a ``CATALOG_TOOLS`` group (opt-in). Prefer the catalog unless it must
-always be on.
+always be on. A seed promotion also dates itself in ``SEED_TOOL_PROMOTED`` (a
+test fails the build otherwise): that date is how an existing account learns
+the tool is new to it (``core_tool_statuses``, backlog #164).
 """
+
+from datetime import date, datetime, timezone
 
 from .bash import bash_execute
 from .bash_job import bash_job, BASH_JOB_TOOLS
@@ -1627,6 +1631,44 @@ SEED_TOOLS = [
     wait_for_reply,
 ]
 
+# When each SEED_TOOLS member entered the seed, as the UTC day of the commit
+# that put it there (backlog #164). An account whose profile ``created_at``
+# predates a tool's date, and whose defaults lack it, was never offered it:
+# that tool is "new" for the account (``core_tool_statuses``), surfaced to the
+# user (`/tools list core`, both GUIs) and to the agent (one system-prompt
+# line), never enabled. PROMOTING A TOOL INTO SEED_TOOLS MEANS ADDING ITS DATE
+# HERE IN THE SAME COMMIT: tests/test_core_tool_discovery.py fails the build
+# while the keys differ from the seed names. Dates are archaeology over this
+# block's history (`git log` per commit, evidence in shipped/02, 2026-10-02):
+# where uncertain the EARLIER plausible day, which makes fewer accounts see
+# "new" (the fail-quiet direction). Members of the initial seed, and tools that
+# are renames of an initial member (LEGACY_TOOL_RENAMES), sit at the floor.
+_SEED_FLOOR = date(2026, 2, 7)  # 4588e308, the initial commit
+SEED_TOOL_PROMOTED: dict[str, date] = {
+    "bash_execute": _SEED_FLOOR,
+    "file_read": _SEED_FLOOR,
+    "file_write": _SEED_FLOOR,
+    "file_edit": date(2026, 6, 14),  # 9f5766ff
+    # In the initial seed, out 2026-02-21 (1a9cbfa9), back with #257.
+    "file_list": date(2026, 9, 23),  # c5b97e5a
+    # Renames of memory_save (initial) via profile_*/notepad_* (2026-05-01).
+    "memory_add": _SEED_FLOOR,
+    "memory_edit": _SEED_FLOOR,
+    "memory_read": _SEED_FLOOR,
+    "rag_search": _SEED_FLOOR,
+    # Renames of the initial todo_* tools (2026-04-18).
+    "nym_todo": _SEED_FLOOR,
+    "nym_todo_delete": _SEED_FLOOR,
+    "nym_todo_list": _SEED_FLOOR,
+    "notify": _SEED_FLOOR,
+    "slash_command": date(2026, 5, 15),  # a516701d
+    "run_tools_in_order": date(2026, 6, 29),  # 83bcff6b
+    "tool_invoke": date(2026, 7, 8),  # b560e585
+    "spawn_thread": date(2026, 8, 30),  # 4f2dbb2e
+    "reply_to_thread": date(2026, 9, 8),  # 859133da (#357)
+    "wait_for_reply": date(2026, 9, 8),  # 859133da (#357)
+}
+
 
 def seed_tool_names() -> list[str]:
     """Names of the seed tools (``SEED_TOOLS``).
@@ -1685,6 +1727,70 @@ def resolve_default_tool_names(default_thread_tools) -> list[str]:
     result. Behavior-identical to that pattern.
     """
     return default_thread_tools if default_thread_tools is not None else seed_tool_names()
+
+
+# The four standings a core seed tool can have on one account (backlog #164).
+CORE_STATUS_DEFAULT = "default"
+CORE_STATUS_NEW = "new"
+CORE_STATUS_DECLINED = "declined"
+CORE_STATUS_ABSENT = "absent"
+
+
+def _created_day(created_at: datetime | None) -> date:
+    """The UTC day a profile was created; a missing stamp reads as today.
+
+    Today is the fail-quiet reading: nothing was promoted after it, so a
+    profile without ``created_at`` sees no tool as new. A naive stamp (legacy
+    JSON) is taken as UTC, matching ``core.time_utils.ensure_aware_utc``.
+    """
+    if created_at is None:
+        return datetime.now(timezone.utc).date()
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return created_at.astimezone(timezone.utc).date()
+
+
+def core_tool_statuses(
+    default_thread_tools,
+    declined_core_tools,
+    created_at: datetime | None,
+    role: str,
+) -> dict[str, str]:
+    """Each core seed tool's standing on one account, in seed order (#164).
+
+    - ``default``: in the account's ``default_thread_tools``.
+    - ``declined``: not in it, and on the profile's ``declined_core_tools``
+      record (removed from the defaults, or dismissed as new).
+    - ``new``: not in it, not declined, and promoted into the seed
+      (``SEED_TOOL_PROMOTED``) on a later day than the profile was created, so
+      this account was never offered it.
+    - ``absent``: not in it, not declined, and already in the seed when the
+      profile was created (a curated removal or a wizard decline that predates
+      the record). Neutral: never called new.
+
+    A tool the account's role may not have (admin-only or developer-only for
+    a non-admin) and that is not in the list is left out: it is not a standard
+    tool for that account. Pure: reads the inputs, writes nothing.
+    """
+    in_list = set(resolve_default_tool_names(default_thread_tools))
+    declined = set(declined_core_tools or ())
+    created_day = _created_day(created_at)
+    core = core_seed_tool_names()
+    allowed, _ = filter_admin_only_tools(core, role)
+    allowed, _ = filter_developer_only_tools(allowed, role)
+    statuses: dict[str, str] = {}
+    for name in core:
+        if name in in_list:
+            statuses[name] = CORE_STATUS_DEFAULT
+        elif name not in allowed:
+            continue
+        elif name in declined:
+            statuses[name] = CORE_STATUS_DECLINED
+        elif SEED_TOOL_PROMOTED.get(name, _SEED_FLOOR) > created_day:
+            statuses[name] = CORE_STATUS_NEW
+        else:
+            statuses[name] = CORE_STATUS_ABSENT
+    return statuses
 
 
 def static_tool_catalog() -> dict:

@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, NamedTuple, Optional, Union
+from typing import Any, ClassVar, Dict, Iterable, List, NamedTuple, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
@@ -179,6 +179,18 @@ class ToolPreferences(BaseModel):
             "Can include both core and optional tool names."
         )
     )
+    declined_core_tools: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Core seed tools this account removed from its defaults or "
+            "dismissed as new (backlog #164). The explicit record behind "
+            "'never re-advertise a deliberate removal': a seed tool missing "
+            "from default_thread_tools is only ever called new when it is "
+            "NOT here. Written by every defaults writer through "
+            "note_default_tools_change; cleared when the tool is enabled "
+            "again. Empty on older profile files, which load unchanged."
+        ),
+    )
 
     @field_validator("default_thread_tools", mode="before")
     @classmethod
@@ -188,6 +200,45 @@ class ToolPreferences(BaseModel):
         if isinstance(v, list):
             return migrate_tool_names([str(x) for x in v])
         return v
+
+    @field_validator("declined_core_tools", mode="before")
+    @classmethod
+    def _migrate_legacy_declined_names(cls, v):
+        # A renamed seed tool keeps its decline (same renames as the list).
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return migrate_tool_names([str(x) for x in v])
+        return v
+
+    def note_default_tools_change(
+        self,
+        before: Iterable[str],
+        after: Iterable[str],
+        *,
+        declined: Iterable[str] = (),
+    ) -> None:
+        """Keep ``declined_core_tools`` in step with a defaults write (#164).
+
+        The one rule every writer of ``default_thread_tools`` shares (the
+        whole-list PUT and its in-process twin, the unified per-tool toggle,
+        the reset, the init wizard): a core seed tool that LEAVES the list, or
+        that the caller explicitly ``declined`` while it was absent, is
+        recorded; a name IN the list afterwards is cleared (a declined tool
+        turned back on stays on, #102's rule). Non-seed names are never
+        recorded. Entries for tools that have since left the seed are kept,
+        so a tool that returns to the seed is still not re-advertised. Call
+        it with the list as it was before the write and as written.
+        """
+        from ..tools import core_seed_tool_names
+
+        core = set(core_seed_tool_names())
+        after_set = set(after)
+        record = [name for name in self.declined_core_tools if name not in after_set]
+        for name in [*before, *declined]:
+            if name in core and name not in after_set and name not in record:
+                record.append(name)
+        self.declined_core_tools = record
 
     def set_tool_config(self, tool_name: str, config: Dict[str, Any]) -> None:
         """Set configuration for a specific tool."""
@@ -221,6 +272,7 @@ class ToolPreferences(BaseModel):
         ``get_profile``.
         """
         self.default_thread_tools = None
+        self.declined_core_tools = []
         self.tool_configs.clear()
         self.custom_descriptions.clear()
 
@@ -294,6 +346,9 @@ class UserProfile(BaseModel):
 
     user_id: str = Field(default="default")
     name: Optional[str] = Field(default=None, description="User's preferred name")
+    # Also the "set up" moment of backlog #164's new-core-tool signal: a seed
+    # tool promoted on a later day was never offered to this account. A file
+    # without the field loads as created now, so nothing reads as new.
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -449,6 +504,23 @@ class UserProfile(BaseModel):
             self.updated_at = utc_now()
             return True
         return False
+
+    def core_tool_statuses(self, role: str) -> Dict[str, str]:
+        """Each core seed tool's standing on this account (#164).
+
+        ``tools.core_tool_statuses`` over this profile's defaults, decline
+        record and ``created_at``. The one read every surface shares (the
+        tools routes, the command layer through them, the agent's prompt).
+        """
+        from ..tools import core_tool_statuses
+
+        prefs = self.tool_preferences
+        return core_tool_statuses(
+            prefs.default_thread_tools,
+            prefs.declined_core_tools,
+            self.created_at,
+            role,
+        )
 
     def get_rag_preferences(self) -> Dict[str, Any]:
         """Get RAG preferences with defaults."""

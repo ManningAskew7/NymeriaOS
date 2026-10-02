@@ -78,6 +78,23 @@ def _save_thread(agent: FakeAgent, user_id: str, config: ThreadConfig) -> None:
     agent.accounts_repo.claim_thread(config.thread_id, user_id)
 
 
+def _newest_seed_tool() -> str:
+    """The seed tool promoted last (backlog #164's natural "new" fixture)."""
+    from nymeria.tools import SEED_TOOL_PROMOTED, core_seed_tool_names
+
+    return max(core_seed_tool_names(), key=lambda name: SEED_TOOL_PROMOTED[name])
+
+
+def _day_before_promotion(name: str):
+    from datetime import datetime, timedelta, timezone
+
+    from nymeria.tools import SEED_TOOL_PROMOTED
+
+    return datetime.combine(
+        SEED_TOOL_PROMOTED[name] - timedelta(days=1), datetime.min.time(), timezone.utc
+    )
+
+
 def _register_registry_callable(agent: FakeAgent, name: str) -> None:
     def helper(task: str) -> str:
         return task
@@ -414,6 +431,16 @@ def test_command_backend_get_default_tools_matches_route_payload(
         ),
     )
 
+    # #164 (E8): an account set up before the newest seed promotion, so the
+    # compared payload carries a real "new" status and new_core_tools list.
+    # The PUT above recorded every seed tool it dropped as declined; clearing
+    # the record makes this the legacy account the item is about (its list
+    # predates the record, so nothing says the newest tool was refused).
+    newest = _newest_seed_tool()
+    with agent.profile_manager.atomic_update("owner") as profile:
+        profile.created_at = _day_before_promotion(newest)
+        profile.tool_preferences.declined_core_tools = []
+
     backend = CommandBackendClient(
         agent,
         user=_CommandBackendUser(id="owner", role="admin"),
@@ -429,6 +456,12 @@ def test_command_backend_get_default_tools_matches_route_payload(
     # Sanity: the compared payload is non-trivial.
     assert backend_dict["callable_thread_count"] == 1
     assert SEED_TOOLS[0].name in backend_dict["default_tools"]
+    assert backend_dict["new_core_tools"] == [newest]
+    statuses = {
+        item["name"]: item.get("core_status") for item in backend_dict["available_tools"]
+    }
+    assert statuses[newest] == "new"
+    assert statuses[SEED_TOOLS[0].name] == "default"
 
 
 def test_user_tool_search_endpoint_returns_ranked_hints(
@@ -879,3 +912,196 @@ def test_the_delta_rule_is_identical_through_the_in_process_client(
         asyncio.run(
             backend.set_default_tools("owner", [SEED_TOOLS[0].name, "ghost_tool", sorted(ADMIN_ONLY_TOOL_NAMES)[1]])
         )
+
+
+# #164: core-tool discovery on the defaults read model and writer
+
+
+def _seed_account(agent: FakeAgent, user_id: str, *, created_at, defaults, declined=()):
+    with agent.profile_manager.atomic_update(user_id) as profile:
+        profile.created_at = created_at
+        profile.tool_preferences.default_thread_tools = list(defaults)
+        profile.tool_preferences.declined_core_tools = list(declined)
+
+
+def _statuses(payload: dict) -> dict:
+    return {
+        item["name"]: item["core_status"]
+        for item in payload["available_tools"]
+        if not item["is_optional"]
+    }
+
+
+def test_core_status_marks_only_seed_tools_promoted_after_the_account_was_set_up(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The status matrix over the HTTP read model (E2, E6).
+
+    One account set up the day before the newest promotion lacks that tool
+    (new), a floor-date seed tool (absent: it was offered, so its absence is a
+    removal) and a declined one; a second account set up after the promotion
+    lacks the same tool and reads it as absent, not new.
+    """
+    from datetime import timedelta
+
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    client, agent = _client(tmp_path, api_client_builder)
+    early_token = _create_user(agent, "early")
+    late_token = _create_user(agent, "late")
+    newest = _newest_seed_tool()
+    before = _day_before_promotion(newest)
+    lacking = [
+        n for n in fresh_default_thread_tool_names()
+        if n not in (newest, "notify", "slash_command")
+    ]
+    _seed_account(agent, "early", created_at=before, defaults=lacking, declined=["slash_command"])
+    _seed_account(
+        agent, "late", created_at=before + timedelta(days=2),
+        defaults=[n for n in fresh_default_thread_tool_names() if n != newest],
+    )
+
+    early = client.get("/tools/defaults", headers=api_client_builder.auth(early_token)).json()
+    late = client.get("/tools/defaults", headers=api_client_builder.auth(late_token)).json()
+
+    early_statuses = _statuses(early)
+    assert early_statuses[newest] == "new"
+    assert early_statuses["notify"] == "absent"
+    assert early_statuses["slash_command"] == "declined"
+    assert early_statuses[SEED_TOOLS[0].name] == "default"
+    assert early["new_core_tools"] == [newest]
+    assert _statuses(late)[newest] == "absent"
+    assert late["new_core_tools"] == []
+
+
+def test_the_defaults_writer_records_a_removed_seed_tool_and_clears_it_on_re_add(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """E5 on the whole-list PUT (the desktop Tools panel's save path)."""
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    newest = _newest_seed_tool()
+    fresh = fresh_default_thread_tool_names()
+    _seed_account(agent, "owner", created_at=_day_before_promotion(newest), defaults=fresh)
+
+    removed = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [n for n in fresh if n != newest]},
+    )
+    after_remove = client.get("/tools/defaults", headers=api_client_builder.auth(token)).json()
+    re_added = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": fresh},
+    )
+
+    assert removed.status_code == 200
+    # Removing it records the decline: never offered as "new" again.
+    assert _statuses(after_remove)[newest] == "declined"
+    assert after_remove["new_core_tools"] == []
+    assert re_added.status_code == 200
+    prefs = agent.profile_manager.get_profile("owner").tool_preferences
+    assert prefs.declined_core_tools == []
+    assert newest in prefs.default_thread_tools
+    # A non-seed tool leaving the list is never recorded.
+    client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [n for n in fresh if n != "web_search_ddgs"]},
+    )
+    assert agent.profile_manager.get_profile("owner").tool_preferences.declined_core_tools == []
+
+
+def test_the_defaults_writer_declines_an_absent_seed_tool_without_changing_the_list(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The GUI's Dismiss: a whole-list replace cannot say "decline X" for an X
+    that is not on the list, so the request carries it explicitly."""
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    newest = _newest_seed_tool()
+    lacking = [n for n in fresh_default_thread_tool_names() if n != newest]
+    _seed_account(agent, "owner", created_at=_day_before_promotion(newest), defaults=lacking)
+
+    dismissed = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": lacking, "declined_core_tools": [newest]},
+    )
+
+    assert dismissed.status_code == 200
+    prefs = agent.profile_manager.get_profile("owner").tool_preferences
+    assert prefs.default_thread_tools == lacking
+    assert prefs.declined_core_tools == [newest]
+    payload = client.get("/tools/defaults", headers=api_client_builder.auth(token)).json()
+    assert payload["new_core_tools"] == []
+
+
+@pytest.mark.parametrize(
+    ("declined", "detail"),
+    [
+        (["web_search_ddgs"], "Only standard (core seed) tools can be declined"),
+        (["bash_execute"], "cannot be both enabled and declined"),
+    ],
+)
+def test_the_defaults_writer_refuses_a_decline_it_cannot_honour(
+    tmp_path: Path,
+    api_client_builder,
+    declined,
+    detail,
+):
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    fresh = fresh_default_thread_tool_names()
+    _seed_account(agent, "owner", created_at=_day_before_promotion(_newest_seed_tool()), defaults=fresh)
+    before = agent.profile_manager.get_profile("owner").tool_preferences.model_dump()
+
+    response = client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": fresh, "declined_core_tools": declined},
+    )
+
+    assert response.status_code == 400
+    assert detail in response.json()["detail"]
+    assert agent.profile_manager.get_profile("owner").tool_preferences.model_dump() == before
+    assert agent.default_graph_rebuilds == 0
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("DELETE", "/tools/defaults"), ("POST", "/users/owner/tools/reset")],
+)
+def test_reset_to_defaults_clears_every_decline(
+    tmp_path: Path,
+    api_client_builder,
+    method,
+    path,
+):
+    """Both reset doors bring every core seed tool back, so no decline stands."""
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    newest = _newest_seed_tool()
+    _seed_account(
+        agent, "owner", created_at=_day_before_promotion(newest),
+        defaults=["bash_execute"], declined=[newest, "notify"],
+    )
+
+    response = client.request(method, path, headers=api_client_builder.auth(token))
+
+    assert response.status_code == 200
+    prefs = agent.profile_manager.get_profile("owner").tool_preferences
+    assert prefs.default_thread_tools == fresh_default_thread_tool_names()
+    assert prefs.declined_core_tools == []

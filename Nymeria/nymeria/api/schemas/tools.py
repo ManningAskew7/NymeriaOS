@@ -10,6 +10,14 @@ class DefaultToolsUpdateRequest(BaseModel):
         ...,
         description="Tool names to enable by default for new threads",
     )
+    declined_core_tools: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Core seed tools absent from tool_names to record as declined, so "
+            "they are no longer offered as new (backlog #164, the GUI's "
+            "Dismiss). A seed tool the write removes is recorded on its own."
+        ),
+    )
 
 
 class ToolSearchResultResponse(BaseModel):

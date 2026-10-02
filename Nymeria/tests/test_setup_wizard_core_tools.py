@@ -387,3 +387,43 @@ def test_a_scoped_core_tools_reconfigure_rewrites_the_profile(tmp_path, monkeypa
     after = json.loads(profile.read_text())["tool_preferences"]["default_thread_tools"]
     assert "bash_execute" not in after
     assert after[: len(core) - 1] == [name for name in core if name != "bash_execute"]
+
+
+def test_a_local_reconfigure_mirrors_its_declines_into_the_profile(tmp_path):
+    """E9 (#164): a seed tool promoted after the bootstrap profile was created
+    and unticked on a reconfigure is a decline, never "new"; ticking it again
+    clears the record. The wizard's own record (the env file) is not something
+    the backend reads, so the profile has to carry it."""
+    from datetime import datetime, timedelta, timezone
+
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.setup.finalize import seed_bootstrap_profile, update_bootstrap_profile
+    from nymeria.tools import SEED_TOOL_PROMOTED
+
+    core = core_seed_tool_names()
+    newest = max(core, key=lambda name: SEED_TOOL_PROMOTED[name])
+    data_dir = tmp_path / "data"
+    console, _ = _capture_console()
+    seed_bootstrap_profile(data_dir, WizardState(), console)
+    manager = UserProfileManager(data_dir)
+    with manager.atomic_update("default") as profile:
+        profile.created_at = datetime.combine(
+            SEED_TOOL_PROMOTED[newest] - timedelta(days=1),
+            datetime.min.time(),
+            timezone.utc,
+        )
+
+    unticked = WizardState()
+    unticked.extras["core_tools"] = [name for name in core if name != newest]
+    update_bootstrap_profile(data_dir, unticked, console, scoped_section="core_tools")
+
+    profile = UserProfileManager(data_dir).get_profile("default")
+    assert newest not in profile.tool_preferences.default_thread_tools
+    assert profile.tool_preferences.declined_core_tools == [newest]
+    assert profile.core_tool_statuses("admin")[newest] == "declined"
+
+    update_bootstrap_profile(data_dir, WizardState(), console, scoped_section="core_tools")
+
+    profile = UserProfileManager(data_dir).get_profile("default")
+    assert newest in profile.tool_preferences.default_thread_tools
+    assert profile.tool_preferences.declined_core_tools == []

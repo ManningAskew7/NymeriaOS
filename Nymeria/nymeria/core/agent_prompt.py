@@ -197,6 +197,84 @@ def build_active_todos_section(
     return "\n".join(lines)
 
 
+def new_core_tools_for_thread(
+    host: PromptHost, user_id: str, tc: Any, *, role: Optional[str] = None
+) -> List[str]:
+    """Core seed tools new to this account and not bound or disabled on ``tc``.
+
+    The input to the system prompt's "Standard Tools Not Enabled" section
+    (backlog #164) and to the graph-cache hash, so the two cannot disagree.
+    "New" is ``UserProfile.core_tool_statuses``: promoted into the seed after
+    the profile was created, not in its defaults, never declined, allowed by
+    role. A tool the thread already binds (``enabled_tools`` or a live TTL
+    entry) needs no hint; one the thread disables was turned off on purpose.
+    Dream shadow threads get none (their tool set is a fixed whitelist).
+    Best-effort: any failure reads as nothing new, never a failed build.
+    """
+    if tc is not None and getattr(tc, "shadow_parent_id", None):
+        return []
+    try:
+        from ..tools import CORE_STATUS_NEW
+
+        if role is None:
+            from .agent_graph import _resolve_owner_role
+
+            role = _resolve_owner_role(host, user_id)
+        profile = host.profile_manager.get_profile(user_id)
+        names = [
+            name
+            for name, status in profile.core_tool_statuses(role).items()
+            if status == CORE_STATUS_NEW
+        ]
+        if names and tc is not None:
+            on_thread = (
+                set(tc.enabled_tools or ())
+                | set(host._resolve_temporary_tools(tc))
+                | set(tc.disabled_tools or ())
+            )
+            names = [name for name in names if name not in on_thread]
+        return names
+    except Exception as exc:  # noqa: BLE001 - a hint must never break a turn
+        logger.warning("New core tool hint skipped for %s: %s", user_id, exc)
+        return []
+
+
+def build_new_core_tools_section(names: List[str]) -> str:
+    """The short system-prompt section naming new standard tools (#164).
+
+    Empty when nothing is new, so an account that has every seed tool (or
+    dismissed the rest) pays nothing. Informs only: the agent names the tool
+    and the enable command, and enabling stays the user's call.
+    """
+    if not names:
+        return ""
+    from ..tools import static_tool_catalog
+
+    catalog = static_tool_catalog()
+    lines = [
+        "",
+        "---",
+        "",
+        "## Standard Tools Not Enabled",
+        "",
+        "Added since this account was set up and not enabled on this thread:",
+    ]
+    for name in names:
+        tool = catalog.get(name)
+        first = (getattr(tool, "description", "") or "").strip().split("\n")[0]
+        first = first.strip().rstrip(".")[:90]
+        lines.append(f"- {name}: {first}" if first else f"- {name}")
+    lines.extend([
+        "",
+        "If a request needs one, do not say the capability does not exist: tell",
+        "the user the tool exists and that `/tools enable <name>` turns it on for",
+        "this thread (`/tools enable <name> global` for every thread). Do not",
+        "enable it yourself.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def get_memory_hash(
     host: PromptHost, user_id: str, thread_id: str = ""
 ) -> str:
@@ -223,7 +301,8 @@ def get_memory_hash(
     # not of where the fix lives.
     from .agent_graph import _resolve_owner_role
 
-    role_str = f"|role:{_resolve_owner_role(host, user_id)}"
+    owner_role = _resolve_owner_role(host, user_id)
+    role_str = f"|role:{owner_role}"
 
     if tc and tc.callable and tc.system_prompt:
         thread_config_str = (
@@ -261,6 +340,11 @@ def get_memory_hash(
     # Include tool preferences in the hash (so graph is rebuilt when tools change)
     tool_prefs = profile.tool_preferences
     tool_prefs_str = f"dtt:{sorted(tool_prefs.default_thread_tools or [])}"
+    # The #164 hint's exact input (it folds the decline record, created_at,
+    # role and this thread's lists), so a Dismiss rebuilds the prompt once.
+    tool_prefs_str += (
+        f"|nct:{new_core_tools_for_thread(host, user_id, tc, role=owner_role)}"
+    )
 
     # Include thread config in the hash (so graph is rebuilt when config changes)
     thread_config_str = ""
@@ -324,7 +408,11 @@ def build_full_system_prompt(
     todos_section = ""
     if tc and tc.inject_todos_in_prompt:
         todos_section = host._build_active_todos_section(user_id, thread_id)
-    prompt = base + profile_section + todos_section
+    # #164: after the TODOs, before the thread's own instructions.
+    new_tools_section = build_new_core_tools_section(
+        new_core_tools_for_thread(host, user_id, tc)
+    )
+    prompt = base + profile_section + todos_section + new_tools_section
 
     # Inject per-thread instructions (appended last)
     if tc and tc.instructions:

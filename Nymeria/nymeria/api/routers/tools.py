@@ -47,6 +47,7 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
     ``user_id`` (already access-checked), and account ``role``.
     """
     from ...tools import (
+        CORE_STATUS_NEW,
         SEED_TOOLS,
         CATALOG_TOOLS,
         filter_discoverable_catalog_tool_names,
@@ -61,6 +62,10 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
     profile = agent.profile_manager.get_profile(user_id)
     prefs = profile.tool_preferences
     default_set = set(resolve_default_tool_names(prefs.default_thread_tools))
+    # #164: each seed tool's standing on this account (default / new /
+    # declined / absent; None when its role gate hides it). Seed items only,
+    # so the ~1,250 catalog rows do not each carry a null.
+    core_statuses = profile.core_tool_statuses(role)
 
     tools_out = []
     seen = set()
@@ -78,6 +83,7 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
             "security_level": meta.security_level.value if meta else "moderate",
             "is_optional": False,
             "is_default": t.name in default_set,
+            "core_status": core_statuses.get(t.name),
             **integration_grouping_fields(t.name, category),
         })
         seen.add(t.name)
@@ -132,6 +138,11 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
         "default_tools": sorted(default_set),
         "available_tools": tools_out,
         "callable_thread_count": callable_count,
+        # Seed order. Promoted after this account was set up, not in its
+        # defaults, never declined: what the "New" badge and callout show.
+        "new_core_tools": [
+            name for name, status in core_statuses.items() if status == CORE_STATUS_NEW
+        ],
     }
 
 
@@ -155,6 +166,7 @@ def apply_default_tools_update(
     user_id: str,
     tool_names: list[str],
     is_admin: bool,
+    declined_core_tools: list[str] | None = None,
 ) -> dict:
     """Single source of truth for the default-tools WRITE.
 
@@ -193,6 +205,14 @@ def apply_default_tools_update(
     defaults through ``PUT /users/{id}/tools/unified/{tool}/enable`` (which
     gates on the CALLER's role, where this gates on the target's) is no longer
     swept out by the next write.
+
+    The write also keeps the core-tool decline record in step (#164,
+    ``ToolPreferences.note_default_tools_change``): a seed tool the new list
+    drops is recorded as declined, one it carries is cleared.
+    ``declined_core_tools`` declines seed tools that are ABSENT from the list
+    (the GUI's Dismiss, `/tools disable <seed> global` on a tool already off),
+    which a whole-list replace cannot otherwise express. Each must be a core
+    seed tool and must not also be in ``tool_names`` (400 either way).
     """
     from ...core.user_profile import migrate_tool_names
     from ...tools import (
@@ -200,10 +220,26 @@ def apply_default_tools_update(
         SEED_TOOLS,
         DEVELOPER_ONLY_TOOL_NAMES,
         CATALOG_TOOLS,
+        core_seed_tool_names,
+        resolve_default_tool_names,
     )
     from ...tools.metadata import MCP_SERVER_TOOL_METADATA
 
     resolved = migrate_tool_names(list(tool_names))
+    declines = migrate_tool_names(list(declined_core_tools or ()))
+    not_core = set(declines) - set(core_seed_tool_names())
+    if not_core:
+        raise DefaultToolsUpdateError(
+            400,
+            "Only standard (core seed) tools can be declined: "
+            f"{sorted(not_core)}",
+        )
+    both = set(declines) & set(resolved)
+    if both:
+        raise DefaultToolsUpdateError(
+            400,
+            f"A tool cannot be both enabled and declined: {sorted(both)}",
+        )
 
     # One locked read-modify-write: a direct get_profile + save_profile
     # raced other writers and reported success when the save was refused
@@ -237,7 +273,13 @@ def apply_default_tools_update(
                     f"defaults by this user: {sorted(blocked)}",
                 )
 
-        profile.tool_preferences.default_thread_tools = resolved
+        prefs = profile.tool_preferences
+        prefs.note_default_tools_change(
+            resolve_default_tool_names(prefs.default_thread_tools),
+            resolved,
+            declined=declines,
+        )
+        prefs.default_thread_tools = resolved
 
     agent._rebuild_default_graphs()
 
@@ -448,6 +490,7 @@ def create_tools_router(
                 user_id=user_id,
                 tool_names=list(request.tool_names),
                 is_admin=user.role == "admin",
+                declined_core_tools=list(request.declined_core_tools or ()),
             )
         except DefaultToolsUpdateError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
@@ -465,13 +508,20 @@ def create_tools_router(
         had) plus the keyless web defaults, i.e. exactly what a brand-new
         profile is seeded with.
         """
-        from ...tools import fresh_default_thread_tool_names
+        from ...tools import (
+            fresh_default_thread_tool_names,
+            resolve_default_tool_names,
+        )
 
         agent = get_agent_fn()
         with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.default_thread_tools = (
-                fresh_default_thread_tool_names()
+            prefs = profile.tool_preferences
+            fresh = fresh_default_thread_tool_names()
+            # Every core seed tool comes back on, so every decline clears.
+            prefs.note_default_tools_change(
+                resolve_default_tool_names(prefs.default_thread_tools), fresh
             )
+            prefs.default_thread_tools = fresh
 
         agent._rebuild_default_graphs()
 

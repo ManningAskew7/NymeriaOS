@@ -1701,6 +1701,12 @@ def _apply_profile_picks(
     """
 
     tools = default_thread_tools_for_state(state)
+    # Mirror the unticked seed tools into the profile's decline record
+    # (#164), so one promoted after this profile was created and unticked
+    # here is never offered as "new"; a kept one clears its decline.
+    profile.tool_preferences.note_default_tools_change(
+        (), tools, declined=declined_core_tool_names(state)
+    )
     profile.tool_preferences.default_thread_tools = tools
     skills = selected_global_skills_for_state(state)
     profile.enabled_global_skills = skills

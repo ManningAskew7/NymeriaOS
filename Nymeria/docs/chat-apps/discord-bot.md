@@ -332,7 +332,7 @@ During streamed replies, Discord now surfaces compaction events instead of hidin
 
 | Command | Description |
 |---------|-------------|
-| `/tools core` | List core tools (always loaded by default). |
+| `/tools core` | List core tools (always loaded by default), then any standard tools not in your defaults, with those added since the account was set up listed first as new. |
 | `/tools optional` | Index of optional tools: each category with its count, per-channel active count and example names; `integrations` expands into its groups and their service keys. |
 | `/tools enabled` | Show all tools active in this channel: core (with any disabled), optional enabled. |
 | `/tools category <name>` | List tools in a category with enabled/disabled status for this channel. Also takes an integration group (`crm_sales`) or service (`github`); `integrations` itself lists its groups and services. |

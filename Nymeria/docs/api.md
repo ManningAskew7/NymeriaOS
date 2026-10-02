@@ -1475,6 +1475,18 @@ advisory `warning` string when the write drops `reply_to_thread` or
 `wait_for_reply` out of the defaults (see "Capability-loss warning" under
 `PATCH /threads/{thread_id}/config`).
 
+Standard (core seed) tools carry this account's standing (backlog #164, the
+tools reference's "New core tools on existing accounts"): each seed item of
+`GET` has `core_status`, one of `default` (in the list), `new` (promoted after
+the account was set up, never declined), `declined` (removed or dismissed), or
+`absent` (offered at setup, not in the list), or `null` when the account's role
+may not have the tool; catalog items carry no `core_status` key. The top-level
+`new_core_tools` lists the `new` names in seed order. `PUT` accepts an optional
+`declined_core_tools` list: seed tools absent from `tool_names` to record as
+declined (the GUI's Dismiss), 400 for a non-seed name or one that is also in
+`tool_names`. A seed tool the `PUT` drops is recorded as declined on its own,
+one it carries is cleared, and `DELETE` (reset) clears every decline.
+
 ### Thread Callable Tools
 
 ```http
@@ -4703,7 +4715,9 @@ axis fields `auth_status`/`auth_provider` (see the tool-search endpoint
 above); tools that need no credential return `null` for both. `mcp_server`
 tools additionally carry `server_id`/`server_name`/`display_name` provenance
 and reuse `auth_status` as a setup axis from the server's install status (see
-the tool-search note above).
+the tool-search note above). Standard (core seed) tools carry `core_status`
+(`default` / `new` / `declined` / `absent`, as on `GET /tools/defaults`); every
+other tool returns `null`.
 
 ### Enable Unified Tool
 
@@ -4727,6 +4741,9 @@ here is refused with 400 (a definition id in `default_thread_tools` binds
 nothing), while `enabled: false` still removes a stale entry. Disabling `reply_to_thread` or
 `wait_for_reply` succeeds and adds an advisory `warning` string to the
 response (see "Capability-loss warning" under `PATCH /threads/{thread_id}/config`).
+`enabled: false` on a standard (core seed) tool records it in the account's
+decline record, even when it was already off, so it is never offered as new;
+`enabled: true` clears the record.
 
 ### Update Unified Tool Description
 

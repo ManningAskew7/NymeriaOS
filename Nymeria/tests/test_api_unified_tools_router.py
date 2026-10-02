@@ -599,3 +599,107 @@ def test_unified_delete_records_the_retirement_and_unified_create_clears_it(
 
     assert client.post("/tools/unified", headers=headers, json=body).status_code == 200
     assert get_custom_tool_retirements_repo().get("price_lookup") is None
+
+
+# #164: core-tool discovery on the unified payload (mobile's list)
+
+
+def _newest_seed_tool() -> str:
+    from nymeria.tools import SEED_TOOL_PROMOTED, core_seed_tool_names
+
+    return max(core_seed_tool_names(), key=lambda name: SEED_TOOL_PROMOTED[name])
+
+
+def _account_set_up_before(agent: FakeAgent, user_id: str, tool: str, *, defaults):
+    from datetime import datetime, timedelta, timezone
+
+    from nymeria.tools import SEED_TOOL_PROMOTED
+
+    with agent.profile_manager.atomic_update(user_id) as profile:
+        profile.created_at = datetime.combine(
+            SEED_TOOL_PROMOTED[tool] - timedelta(days=1),
+            datetime.min.time(),
+            timezone.utc,
+        )
+        profile.tool_preferences.default_thread_tools = list(defaults)
+
+
+def _core_statuses(client, api_client_builder, token: str, user_id: str) -> dict:
+    payload = client.get(
+        f"/users/{user_id}/tools/unified",
+        headers=api_client_builder.auth(token),
+    ).json()
+    return {tool["id"]: tool["core_status"] for tool in payload["tools"]}
+
+
+def test_unified_tools_carry_the_core_status_mobile_badges_read(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """E2 for mobile: the unified payload had no seed/core flag at all."""
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    token = _create_user(agent, "owner")
+    newest = _newest_seed_tool()
+    _account_set_up_before(
+        agent, "owner", newest,
+        defaults=[n for n in fresh_default_thread_tool_names() if n not in (newest, "notify")],
+    )
+
+    statuses = _core_statuses(client, api_client_builder, token, "owner")
+
+    assert statuses[newest] == "new"
+    assert statuses["notify"] == "absent"
+    assert statuses[SEED_TOOLS[0].name] == "default"
+    # Catalog tools are not standard tools: no status.
+    assert statuses["web_search_ddgs"] is None
+
+
+def test_unified_disable_records_the_decline_and_enable_clears_it(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """E4/E5 on the per-tool writer: switching off a new tool that is already
+    off records the decline (the badge goes), switching it on clears it."""
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    token = _create_user(agent, "owner")
+    newest = _newest_seed_tool()
+    lacking = [n for n in fresh_default_thread_tool_names() if n != newest]
+    _account_set_up_before(agent, "owner", newest, defaults=lacking)
+
+    off = client.put(
+        f"/users/owner/tools/unified/{newest}/enable",
+        headers=api_client_builder.auth(token),
+        json={"enabled": False},
+    )
+    after_off = _core_statuses(client, api_client_builder, token, "owner")[newest]
+    prefs = agent.profile_manager.get_profile("owner").tool_preferences
+    declined_after_off = list(prefs.declined_core_tools)
+    list_after_off = list(prefs.default_thread_tools)
+
+    on = client.put(
+        f"/users/owner/tools/unified/{newest}/enable",
+        headers=api_client_builder.auth(token),
+        json={"enabled": True},
+    )
+    after_on = _core_statuses(client, api_client_builder, token, "owner")[newest]
+
+    assert off.status_code == 200 and on.status_code == 200
+    assert after_off == "declined"
+    assert declined_after_off == [newest]
+    assert list_after_off == lacking
+    assert after_on == "default"
+    assert agent.profile_manager.get_profile("owner").tool_preferences.declined_core_tools == []
+
+    # Removing it again (it is on now) records the decline once more.
+    client.put(
+        f"/users/owner/tools/unified/{newest}/enable",
+        headers=api_client_builder.auth(token),
+        json={"enabled": False},
+    )
+    assert _core_statuses(client, api_client_builder, token, "owner")[newest] == "declined"

@@ -198,14 +198,19 @@ def create_user_tools_router(
     ):
         """Reset all tool preferences to the fresh-install default set."""
         require_same_user_or_admin_fn(user, user_id)
-        from ...tools import fresh_default_thread_tool_names
+        from ...tools import fresh_default_thread_tool_names, resolve_default_tool_names
 
         agent = get_agent_fn()
 
         with agent.profile_manager.atomic_update(user_id) as profile:
-            profile.tool_preferences.default_thread_tools = (
-                fresh_default_thread_tool_names()
+            prefs = profile.tool_preferences
+            fresh = fresh_default_thread_tool_names()
+            # #164: every core seed tool comes back on, so every decline clears
+            # (the same rule as DELETE /tools/defaults).
+            prefs.note_default_tools_change(
+                resolve_default_tool_names(prefs.default_thread_tools), fresh
             )
+            prefs.default_thread_tools = fresh
             profile.tool_preferences.tool_configs.clear()
             profile.tool_preferences.custom_descriptions.clear()
             profile.updated_at = utc_now()
