@@ -308,7 +308,8 @@ def repo_state(repo: str, runner: Callable = run_command) -> dict[str, Any]:
 
 class GitStatusFailed(Exception):
     """`git status` exited non-zero: nothing proves the guarded tree clean.
-    The message is git's first output line."""
+    The message is git's first ``fatal:``/``error:`` line, else its last line
+    (a ``warning:`` printed before the failure is not the cause)."""
 
 
 def dirty_tracked_paths(
@@ -324,8 +325,10 @@ def dirty_tracked_paths(
     """
     rc, out = git(repo, "status", "--porcelain", "--", *clean_paths, runner=runner)
     if rc != 0:
-        first = next((x.strip() for x in out.splitlines() if x.strip()), "")
-        raise GitStatusFailed(first or f"rc={rc}")
+        lines = [x.strip() for x in out.splitlines() if x.strip()] or [f"rc={rc}"]
+        raise GitStatusFailed(
+            next((x for x in lines if x.startswith(("fatal:", "error:"))), lines[-1])
+        )
     dirty = []
     for line in out.splitlines():
         if len(line) < 4 or line[2] != " ":

@@ -1434,10 +1434,18 @@ def test_the_real_runner_reads_porcelain_not_git_noise(tmp_path, monkeypatch):
     runner once stripped the whole output, turning " M path" into "M path"),
     the warning git writes for an unreadable untracked directory is not a
     path, and a failing git raises rather than reading clean."""
-    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+    # Hermetic git: no inherited repo pointers, no system/global/XDG config
+    # (`status.showUntrackedFiles = no` there would skip the unreadable
+    # directory, `commit.gpgsign` would break the commit), no `git -c` or
+    # env-carried config from a wrapping hook, untranslated messages.
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))  # no global config or hooks
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("LC_ALL", "C")
     repo = tmp_path / "repo"
     pkg = repo / "Nymeria" / "nymeria"
     pkg.mkdir(parents=True)
@@ -1470,6 +1478,29 @@ def test_the_real_runner_reads_porcelain_not_git_noise(tmp_path, monkeypatch):
 
     with pytest.raises(deploy_sync.GitStatusFailed, match=r"^fatal: "):
         deploy_sync.dirty_tracked_paths(str(tmp_path / "missing"), ["Nymeria"])
+
+
+@pytest.mark.parametrize(
+    "output, named",
+    [
+        (f"{GIT_WARNING}\nfatal: index file corrupt", "fatal: index file corrupt"),
+        (f"{GIT_WARNING}\nerror: bad signature 0x00000000",
+         "error: bad signature 0x00000000"),
+        ("hint: one\nhint: two", "hint: two"),
+        ("", "rc=128"),
+    ],
+    ids=["warning-then-fatal", "warning-then-error", "no-fatal-line", "silent"],
+)
+def test_a_failing_git_status_names_the_failure_not_the_first_line(output, named):
+    """Phase A review NIT: the skip line names the cause. A warning git
+    printed before failing is not it; with no fatal/error line the last
+    line is the closest thing to one (what a failed pull reports)."""
+    def runner(argv, **_kwargs):
+        return 128, output
+
+    with pytest.raises(deploy_sync.GitStatusFailed) as exc:
+        deploy_sync.dirty_tracked_paths("/repo", ["Nymeria"], runner=runner)
+    assert str(exc.value) == named
 
 
 @pytest.mark.parametrize(
