@@ -29,6 +29,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from langchain_core.tools import StructuredTool
@@ -364,8 +365,11 @@ def test_reload_tools_surfaces_module_failures(monkeypatch):
 
 class _StubProfileManager:
     def __init__(self, default_thread_tools):
+        from nymeria.core.user_profile import ToolPreferences
+
+        # A real ToolPreferences: the sync reads its #164 decline record.
         self._profile = SimpleNamespace(
-            tool_preferences=SimpleNamespace(
+            tool_preferences=ToolPreferences(
                 default_thread_tools=default_thread_tools
             )
         )
@@ -414,3 +418,39 @@ def test_sync_default_thread_tools_reports_real_core_diff(caplog):
     assert "Removed core tools detected" in caplog.text
     updated = agent.profile_manager._profile.tool_preferences.default_thread_tools
     assert "gone_tool" not in updated
+
+
+def test_sync_default_thread_tools_never_re_adds_a_declined_seed_tool(tmp_path):
+    """#164: the hot-reload union honours the decline record.
+
+    A live ``SEED_TOOLS`` edit plus ``reload_all`` appends a newly promoted
+    seed tool to every account's defaults. An account that removed or
+    dismissed that tool (``declined_core_tools``) must not get it back:
+    nothing the user declined is ever turned on. Real profiles on disk, so
+    the assertions read what was persisted.
+    """
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.tools import core_seed_tool_names
+
+    promoted = "file_list"
+    seed = set(core_seed_tool_names())
+    assert promoted in seed
+    profiles = UserProfileManager(tmp_path)
+    agent: Any = _StubAgent()
+    agent.profile_manager = profiles
+    lacking = sorted(seed - {promoted})
+    for user_id, declined in (("declined", [promoted]), ("plain", [])):
+        with profiles.atomic_update(user_id) as profile:
+            profile.tool_preferences.default_thread_tools = list(lacking)
+            profile.tool_preferences.declined_core_tools = list(declined)
+
+    agent_tools.sync_default_thread_tools(agent, seed - {promoted}, seed)
+
+    reread = UserProfileManager(tmp_path)
+    declined_prefs = reread.get_profile("declined").tool_preferences
+    plain_prefs = reread.get_profile("plain").tool_preferences
+    assert declined_prefs.default_thread_tools == lacking
+    assert declined_prefs.declined_core_tools == [promoted]
+    # An account that never declined it still gets the promotion appended.
+    assert plain_prefs.default_thread_tools == sorted(seed)
+    assert plain_prefs.declined_core_tools == []

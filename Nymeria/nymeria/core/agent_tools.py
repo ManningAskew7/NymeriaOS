@@ -935,7 +935,9 @@ def sync_default_thread_tools(
 ) -> None:
     """Sync each user's default_thread_tools after a core tool change.
 
-    - Newly added core tools are appended so they're enabled by default.
+    - Newly added core tools are appended so they're enabled by default,
+      except for an account that declined one (``declined_core_tools``,
+      #164): nothing the user removed or dismissed is ever turned back on.
     - Removed core tools are cleaned out to avoid stale entries.
     - Users whose default_thread_tools is None (legacy mode) are skipped.
     """
@@ -963,7 +965,8 @@ def sync_default_thread_tools(
                 continue  # legacy mode — no explicit list to update
 
             current = set(dt)
-            updated = (current | added) - removed
+            declined = set(profile.tool_preferences.declined_core_tools)
+            updated = (current | (added - declined)) - removed
             if updated != current:
                 with agent.profile_manager.atomic_update(user_id) as p:
                     p.tool_preferences.default_thread_tools = sorted(updated)

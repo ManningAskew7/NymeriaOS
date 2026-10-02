@@ -3,21 +3,6 @@ import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { registerIdentityReloadHook } from './config.svelte';
 import type { DefaultToolInfo } from '$lib/types';
 
-// What a whole-list save does to each standard tool's standing (#164), so
-// this store, which does not re-read after a save, shows what the backend
-// now holds: on the list is "default", dropped from it or declined is
-// "declined", anything else keeps its status.
-function coreStatusAfterSave(
-  tool: DefaultToolInfo,
-  toolNames: string[],
-  declined: string[]
-): DefaultToolInfo['core_status'] {
-  if (!tool.core_status) return tool.core_status;
-  if (toolNames.includes(tool.name)) return 'default';
-  if (tool.core_status === 'default' || declined.includes(tool.name)) return 'declined';
-  return tool.core_status;
-}
-
 function createDefaultToolsStore() {
   let tools = $state<DefaultToolInfo[]>([]);
   let defaultToolNames = $state<string[]>([]);
@@ -125,11 +110,9 @@ function createDefaultToolsStore() {
         }
         if (requestGeneration !== identityGeneration) return false;
         defaultToolNames = [...toolNames];
-        tools = tools.map(t => ({
-          ...t,
-          is_default: toolNames.includes(t.name),
-          core_status: coreStatusAfterSave(t, toolNames, declined),
-        }));
+        // `core_status` (#164) is not re-derived here: mobile's badges read
+        // the unified store, so nothing reads it from this one until a load.
+        tools = tools.map(t => ({ ...t, is_default: toolNames.includes(t.name) }));
         newCoreTools = newCoreTools.filter(
           (name) => !toolNames.includes(name) && !declined.includes(name)
         );

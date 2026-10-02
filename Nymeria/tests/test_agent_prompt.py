@@ -12,6 +12,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, Optional
 
+import pytest
+
 from nymeria.core.agent_prompt import (
     PromptHost,
     build_active_todos_section,
@@ -34,7 +36,9 @@ class _PromptHost:
         todos: Any = None,
         role: str = "user",
     ) -> None:
-        self._profile = profile
+        # A real profile by default: the production manager never answers
+        # None, and the prompt build reads the #164 status rule off it.
+        self._profile = profile if profile is not None else _profile()
         self._thread_config = thread_config
         self._base_system_prompt = base_system_prompt
         self._todos = todos
@@ -67,10 +71,19 @@ class _PromptHost:
         return None
 
 
-def _profile(*, memories=None, overrides=None) -> Any:
-    return SimpleNamespace(
-        memories=memories or [],
+def _profile(*, memories=None, overrides=None, tool_preferences=None) -> Any:
+    """A real ``UserProfile``, created now with the fresh defaults, so the
+    prompt build and the hash read its #164 status rule as production does
+    (nothing is new for it)."""
+    from nymeria.core.user_profile import Memory, ToolPreferences, UserProfile
+    from nymeria.tools import fresh_default_thread_tool_names
+
+    return UserProfile(
+        user_id="u1",
+        memories=[Memory(key=key, value=value) for key, value in (memories or [])],
         personality_overrides=overrides or {},
+        tool_preferences=tool_preferences
+        or ToolPreferences(default_thread_tools=fresh_default_thread_tool_names()),
     )
 
 
@@ -93,7 +106,7 @@ def test_prompt_host_is_runtime_checkable():
 
 def test_build_user_profile_section_renders_facts_and_prefs():
     profile = _profile(
-        memories=[SimpleNamespace(key="city", value="Sydney")],
+        memories=[("city", "Sydney")],
         overrides={"tone": "concise"},
     )
     # No cast: declared as the narrow Protocol.
@@ -140,16 +153,11 @@ def test_get_time_context_for_agent_is_a_pure_host_free_leaf():
 
 
 def _hash_host(*, role: str) -> Any:
-    """A host whose profile carries the `tool_preferences` the hash reads.
+    """A host whose profile carries the `tool_preferences` the hash reads
+    (an uninitialized list, which resolves to the seed)."""
+    from nymeria.core.user_profile import ToolPreferences
 
-    The shared `_profile()` helper omits it: nothing in this file exercised
-    `get_memory_hash` before #327.
-    """
-    profile = SimpleNamespace(
-        memories=[],
-        personality_overrides={},
-        tool_preferences=SimpleNamespace(default_thread_tools=None),
-    )
+    profile = _profile(tool_preferences=ToolPreferences(default_thread_tools=None))
     return _PromptHost(profile=profile, role=role)
 
 
@@ -339,3 +347,24 @@ def test_dismissing_the_tool_changes_the_graph_cache_hash():
 
     assert offered == again
     assert offered != dismissed
+
+
+def test_a_broken_status_read_fails_the_build_instead_of_hiding_the_hint(monkeypatch):
+    """A regression in the status rule (a rename, a validator) must fail the
+    prompt build and the cache lookup, which read it unguarded anyway, rather
+    than silently drop the hint for every account: that silence is the very
+    symptom #164 exists to fix."""
+    from nymeria.core.user_profile import UserProfile
+
+    def broken(self: Any, role: str) -> dict:
+        raise AttributeError("core_tool_statuses went away")
+
+    monkeypatch.setattr(UserProfile, "core_tool_statuses", broken)
+    host: PromptHost = _PromptHost(
+        profile=_discovery_profile(), thread_config=_real_thread_config()
+    )
+
+    with pytest.raises(AttributeError, match="went away"):
+        build_full_system_prompt(host, "u1", "t1")
+    with pytest.raises(AttributeError, match="went away"):
+        get_memory_hash(host, "u1", "t1")

@@ -209,34 +209,33 @@ def new_core_tools_for_thread(
     role. A tool the thread already binds (``enabled_tools`` or a live TTL
     entry) needs no hint; one the thread disables was turned off on purpose.
     Dream shadow threads get none (their tool set is a fixed whitelist).
-    Best-effort: any failure reads as nothing new, never a failed build.
+    Deliberately unguarded: ``get_memory_hash`` makes the same role, profile
+    and TTL reads on every lookup, and the status rule is pure, so a failure
+    here is a regression that must fail loudly, not a hint that silently
+    vanishes for every account (the very symptom #164 fixes).
     """
     if tc is not None and getattr(tc, "shadow_parent_id", None):
         return []
-    try:
-        from ..tools import CORE_STATUS_NEW
+    from ..tools import CORE_STATUS_NEW
 
-        if role is None:
-            from .agent_graph import _resolve_owner_role
+    if role is None:
+        from .agent_graph import _resolve_owner_role
 
-            role = _resolve_owner_role(host, user_id)
-        profile = host.profile_manager.get_profile(user_id)
-        names = [
-            name
-            for name, status in profile.core_tool_statuses(role).items()
-            if status == CORE_STATUS_NEW
-        ]
-        if names and tc is not None:
-            on_thread = (
-                set(tc.enabled_tools or ())
-                | set(host._resolve_temporary_tools(tc))
-                | set(tc.disabled_tools or ())
-            )
-            names = [name for name in names if name not in on_thread]
-        return names
-    except Exception as exc:  # noqa: BLE001 - a hint must never break a turn
-        logger.warning("New core tool hint skipped for %s: %s", user_id, exc)
-        return []
+        role = _resolve_owner_role(host, user_id)
+    profile = host.profile_manager.get_profile(user_id)
+    names = [
+        name
+        for name, status in profile.core_tool_statuses(role).items()
+        if status == CORE_STATUS_NEW
+    ]
+    if names and tc is not None:
+        on_thread = (
+            set(tc.enabled_tools or ())
+            | set(host._resolve_temporary_tools(tc))
+            | set(tc.disabled_tools or ())
+        )
+        names = [name for name in names if name not in on_thread]
+    return names
 
 
 def build_new_core_tools_section(names: List[str]) -> str:

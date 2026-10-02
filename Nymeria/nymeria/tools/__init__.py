@@ -1736,15 +1736,14 @@ CORE_STATUS_DECLINED = "declined"
 CORE_STATUS_ABSENT = "absent"
 
 
-def _created_day(created_at: datetime | None) -> date:
-    """The UTC day a profile was created; a missing stamp reads as today.
+def _created_day(created_at: datetime) -> date:
+    """The UTC day a profile was created.
 
-    Today is the fail-quiet reading: nothing was promoted after it, so a
-    profile without ``created_at`` sees no tool as new. A naive stamp (legacy
-    JSON) is taken as UTC, matching ``core.time_utils.ensure_aware_utc``.
+    A naive stamp (legacy JSON) is taken as UTC, matching
+    ``core.time_utils.ensure_aware_utc``. A profile file with no
+    ``created_at`` at all never reaches here as ``None``: ``UserProfile``
+    defaults the field to now on load, so it sees no tool as new.
     """
-    if created_at is None:
-        return datetime.now(timezone.utc).date()
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
     return created_at.astimezone(timezone.utc).date()
@@ -1753,7 +1752,7 @@ def _created_day(created_at: datetime | None) -> date:
 def core_tool_statuses(
     default_thread_tools,
     declined_core_tools,
-    created_at: datetime | None,
+    created_at: datetime,
     role: str,
 ) -> dict[str, str]:
     """Each core seed tool's standing on one account, in seed order (#164).
@@ -1770,7 +1769,9 @@ def core_tool_statuses(
 
     A tool the account's role may not have (admin-only or developer-only for
     a non-admin) and that is not in the list is left out: it is not a standard
-    tool for that account. Pure: reads the inputs, writes nothing.
+    tool for that account. No seed tool is role-gated today, so that filter
+    is defense in depth on the documented chokepoint, not a reachable status.
+    Pure: reads the inputs, writes nothing.
     """
     in_list = set(resolve_default_tool_names(default_thread_tools))
     declined = set(declined_core_tools or ())
@@ -1834,6 +1835,13 @@ def _derive_public_exports() -> list[str]:
         "fresh_default_thread_tool_names",
         "resolve_default_tool_names",
         "static_tool_catalog",
+        # #164: the promotion ledger and the per-account status rule.
+        "SEED_TOOL_PROMOTED",
+        "core_tool_statuses",
+        "CORE_STATUS_DEFAULT",
+        "CORE_STATUS_NEW",
+        "CORE_STATUS_DECLINED",
+        "CORE_STATUS_ABSENT",
     }
     names = set(spine)
     for _name, _value in globals().items():
@@ -1876,6 +1884,10 @@ __all__ = [
     "COMMUNITY_PUBLISHING_SERVICE_TOOLS",
     "CONSULT_TOOLS",
     "CONTENT_MANAGEMENT_SERVICE_TOOLS",
+    "CORE_STATUS_ABSENT",
+    "CORE_STATUS_DECLINED",
+    "CORE_STATUS_DEFAULT",
+    "CORE_STATUS_NEW",
     "CUSTOMER_ENGAGEMENT_SERVICE_TOOLS",
     "DATA_TABLE_SERVICE_TOOLS",
     "DEVELOPER_ONLY_TOOL_NAMES",
@@ -1926,6 +1938,7 @@ __all__ = [
     "SEARCH_MCP_TOOLS",
     "SEARCH_SKILLS_TOOLS",
     "SEED_TOOLS",
+    "SEED_TOOL_PROMOTED",
     "SELF_AGENT_TOOLS",
     "SKILL_CONFIG_TOOLS",
     "SLASH_COMMAND_TOOLS",
@@ -2157,6 +2170,7 @@ __all__ = [
     "copper_list_records",
     "copper_update_record",
     "core_seed_tool_names",
+    "core_tool_statuses",
     "crypto_generate_random",
     "crypto_hash_text",
     "crypto_hmac_text",

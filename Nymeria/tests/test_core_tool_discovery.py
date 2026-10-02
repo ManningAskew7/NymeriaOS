@@ -128,8 +128,29 @@ def test_a_declined_tool_is_never_new_and_one_in_the_list_is_default_whatever_th
     assert back_on[NEWEST] == "default"
 
 
-def test_a_missing_created_at_reads_as_now_so_nothing_is_new():
-    assert _new(_without(NEWEST), [], None, "user") == []
+def test_a_profile_file_without_created_at_reads_as_now_so_nothing_is_new(tmp_path):
+    """E7: an older profile file with no ``created_at`` loads as created now
+    (the model's default), so a seed tool it lacks reads as offered, never
+    new. Through the real manager and file, where the guarantee lives."""
+    import json
+
+    manager = UserProfileManager(tmp_path)
+    path = manager._get_profile_path("legacy")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "user_id": "legacy",
+                "tool_preferences": {"default_thread_tools": _without(NEWEST)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    statuses = manager.get_profile("legacy").core_tool_statuses("user")
+
+    assert statuses[NEWEST] == "absent"
+    assert "new" not in statuses.values()
 
 
 def test_a_naive_created_at_is_read_as_utc():

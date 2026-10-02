@@ -338,17 +338,4 @@ describe('new standard tools (#164): the store carries them, and Add / Dismiss s
     expect(defaultToolsStore.listReady).toBe(false);
     expect(api.setDefaultTools).toHaveBeenCalledTimes(1);
   });
-
-  it('without a re-read, the saved standing still matches the backend`s rule', async () => {
-    (api.getDefaultTools as Mock).mockResolvedValueOnce(withNew(['a_1'], ['file_list', 'notify']));
-    await defaultToolsStore.load();
-
-    expect(await defaultToolsStore.dismissNewCoreTools(['notify'])).toBe(true);
-    expect(defaultToolsStore.newCoreTools).toEqual(['file_list']);
-    expect(await defaultToolsStore.toggleDefaultTool('a_1')).toBe(true);
-
-    const status = Object.fromEntries(defaultToolsStore.tools.map((t) => [t.name, t.core_status]));
-    // Dismissed and dropped standard tools are declined; the rest keep theirs.
-    expect(status).toEqual({ a_1: 'declined', file_list: 'new', notify: 'declined' });
-  });
 });
