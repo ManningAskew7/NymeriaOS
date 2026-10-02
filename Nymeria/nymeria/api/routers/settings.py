@@ -26,6 +26,7 @@ from ...config.llm_providers import (
     resolve_provider_base_url,
 )
 from ...config.env_file import (
+    EnvValueError,
     format_env_value,
     is_env_key_name,
     parse_env_value,
@@ -584,9 +585,11 @@ def _sync_updated_env_vars(produced: Sequence[tuple[str, str]]) -> None:
     Settings would keep serving the old one.
 
     ``produced`` carries values already run through ``format_env_value``, which
-    quotes special-character values, so each is un-quoted via
-    ``parse_env_value`` on the way in. Otherwise the env source would feed
-    Settings a value wrapped in literal quotes.
+    quotes special-character values and escapes line breaks (#156), so each is
+    decoded via ``parse_env_value`` on the way in, exactly as python-dotenv
+    decodes the file at the next reload or boot. Otherwise the env source
+    would feed Settings a value wrapped in literal quotes, or holding
+    backslash-n text where the file reads back a newline.
 
     Scoped to what this request changed, never the whole merged file (#299).
     A file key the caller did not name has no stale-shadow problem to solve,
@@ -718,6 +721,32 @@ def _refuse_container_pinned_keys(produced: list[tuple[str, str]]) -> None:
         )
 
 
+def _format_env_pairs(pairs: Sequence[tuple[str, str, Any]]) -> list[tuple[str, str]]:
+    """Format ``(field, env var, value)`` for the env file; 400 when any cannot be stored.
+
+    Runs before anything is written, all or nothing like the unknown-key and
+    invalid-value refusals, and names every refused field at once. The detail
+    says what is wrong (``EnvValueError``'s message) and never echoes the value,
+    which may be a secret (#156).
+    """
+    produced: list[tuple[str, str]] = []
+    problems: list[str] = []
+    for field, env_var, value in pairs:
+        try:
+            produced.append((env_var, format_env_value(value)))
+        except EnvValueError as exc:
+            problems.append(f"{field}: {exc}")
+    if problems:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid value{'s' if len(problems) > 1 else ''}: "
+                f"{'; '.join(problems)}. No changes were applied."
+            ),
+        )
+    return produced
+
+
 def apply_server_settings_update(
     updates: ServerSettingsUpdate,
     *,
@@ -778,7 +807,7 @@ def apply_server_settings_update(
     # var the CLI wizard finalize writes. Resolved against the update's provider
     # when the caller switches provider and key together (the normal GUI flow),
     # falling back to the currently configured provider for a key-only rotation.
-    extra_env_pairs: list[tuple[str, str]] = []
+    extra_env_pairs: list[tuple[str, str, Any]] = []
     llm_api_key = (updates_dict.get("llm_api_key") or "").strip()
     if "llm_api_key" in updates_dict and not llm_api_key:
         updates_dict.pop("llm_api_key")
@@ -793,7 +822,7 @@ def apply_server_settings_update(
                     "slot, so llm_api_key cannot be stored for it."
                 ),
             )
-        extra_env_pairs.append((key_env_var, format_env_value(llm_api_key)))
+        extra_env_pairs.append(("llm_api_key", key_env_var, llm_api_key))
 
     if not updates_dict:
         return {
@@ -815,12 +844,17 @@ def apply_server_settings_update(
     # Overlay only the changed keys onto the existing file, preserving untouched
     # lines, comments, and the secrets key, via the shared atomic 0600 writer the
     # offline `nymeria init` finalize also uses. The formatter quotes special-char
-    # values (plain alnum values, the common case, stay unquoted).
-    produced = [
-        (env_mapping[name], format_env_value(value))
-        for name, value in updates_dict.items()
-        if name in env_mapping
-    ] + extra_env_pairs
+    # values (plain alnum values, the common case, stay unquoted) and keeps
+    # every value on one line; a value no line can hold (#156) is refused here,
+    # still before the write, and the key slot is formatted with the rest.
+    produced = _format_env_pairs(
+        [
+            (name, env_mapping[name], value)
+            for name, value in updates_dict.items()
+            if name in env_mapping
+        ]
+        + extra_env_pairs
+    )
     _refuse_container_pinned_keys(produced)
     write_env_file(env_path, produced, merge=True)
     _sync_updated_env_vars(produced)

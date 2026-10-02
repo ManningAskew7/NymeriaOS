@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 from dataclasses import dataclass, replace
@@ -11,6 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
+from dotenv import dotenv_values
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 
@@ -52,6 +54,9 @@ class FakeSettings:
     dynamic_tool_binding: bool = False
     sequential_tool_execution: bool = False
     hooks_enabled: bool = True
+    # A free-text, naturally multi-line field (#156): the reload half of the
+    # newline slice compares the live value against what the reader decodes.
+    twitch_system_prompt: str | None = None
     # Carries a REAL constraint (see _TwitchBufferSize below), so the reload
     # path's invalid-value branch is reachable: in production the thing that
     # raises is `Settings()` itself, which this dataclass is standing in for.
@@ -357,6 +362,10 @@ class FakeSettingsProvider:
             hooks_enabled=env_bool(
                 "HOOKS_ENABLED",
                 self.settings.hooks_enabled,
+            ),
+            twitch_system_prompt=env_optional_str(
+                "TWITCH_SYSTEM_PROMPT",
+                self.settings.twitch_system_prompt,
             ),
             # The one field here that VALIDATES rather than just parses, and
             # the reason is the reload path: `POST /settings/reload` cannot
@@ -1456,6 +1465,239 @@ def test_patch_settings_does_not_resurrect_env_vars_absent_from_the_process(
     assert response.status_code == 200
     assert os.environ["LLM_MODEL"] == "new-model"
     assert "REDIS_URL" not in os.environ
+
+
+# -- #156: multi-line values stay one env line ------------------------------
+#
+# The env file is read by python-dotenv (every boot and reload) AND by
+# hand-rolled one-line readers (`service_install._read_env_port`, the
+# deploy-sync token reader, finalize's vault-key reader). A raw newline in a
+# saved value used to become continuation lines those readers took as
+# bindings at once, and that the next write of the same key orphaned into
+# real bindings for python-dotenv too: a delayed env-var injection through
+# any free-text setting.
+
+_IT38_PROMPT = "You are a bot.\nAPI_PORT=6666\nEVIL_KEY=pwned"
+
+
+def _it38_client(monkeypatch, tmp_path: Path, file_text: str):
+    (tmp_path / ".env").write_text(file_text, encoding="utf-8")
+    # Registered so the applier's os.environ writes are reverted at teardown.
+    for key in ("TWITCH_SYSTEM_PROMPT", "LLM_MODEL", "ANTHROPIC_DIRECT_API_KEY"):
+        monkeypatch.setenv(key, f"booted-{key.lower()}")
+    monkeypatch.setenv("API_PORT", "8000")
+    return _client(monkeypatch, tmp_path)
+
+
+def test_patch_multi_line_value_is_one_line_and_exports_the_original(
+    tmp_path: Path, monkeypatch
+):
+    from nymeria.service_install import _read_env_port
+
+    client, _agent, token, provider = _it38_client(
+        monkeypatch, tmp_path, "API_PORT=8095\nLLM_MODEL=kept\n"
+    )
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_system_prompt": _IT38_PROMPT}
+    )
+
+    assert response.status_code == 200
+    env = tmp_path / ".env"
+    lines = env.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in lines if line.startswith("TWITCH_SYSTEM_PROMPT=")]) == 1
+    assert not [line for line in lines if line.startswith(("API_PORT=6666", "EVIL_KEY"))]
+    assert dotenv_values(env) == {
+        "API_PORT": "8095",
+        "LLM_MODEL": "kept",
+        "TWITCH_SYSTEM_PROMPT": _IT38_PROMPT,
+    }
+    # Live with real newlines, not escape text.
+    assert os.environ["TWITCH_SYSTEM_PROMPT"] == _IT38_PROMPT
+    assert provider.settings.twitch_system_prompt == _IT38_PROMPT
+    # The one-line reader the service health URL rides saw 6666 before.
+    assert _read_env_port(tmp_path) == 8095
+
+
+def test_a_second_write_of_a_multi_line_key_lands_no_bindings(
+    tmp_path: Path, monkeypatch
+):
+    client, _agent, token, _provider = _it38_client(
+        monkeypatch, tmp_path, "API_PORT=8095\n"
+    )
+    first = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_system_prompt": _IT38_PROMPT}
+    )
+    assert first.status_code == 200
+
+    second = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_system_prompt": "short"}
+    )
+
+    assert second.status_code == 200
+    # Before the fix: API_PORT=6666 and EVIL_KEY='pwned"' here.
+    assert dotenv_values(tmp_path / ".env") == {
+        "API_PORT": "8095",
+        "TWITCH_SYSTEM_PROMPT": "short",
+    }
+
+
+def test_an_unrelated_write_keeps_a_multi_line_value_whole(
+    tmp_path: Path, monkeypatch, caplog
+):
+    # A continuation line that looks like a binding of a key a LATER request
+    # writes was collapsed as a #301 duplicate: a misleading warning, and a
+    # line silently cut out of the saved prompt.
+    prompt = "Line one.\nLLM_MODEL=from-the-prompt\nLine three."
+    client, _agent, token, _provider = _it38_client(
+        monkeypatch, tmp_path, "LLM_MODEL=kept\n"
+    )
+    first = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_system_prompt": prompt}
+    )
+    assert first.status_code == 200
+    caplog.set_level(logging.WARNING, logger="nymeria.config.env_file")
+
+    second = client.patch("/settings", headers=_auth(token), json={"llm_model": "m2"})
+
+    assert second.status_code == 200
+    assert dotenv_values(tmp_path / ".env") == {
+        "LLM_MODEL": "m2",
+        "TWITCH_SYSTEM_PROMPT": prompt,
+    }
+    assert "duplicate" not in caplog.text
+
+
+def test_reload_after_a_multi_line_write_reports_nothing_moved(
+    tmp_path: Path, monkeypatch
+):
+    # The live export must equal what the reader decodes at the next reload:
+    # escaping without decoding on export would leave backslash-n text live
+    # and this reload would "change" the prompt.
+    client, _agent, token, provider = _it38_client(monkeypatch, tmp_path, "")
+    patched = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_system_prompt": _IT38_PROMPT}
+    )
+    assert patched.status_code == 200
+
+    reloaded = client.post("/settings/reload", headers=_auth(token))
+
+    assert reloaded.status_code == 200
+    assert "twitch_system_prompt" not in reloaded.json()["changed"]
+    assert provider.settings.twitch_system_prompt == _IT38_PROMPT
+
+
+@pytest.mark.parametrize(
+    "value, named",
+    [
+        ("sk-it38-secret\u0000x", "U+0000"),
+        ("sk-it38-secret\u2028x", "U+2028"),
+        ("sk-it38-secret\u0085x", "U+0085"),
+        ("sk-it38-secret\x1ex", "U+001E"),
+        ("C:\\sk-it38-secret dir\\", "trailing backslash"),
+    ],
+)
+def test_patch_refuses_a_value_no_env_line_can_carry(
+    tmp_path: Path, monkeypatch, caplog, value: str, named: str
+):
+    # NUL used to be written, then the os.environ export raised (HTTP 500)
+    # with the file already holding a value that stops every later key from
+    # loading at boot. Now nothing is written and the answer says why,
+    # without echoing a value that may be a secret.
+    client, _agent, token, _provider = _it38_client(
+        monkeypatch, tmp_path, "LLM_MODEL=kept\n"
+    )
+    env = tmp_path / ".env"
+    before = env.read_bytes()
+    caplog.set_level(logging.DEBUG)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_system_prompt": value}
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail.startswith("Invalid value: twitch_system_prompt: ")
+    assert named in detail
+    assert detail.endswith("No changes were applied.")
+    assert "sk-it38-secret" not in response.text
+    assert "sk-it38-secret" not in caplog.text
+    assert env.read_bytes() == before
+    assert not [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert os.environ["TWITCH_SYSTEM_PROMPT"] == "booted-twitch_system_prompt"
+
+
+def test_one_refused_value_rejects_the_whole_patch_key_slot_included(
+    tmp_path: Path, monkeypatch
+):
+    # The provider-key slot is routed (not a mapped field), and every bad
+    # value is named at once, the same all-or-nothing rule as the unknown-key
+    # and invalid-value refusals.
+    client, _agent, token, _provider = _it38_client(
+        monkeypatch, tmp_path, "LLM_MODEL=kept\n"
+    )
+    env = tmp_path / ".env"
+    before = env.read_bytes()
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={
+            "llm_model": "new-model",
+            "twitch_system_prompt": "fine\nmulti-line",
+            "llm_api_key": "sk-it38-secret\u2028x",
+            "tts_voice": "bad\u0000voice",
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail.startswith("Invalid values: ")
+    assert "llm_api_key: " in detail and "tts_voice: " in detail
+    assert "twitch_system_prompt" not in detail and "llm_model" not in detail
+    assert "sk-it38-secret" not in response.text
+    assert env.read_bytes() == before
+    assert os.environ["LLM_MODEL"] == "booted-llm_model"
+    assert os.environ["ANTHROPIC_DIRECT_API_KEY"] == "booted-anthropic_direct_api_key"
+
+
+def test_settings_set_with_an_uncarriable_value_is_a_command_error(
+    tmp_path: Path, monkeypatch
+):
+    # The slash-command door (a human, or an agent turn) shares the applier;
+    # the refusal reaches the caller as the 400 text, never a stack trace.
+    from nymeria.core.command_service import (
+        CommandBackendClient,
+        CommandContext,
+        CommandService,
+        _CommandBackendUser,
+    )
+
+    env = tmp_path / ".env"
+    env.write_text("LLM_MODEL=kept\n", encoding="utf-8")
+    monkeypatch.setenv("TWITCH_SYSTEM_PROMPT", "booted")
+    before = env.read_bytes()
+    provider = FakeSettingsProvider(FakeSettings(project_root=tmp_path, data_dir=tmp_path))
+    backend = CommandBackendClient(
+        FakeAgent(tmp_path),
+        user=_CommandBackendUser(id="admin", role="admin"),
+        settings_fn=provider,
+    )
+    ctx = CommandContext(
+        user_id="admin", thread_id=None, actor="user", surface="cli", is_admin=True
+    )
+
+    result = asyncio.run(
+        CommandService().execute(
+            ctx, "/settings set twitch_system_prompt it38\u0000value", api=backend
+        )
+    )
+
+    assert result.success is False
+    assert "Invalid value: twitch_system_prompt: " in result.markdown
+    assert "No changes were applied." in result.markdown
+    assert env.read_bytes() == before
+    assert os.environ["TWITCH_SYSTEM_PROMPT"] == "booted"
 
 
 # -- #302: POST /settings/reload ------------------------------------------
@@ -4131,3 +4373,29 @@ def test_both_command_shapes_refuse_the_same_way(
         assert sent == []
     else:
         assert [request.method for request in sent] == ["DELETE"]
+
+
+def test_a_multi_line_value_saved_in_a_container_boots_back_whole(
+    container_shape, tmp_path: Path, monkeypatch
+):
+    # #156 on the container shapes: the write lands in the runtime settings
+    # file (#254), one line per key, and the boot load decodes it back to the
+    # original string with real newlines.
+    from nymeria.config import settings as settings_mod
+
+    app, runtime, boot = container_shape
+    boot("LLM_MODEL=kept\n", TWITCH_SYSTEM_PROMPT="booted")
+    client, _agent, token, _provider = _container_client(monkeypatch, tmp_path, app)
+
+    response = client.patch(
+        "/settings", headers=_auth(token), json={"twitch_system_prompt": _IT38_PROMPT}
+    )
+
+    assert response.status_code == 200
+    assert not (app / ".env").exists()
+    assert len(runtime.read_text(encoding="utf-8").splitlines()) == 2
+    monkeypatch.delenv("TWITCH_SYSTEM_PROMPT")
+    settings_mod.reset_env_loading_state_for_tests()
+    settings_mod.load_env_files_into_environ(force=True)
+    assert os.environ["TWITCH_SYSTEM_PROMPT"] == _IT38_PROMPT
+    assert os.environ["LLM_MODEL"] == "kept"

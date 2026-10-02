@@ -11,6 +11,20 @@ This module is intentionally low-level (stdlib only) and imports nothing from
 `settings`/`finalize`, so either side can use it without an import cycle. Callers
 own the field->env-var mapping; this module owns value formatting and the
 read/overlay/append/atomic-write mechanics.
+
+The invariant every value obeys (#156): ONE physical line per key, which every
+reader of these files decodes back to the exact original. The readers are
+python-dotenv (boot and `/settings reload` via `load_env_files_into_environ`,
+the restart re-merge, the pydantic dotenv source in doctor, the wizard's
+hydrate), Docker Compose (`.env.docker` through `--env-file` interpolation and
+service `env_file:`), and hand-rolled one-line readers that see nothing but
+one line per key (`service_install._read_env_port`, `server_browser`,
+finalize's vault-key reader, `scripts/deploy_sync.py`). A raw line break in a
+value was a delayed env-var injection: the one-line readers took a
+continuation line as a binding at once, and the next write of the same key
+orphaned the rest into real bindings for python-dotenv too. The merge below is
+still line-based, so it relies on this invariant; a multi-line value already
+in a file (hand-edited, or written before #156) is not repaired by it.
 """
 
 from __future__ import annotations
@@ -38,40 +52,132 @@ def is_env_key_name(name: str) -> bool:
     return _ENV_KEY_RE.fullmatch(name) is not None
 
 
+class EnvValueError(ValueError):
+    """A value no env-file line can store as written (#156).
+
+    The message says what is wrong with the value and never contains it (it
+    may be a secret); callers prefix the setting's name.
+    """
+
+
+# Characters an unquoted value may hold: every reader takes these literally.
+_BARE_PUNCTUATION = "/._:-="
+
+# Inside double quotes: the two escapes the formatter always wrote, plus the
+# line breaks python-dotenv (both 1.2.2 and 1.2.3) and Docker Compose both
+# decode (measured, #156). Applied one character at a time, so a backslash in
+# the value can never pair up with an escape introduced here.
+_DOUBLE_QUOTED_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\n": "\\n",
+    "\r": "\\r",
+    "\v": "\\v",
+    "\f": "\\f",
+}
+
+# What no env-file line can carry. NUL fits no environment variable at all
+# (`os.environ` refuses it, and python-dotenv stops loading the file there,
+# so every later key is lost at boot). The other six are line breaks to
+# `str.splitlines`, which the merge below reads with, and neither parser has
+# an escape for them.
+_REFUSED_CHARACTERS = {
+    "\x00": "NUL",
+    "\x1c": "FILE SEPARATOR",
+    "\x1d": "GROUP SEPARATOR",
+    "\x1e": "RECORD SEPARATOR",
+    "\x85": "NEXT LINE",
+    "\u2028": "LINE SEPARATOR",
+    "\u2029": "PARAGRAPH SEPARATOR",
+}
+
+
+def _is_bare(text: str, extra: str = "") -> bool:
+    return all(c.isalnum() or c in _BARE_PUNCTUATION or c in extra for c in text)
+
+
 def format_env_value(value: str | bool | None) -> str:
-    """Render a Python value as a dotenv RHS string.
+    """Render a Python value as a dotenv RHS on ONE physical line.
 
     ``None`` and empty become ``""``; booleans become ``true``/``false`` (the
     lowercase form the settings models parse). Otherwise the value is returned
     unquoted when every character is in a safe set (alphanumerics plus
     ``/._:-=``), so base64url values such as a Fernet key ending in ``=`` write
     cleanly and Docker ``env_file`` quote handling (which is version-fragile) is
-    never exercised; anything else is double-quoted with backslash escaping.
+    never exercised; anything else is double-quoted, escaping ``\\`` and ``"``
+    as always plus the line breaks LF, CR, VT and FF (#156). A value without a
+    line break therefore formats exactly as it did before #156.
+
+    Raises :class:`EnvValueError` for what no form can carry: a NUL, the six
+    line separators neither parser can escape, and a trailing backslash on a
+    value that must be quoted (python-dotenv before 1.2.3 reads ``"...\\\\"``
+    as an escaped quote and swallows the lines after it). A trailing backslash
+    on a value that is otherwise bare (``C:\\``) is written bare instead: every
+    reader takes an unquoted backslash literally.
     """
     if value is None:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
     text = str(value)
-    if text and all(c.isalnum() or c in "/._:-=" for c in text):
-        return text
     if not text:
         return ""
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    for char in text:
+        name = _REFUSED_CHARACTERS.get(char)
+        if name is None:
+            continue
+        if char == "\x00":
+            raise EnvValueError(
+                "contains a NUL character (U+0000), which no environment variable can hold"
+            )
+        raise EnvValueError(
+            f"contains U+{ord(char):04X} ({name}), a line break env files have no "
+            "escape for"
+        )
+    if _is_bare(text):
+        return text
+    if text.endswith("\\"):
+        if _is_bare(text, extra="\\"):
+            return text
+        raise EnvValueError(
+            "ends with a trailing backslash, which python-dotenv before 1.2.3 "
+            "misreads inside quotes, losing the lines after it (drop the trailing "
+            "backslash: paths work without it)"
+        )
+    return '"' + "".join(_DOUBLE_QUOTED_ESCAPES.get(c, c) for c in text) + '"'
+
+
+# python-dotenv's double-quote escape set and what each decodes to. Anything
+# else after a backslash is kept as is, backslash included, exactly as it does.
+_DOTENV_DOUBLE_QUOTE_ESCAPE_RE = re.compile(r"\\([\\'\"abfnrtv])")
+_DOTENV_DOUBLE_QUOTE_DECODED = {
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+}
 
 
 def parse_env_value(raw: str) -> str:
-    """Inverse of :func:`format_env_value` for a single dotenv RHS.
+    """Decode one RHS :func:`format_env_value` wrote, as python-dotenv reads it.
 
-    Strips a surrounding pair of double quotes and reverses the backslash escaping,
-    so a value read back from a written line (e.g. to sync ``os.environ``) matches
-    what a dotenv parser would load rather than carrying literal quotes. Unquoted
-    values are returned unchanged. The ``\\(.)`` substitution unescapes left to
-    right in one pass, so ``\\\\`` -> ``\\`` and ``\\"`` -> ``"`` without
-    double-processing.
+    Strips a surrounding pair of double quotes and decodes python-dotenv's
+    double-quote escapes (``\\\\ \\' \\" \\a \\b \\f \\n \\r \\t \\v``) left to
+    right in one pass, so ``\\\\n`` is a backslash and an ``n``, never a
+    newline. The result is what the next reload or boot reads from the file,
+    which is what ``_sync_updated_env_vars`` must export so the live value and
+    the file never disagree. Unquoted values are returned unchanged.
     """
     if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
-        return re.sub(r"\\(.)", r"\1", raw[1:-1])
+        return _DOTENV_DOUBLE_QUOTE_ESCAPE_RE.sub(
+            lambda match: _DOTENV_DOUBLE_QUOTE_DECODED[match.group(1)], raw[1:-1]
+        )
     return raw
 
 
@@ -222,4 +328,5 @@ __all__ = [
     "parse_env_value",
     "merge_env_lines",
     "write_env_file",
+    "EnvValueError",
 ]

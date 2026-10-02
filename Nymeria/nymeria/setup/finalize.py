@@ -1095,6 +1095,10 @@ def write_config(
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
+    Every value goes through `format_env_value`, so each is one physical line
+    (#156); a value no env line can hold raises `EnvValueError` before the
+    file is touched, and the wizard lets it propagate.
+
     When `spec` is None (the provider step was skipped), the LLM lines are
     omitted so the backend still starts and a provider can be set later. The key
     is written to the provider's highest-priority env var; for Anthropic that is
@@ -1149,7 +1153,10 @@ def write_config(
         produced.append(("LLM_PROVIDER", spec.id))
         produced.append(("LLM_MODEL", _env_value(model)))
         if api_key and provider_env:
-            produced.append((provider_env, api_key))
+            # Through the formatter like every other value (#156): written raw,
+            # a pasted key with a line break became two lines and one with ` #`
+            # was cut at the comment marker on read.
+            produced.append((provider_env, _env_value(api_key)))
     for env_var, value in extra_env.items():
         if value:
             produced.append((env_var, _env_value(value)))

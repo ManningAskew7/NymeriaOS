@@ -2500,6 +2500,15 @@ were applied but look wrong, currently a `nymeria_public_url` value that is
 not an http(s) URL or matches a known email-rewriter wrapper (Outlook Safe
 Links, Proofpoint urldefense).
 
+Values may span lines: each is stored as one escaped line and read back
+exactly (see `configuration.md`, "Runtime Settings Updates"). A value no env
+file can hold (a NUL character, the separators U+001C to U+001E, U+0085,
+U+2028, U+2029, or a trailing backslash on a value that needs quotes) returns
+`400` before anything is written, with a detail of the form `Invalid value:
+<field>: <what is wrong>. No changes were applied.` (several such fields are
+listed together, `llm_api_key` included). The detail names the field and the
+character, never the value.
+
 **Note:** This endpoint is admin-only. Changes are written to the highest-precedence existing runtime config file (`.env.docker`, `config.env`, then `.env`), hot-reloaded immediately, and apply to every user on the server unless a thread has its own LLM override. Credential values are accepted in the request but are not returned by `GET /settings` or the update response; the admin env listing masks secret values.
 
 Native optional tools prefer saved credentials from the user/system credential vault. The same settings endpoint can still manage deployment-wide fallback env fields for integrations, including `DHL_API_KEY`, `ONFLEET_API_KEY`, `PHANTOMBUSTER_API_KEY`, `WEBFLOW_ACCESS_TOKEN`, `LEMLIST_API_KEY`, `SENDY_API_KEY`, `EMELIA_API_KEY`, `AFFINITY_API_KEY`, `KEAP_ACCESS_TOKEN`, `MAGENTO_ACCESS_TOKEN`, `UNLEASHED_API_KEY`, `DRIFT_ACCESS_TOKEN`, `OKTA_ACCESS_TOKEN`, `MAUTIC_BASE_URL`, `RUNDECK_BASE_URL`, `RUNDECK_TOKEN`, `KOBOTOOLBOX_API_TOKEN`, `KOBOTOOLBOX_BASE_URL`, `QUICKBOOKS_ACCESS_TOKEN`, `QUICKBOOKS_REALM_ID`, `XERO_ACCESS_TOKEN`, `XERO_TENANT_ID`, `MICROSOFT_GRAPH_ACCESS_TOKEN`, and `MICROSOFT_GRAPH_BASE_URL`; see `tools.md` for the exact provider and field names.

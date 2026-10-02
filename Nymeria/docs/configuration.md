@@ -118,6 +118,24 @@ Every reader of a dotenv file takes the LAST occurrence, so preserving a
 duplicate would let a write report success, serve the new value, and then
 revert at the next restart.
 
+Every value is stored on exactly one line, so a multi-line value (a Twitch
+system prompt, a PEM key fallback) cannot spill continuation lines that a
+later write or a one-line reader would take as settings of their own. A value
+made only of letters, digits and `/._:-=` is written bare; anything else is
+double-quoted, with `\` and `"` escaped and line breaks written as `\n`,
+`\r`, `\v` and `\f`, escapes python-dotenv and Docker Compose both decode back
+to the original characters. The settings writer and `nymeria init` refuse,
+before writing anything, the few values no env file can hold: a NUL
+character, the separators U+001C to U+001E, U+0085, U+2028 and U+2029, and a
+trailing backslash on a value that needs quotes (python-dotenv before 1.2.3
+misreads `"...\\"` and loses the lines after it; drop the trailing backslash,
+paths work without it). A trailing backslash on an otherwise bare value, such
+as `C:\`, is written bare, which every reader takes literally. `PATCH
+/settings` answers such a value with a 400 naming the setting and never
+echoing the value. One caveat is unchanged: python-dotenv expands `${NAME}`
+in any saved value, and Compose also expands `$NAME` in `.env.docker`, so a
+literal `$` reference does not survive a reload or a container start.
+
 A running server is authoritative about its own configuration. The dotenv
 files are read once, at startup, and merged into the process environment;
 `Settings` itself declares no `env_file`, so nothing re-reads a config file

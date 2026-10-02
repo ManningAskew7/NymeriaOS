@@ -687,6 +687,92 @@ def test_env_value_leaves_base64_unquoted():
     assert format_env_value(key) == key
 
 
+# --- #156: every wizard value is one env line -------------------------------
+
+
+def _one_line_per_key(config: Path) -> dict[str, str | None]:
+    """The file's bindings, after checking each is exactly one physical line."""
+    from dotenv import dotenv_values
+
+    values = dotenv_values(config)
+    lines = [
+        line
+        for line in config.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    assert len(lines) == len(values), lines
+    return dict(values)
+
+
+def test_write_config_keeps_a_multi_line_value_on_one_line(tmp_path):
+    config = tmp_path / "config.env"
+
+    finalize_mod.write_config(
+        config,
+        data_dir=tmp_path / "data",
+        extra_env={"TWITCH_SYSTEM_PROMPT": "a\nAPI_PORT=6666\nb"},
+    )
+
+    values = _one_line_per_key(config)
+    assert values["TWITCH_SYSTEM_PROMPT"] == "a\nAPI_PORT=6666\nb"
+    assert values["API_PORT"] == "8000"
+
+
+def test_write_config_refuses_an_uncarriable_value_before_writing(tmp_path):
+    # The wizard just propagates the refusal: every value is formatted before
+    # the one atomic write, so a fresh target is never created and a merge
+    # target is left byte-identical.
+    from nymeria.config.env_file import EnvValueError
+
+    config = tmp_path / "config.env"
+    with pytest.raises(EnvValueError):
+        finalize_mod.write_config(
+            config, data_dir=tmp_path / "data", extra_env={"TWITCH_SYSTEM_PROMPT": "a\x00b"}
+        )
+    assert not config.exists()
+
+    config.write_text("LLM_MODEL=kept\n", encoding="utf-8")
+    before = config.read_bytes()
+    with pytest.raises(EnvValueError):
+        finalize_mod.write_config(
+            config,
+            data_dir=tmp_path / "data",
+            merge=True,
+            extra_env={"TWITCH_SYSTEM_PROMPT": "a\u2028b"},
+        )
+    assert config.read_bytes() == before
+
+
+def test_write_config_formats_the_provider_key_like_every_other_value(tmp_path):
+    # The provider key was the one produced value that skipped the formatter:
+    # a pasted key with a line break wrote two lines, and one with ` #` was cut
+    # at the comment marker on read.
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    spec = get_llm_provider_spec("deepseek")
+    assert spec is not None
+    env_var = spec.api_key_env_vars[0]
+    config = tmp_path / "config.env"
+
+    finalize_mod.write_config(
+        config, data_dir=tmp_path / "data", spec=spec, model="deepseek-chat",
+        api_key="abc\ndef",
+    )
+    assert _one_line_per_key(config)[env_var] == "abc\ndef"
+
+    finalize_mod.write_config(
+        config, data_dir=tmp_path / "data", spec=spec, model="deepseek-chat",
+        api_key="sk-abc #tail", merge=True,
+    )
+    assert _one_line_per_key(config)[env_var] == "sk-abc #tail"
+    # A plain key, the normal case, is still written bare.
+    finalize_mod.write_config(
+        config, data_dir=tmp_path / "data", spec=spec, model="deepseek-chat",
+        api_key="sk-deepseek-it38", merge=True,
+    )
+    assert f"{env_var}=sk-deepseek-it38\n" in config.read_text(encoding="utf-8")
+
+
 # --- bootstrap profile seeding (_apply_profile_picks shared core) -----------
 
 
