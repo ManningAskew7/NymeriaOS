@@ -141,7 +141,7 @@ def _scrub_address(text: str, base_url: str) -> str:
     try:
         needles.add(urlsplit(stripped).netloc)
     except ValueError:
-        pass
+        pass  # no netloc to add; the whole-URL needles above still scrub it
     for needle in sorted((n for n in needles if n), key=len, reverse=True):
         text = text.replace(needle, "<SearXNG address>")
     return text
