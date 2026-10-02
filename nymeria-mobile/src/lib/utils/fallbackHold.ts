@@ -30,6 +30,16 @@ export function fallbackRevertLabel(
   return target ? `Revert to ${target}` : 'Revert to the configured model';
 }
 
+/**
+ * A model id without its provider prefix, every segment of it
+ * (`openrouter/anthropic/claude-opus-4.6` reads `claude-opus-4.6`): the
+ * short name the header's model and hold chips show.
+ */
+export function shortModelName(modelId: string): string {
+  const parts = modelId.split('/');
+  return parts[parts.length - 1];
+}
+
 /** The header chip (desktop) or badge (mobile) for a live hold. */
 export interface FallbackHoldChip {
   /** `fallback: <model>`, the provider prefix dropped. */
@@ -79,9 +89,8 @@ export function fallbackHoldChip(
       ? ''
       : ` until ${new Date(expiresAt).toLocaleString()}`;
   const target = fallbackRevertTarget(config, globalModel);
-  const parts = hold.model.split('/');
   return {
-    label: `fallback: ${parts[parts.length - 1]}`,
+    label: `fallback: ${shortModelName(hold.model)}`,
     description: `${cause}${until}. Reverting returns to ${target ?? 'the configured model'}.`,
   };
 }

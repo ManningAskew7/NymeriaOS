@@ -39,6 +39,7 @@ vi.mock('$lib/services/api/humanizeError', () => ({
 
 import { refreshLiveThreadState, runLiveTypedCommand } from './liveThreadState';
 import { api } from '$lib/services/api.svelte';
+import { errorsStore } from '$lib/stores/errors.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import { threadsStore } from '$lib/stores/threads.svelte';
 import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -121,6 +122,43 @@ describe('the live thread-state deps reach the stores the chips read', () => {
     expect(chatStore.contextStats?.usagePercentage).toBe(12.5);
     expect(threadConfigStore.getConfig(threadId)?.llmConfig?.model).toBe('claude-x');
     expect(serverSettingsStore.model).toBe('global-y');
+  });
+
+  it('a latched server-settings failure stays latched: commands and panel writes add no request and no toast', async () => {
+    // #381: a failed GET /settings toasts ONCE and latches; only a
+    // reconnect, a settings save or an explicit refresh re-arms it. The
+    // post-command refresh must not be a fourth re-arm, or every typed
+    // command and every panel Save would toast again.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    (api.getServerSettings as Mock).mockRejectedValue(
+      Object.assign(new Error('Internal Server Error'), { status: 500 })
+    );
+    await serverSettingsStore.load();
+    expect(serverSettingsStore.error).not.toBeNull();
+    expect(api.getServerSettings).toHaveBeenCalledTimes(1);
+    expect(errorsStore.push).toHaveBeenCalledTimes(1);
+
+    (api.executeCommand as Mock).mockResolvedValue({
+      success: true,
+      markdown: 'Done.',
+      command: 'todo',
+      level: 'success',
+    });
+    (api.getThreadContextStats as Mock).mockResolvedValue(stats(threadId, 'claude-x', 12.5));
+    (api.getThreadConfig as Mock).mockResolvedValue(config(threadId, 'claude-x'));
+
+    await runLiveTypedCommand('/help', threadId, '/help');
+    await runLiveTypedCommand('/todo add x', threadId, '/todo');
+    await refreshLiveThreadState(threadId);
+    consoleError.mockRestore();
+
+    expect(api.getServerSettings).toHaveBeenCalledTimes(1);
+    expect(errorsStore.push).toHaveBeenCalledTimes(1);
+    expect(serverSettingsStore.error).not.toBeNull();
+    // The thread's own chips still refresh around the latched settings.
+    expect(api.getThreadContextStats).toHaveBeenCalledTimes(3);
+    expect(chatStore.activeModel).toBe('claude-x');
+    expect(threadConfigStore.getConfig(threadId)?.llmConfig?.model).toBe('claude-x');
   });
 
   it('a request failure is the humanized error card and nothing else', async () => {

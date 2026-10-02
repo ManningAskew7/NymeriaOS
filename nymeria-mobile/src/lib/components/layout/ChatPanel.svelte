@@ -23,11 +23,8 @@
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText, isConnectivityError } from '$lib/services/api/humanizeError';
   import { isTodoTool } from '$lib/utils/todoTools';
-  import { fallbackHoldChip, fallbackHoldExpiresIn } from '$lib/utils/fallbackHold';
+  import { fallbackHoldChip, fallbackHoldExpiresIn, shortModelName } from '$lib/utils/fallbackHold';
   import { untrack } from 'svelte';
-
-  // setTimeout's ceiling (a signed 32-bit delay); holds max out at 7 days.
-  const MAX_TIMER_MS = 2_147_483_647;
   import type { DispatchInfo, FileAttachment, QueuedBatch, RestoredPrompt, SSEEvent, ThreadStatus } from '$lib/types';
 
   let currentTitle = $derived(threadsStore.currentThread?.title ?? 'New Thread');
@@ -56,11 +53,6 @@
       : null
   );
 
-  function shortModelName(modelId: string): string {
-    const parts = modelId.split('/');
-    return parts[parts.length - 1];
-  }
-
   const effectiveModel = $derived.by(() => {
     if (currentThreadConfig?.llmConfig?.model) {
       return { name: shortModelName(currentThreadConfig.llmConfig.model), isOverride: true };
@@ -82,7 +74,9 @@
   $effect(() => {
     const wait = fallbackHoldExpiresIn(currentThreadConfig);
     if (wait === null) return;
-    const timer = setTimeout(() => { holdClock += 1; }, Math.min(wait + 250, MAX_TIMER_MS));
+    // No 2^31 ms setTimeout clamp: the backend caps a hold at 7 days
+    // (hold_seconds <= 604800), far under the ceiling.
+    const timer = setTimeout(() => { holdClock += 1; }, wait + 250);
     return () => clearTimeout(timer);
   });
   const holdChip = $derived.by(() => {
@@ -1299,18 +1293,6 @@
     background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
     color: var(--accent-primary);
     border: 1px solid var(--accent-tint-border);
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
 
   .tools-badge {

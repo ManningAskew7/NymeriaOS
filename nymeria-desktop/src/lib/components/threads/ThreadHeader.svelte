@@ -19,10 +19,7 @@
   import { healthStore } from '$lib/stores/health.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { computeEffectiveToolCounts, liveTemporaryToolNames } from '$lib/utils/toolCounts';
-  import { fallbackHoldChip, fallbackHoldExpiresIn } from '$lib/utils/fallbackHold';
-
-  // setTimeout's ceiling (a signed 32-bit delay); holds max out at 7 days.
-  const MAX_TIMER_MS = 2_147_483_647;
+  import { fallbackHoldChip, fallbackHoldExpiresIn, shortModelName } from '$lib/utils/fallbackHold';
 
   interface Props {
     thread: Thread;
@@ -91,11 +88,6 @@
     window.open(url, 'nymeria-popout', 'width=900,height=700,resizable=yes,scrollbars=yes');
   }
 
-  function shortModelName(modelId: string): string {
-    const parts = modelId.split('/');
-    return parts[parts.length - 1];
-  }
-
   const effectiveModel = $derived.by(() => {
     if (threadConfig?.llmConfig?.model) {
       return { name: shortModelName(threadConfig.llmConfig.model), full: threadConfig.llmConfig.model, isOverride: true };
@@ -117,7 +109,9 @@
   $effect(() => {
     const wait = fallbackHoldExpiresIn(threadConfig);
     if (wait === null) return;
-    const timer = setTimeout(() => { holdClock += 1; }, Math.min(wait + 250, MAX_TIMER_MS));
+    // No 2^31 ms setTimeout clamp: the backend caps a hold at 7 days
+    // (hold_seconds <= 604800), far under the ceiling.
+    const timer = setTimeout(() => { holdClock += 1; }, wait + 250);
     return () => clearTimeout(timer);
   });
   const holdChip = $derived.by(() => {

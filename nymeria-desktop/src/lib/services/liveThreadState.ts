@@ -15,7 +15,13 @@ import { refreshThreadState, runTypedCommand, type TypedCommandDeps } from './th
 export const liveThreadStateDeps: TypedCommandDeps = {
   getThreadContextStats: (threadId) => api.getThreadContextStats(threadId),
   loadThreadConfig: (threadId) => threadConfigStore.loadConfig(threadId),
-  refreshServerSettings: () => serverSettingsStore.refresh(),
+  // Only a store that holds values is re-read. refresh() clears the
+  // failure latch, and a failed load toasts (#381: once per session), so
+  // re-arming it here would toast on every typed command and panel write.
+  // A latched failure or refusal is retried by the reconnect and
+  // panel-open effects that already own it.
+  refreshServerSettings: () =>
+    serverSettingsStore.loaded ? serverSettingsStore.refresh() : Promise.resolve(),
   currentThreadId: () => threadsStore.currentThreadId,
   identityGeneration: () => identityReloadGeneration(),
   applyContextStats: (stats) => {

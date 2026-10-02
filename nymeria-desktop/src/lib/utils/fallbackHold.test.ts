@@ -6,6 +6,7 @@ import {
   fallbackHoldExpiresIn,
   fallbackRevertLabel,
   fallbackRevertTarget,
+  shortModelName,
 } from './fallbackHold';
 
 // A hold whose source is NOT what the thread returns to: after a
@@ -149,5 +150,16 @@ describe('fallbackHoldExpiresIn', () => {
     expect(fallbackHoldExpiresIn({ threadId: 't-1', llmConfig: null } as ThreadConfig, at)).toBeNull();
     expect(fallbackHoldExpiresIn(config(null), at)).toBeNull();
     expect(fallbackHoldExpiresIn(config('not a date'), at)).toBeNull();
+  });
+});
+
+describe('shortModelName', () => {
+  it('drops every provider segment, so a chip shows only the model', () => {
+    expect(shortModelName('openrouter/anthropic/claude-opus-4.6')).toBe('claude-opus-4.6');
+    expect(shortModelName('anthropic/claude-haiku-4-5')).toBe('claude-haiku-4-5');
+  });
+
+  it('leaves an unprefixed id as it is', () => {
+    expect(shortModelName('gpt-5.5')).toBe('gpt-5.5');
   });
 });
