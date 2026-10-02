@@ -994,8 +994,9 @@ list), doctor adds a `SearXNG` row: one test search
 (`q=wikipedia`, JSON, 3 second connect and 10 second read timeouts) against
 `SEARXNG_BASE_URL`. A user's own saved SearXNG address is never checked. It
 passes when results come back (naming any engines that failed alongside), and
-warns when the URL is unset or is not an `http://` or `https://` URL (never
-probed or echoed), the instance is unreachable or slow, it answers
+warns when the URL is unset or is not an `http://` or `https://` URL with a
+host and a valid port (the rule `nymeria init` applies to the same setting;
+never probed or echoed), the instance is unreachable or slow, it answers
 HTTP 403 (`search.formats` lacks `json`), 429 (its rate limiter) or another
 error status, it answers without JSON, or the search came back empty, naming
 the engines that failed when it did. It is a search, not a `/healthz` check,
@@ -1185,7 +1186,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `FIRECRAWL_API_KEY` | - | Firecrawl API key for web_search_firecrawl tool |
 | `BRAVE_API_KEY` | - | Brave Search API key for web_search_brave tool |
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
-| `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by web_search_searxng (Docker compose sets `http://searxng:8080` for the bundled sidecar; `nymeria init` writes it when SearXNG is selected on a Docker host) |
+| `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by web_search_searxng (Docker compose sets `http://searxng:8080` for the bundled sidecar; `nymeria init` writes it when SearXNG is selected on a Docker host). Must be an `http://` or `https://` URL with a host, such as `http://localhost:8080` (a path is fine): `nymeria init` refuses anything else (the `--searxng-base-url` flag stops the run before writing, the wizard's SearXNG field asks again) and never repeats the value, which may hold credentials |
 | `SEARXNG_SECRET` | (compose default) | Cookie/CSRF signing secret the compose files interpolate into the SearXNG sidecar; `nymeria init` generates one per install when the sidecar is selected |
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |
 | `OPENWEATHERMAP_API_KEY` | - | OpenWeatherMap API key fallback for weather tools |

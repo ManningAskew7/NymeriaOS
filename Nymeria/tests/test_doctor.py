@@ -1085,10 +1085,15 @@ def test_searxng_row_never_prints_url_credentials(searxng_stub, searxng_data) ->
         "localhost:8080",
         "ftp://s3cret@searx.example",
         "http:///s3cret",
+        # The rule `nymeria init` shares (It43): neither can ever connect, and
+        # before the shared rule both were probed (a DNS lookup of the garbage).
+        "http://sx-user:s3cret@127.0.0.1:0",
+        "http://sx-user:s3cret@my searx:8080",
     ],
     ids=[
         "bracket", "port-out-of-range", "schemeless-credentials", "schemeless-service",
-        "schemeless-localhost", "non-http-scheme", "no-host",
+        "schemeless-localhost", "non-http-scheme", "no-host", "port-zero",
+        "space-in-host",
     ],
 )
 def test_searxng_malformed_url_is_reported_unechoed_and_unprobed(

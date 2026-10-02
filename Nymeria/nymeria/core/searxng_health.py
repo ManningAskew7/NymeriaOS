@@ -7,6 +7,11 @@ SearXNG row (``doctor.py``), which runs :func:`probe_searxng`. It lives in
 policy client load inside the probe) because doctor must not load the tools
 package: importing it costs about 7 seconds (measured 2026-10-02).
 
+:func:`base_url_problem` is the one rule for what a SearXNG base URL must look
+like. Doctor applies it to ``SEARXNG_BASE_URL`` on disk and ``nymeria init``
+to ``--searxng-base-url`` and the wizard's SearXNG field, so neither imports
+the other and the two cannot drift.
+
 What SearXNG reports about failure (read from, then measured against, the
 pinned sidecar image on 2026-10-02):
 
@@ -57,6 +62,47 @@ _RAW_SLICE = 512
 _REASON_TEXT_CAP = 200
 
 ProbeOutcome = Literal["unreachable", "timeout", "http_error", "not_json", "answered"]
+
+
+def base_url_problem(base_url: str) -> str | None:
+    """Why ``base_url`` cannot be a SearXNG base URL, or None when it can.
+
+    Usable means what httpx can request (measured 2026-10-02): after stripping
+    surrounding whitespace, an ``http`` or ``https`` scheme in any case, a host
+    with no whitespace in it, a port from 1 to 65535 when one is given, and no
+    control character anywhere. A path (an instance behind a prefix), a query,
+    userinfo (basic auth in front of it) and an IPv6 literal are all fine.
+    httpx refuses everything else, either outright (``searxng:8080`` and
+    ``localhost:8080`` parse with the host as their SCHEME) or after a DNS
+    lookup of the garbage (an out-of-range port, a space in the host).
+
+    The reason is a fixed clause that completes "<setting> is not usable: ",
+    and never quotes the value: ``user:pw@host:1`` parses with ``user`` as its
+    scheme, so credentials in a malformed value cannot be found to redact.
+    """
+    value = (base_url or "").strip()
+    if not value:
+        return "it is empty"
+    if any(unicodedata.category(ch) == "Cc" for ch in value):
+        return "it contains a control character"
+    try:
+        parts = urlsplit(value)
+    except ValueError:  # an unbalanced IPv6 bracket, say
+        return "it is not a well-formed URL"
+    if parts.scheme not in ("http", "https"):
+        return "it does not start with http:// or https://"
+    host = parts.hostname
+    if not host:
+        return "it has no host"
+    if any(ch.isspace() for ch in host):
+        return "its host contains whitespace"
+    try:
+        port = parts.port
+    except ValueError:  # not a number, or out of range
+        port = 0
+    if port == 0:
+        return "its port is not a number from 1 to 65535"
+    return None
 
 
 @dataclass(frozen=True)
@@ -213,6 +259,7 @@ def probe_searxng(base_url: str, *, query: str = _CANARY_QUERY) -> SearxngProbe:
 __all__ = [
     "PROBE_TIMEOUT_SECONDS",
     "SearxngProbe",
+    "base_url_problem",
     "describe_engines",
     "probe_searxng",
     "transport_reason",

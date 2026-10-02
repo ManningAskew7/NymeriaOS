@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
-from urllib.parse import urlsplit
 
 from langchain_core.messages import HumanMessage
 from rich.console import Console
@@ -466,7 +465,12 @@ def _check_searxng(settings: Any, *, project_root: Path | None = None) -> CheckR
 
 def _searxng_row(settings: Any) -> CheckResult:
     from .config.settings import _docker_service_host, _in_container
-    from .core.searxng_health import PROBE_TIMEOUT_SECONDS, describe_engines, probe_searxng
+    from .core.searxng_health import (
+        PROBE_TIMEOUT_SECONDS,
+        base_url_problem,
+        describe_engines,
+        probe_searxng,
+    )
 
     base_url = str(getattr(settings, "searxng_base_url", None) or "").strip()
     if not base_url:
@@ -477,16 +481,11 @@ def _searxng_row(settings: Any) -> CheckResult:
             "set, so it fails unless a user saved their own SearXNG address (not "
             "checked here); set SEARXNG_BASE_URL or rerun `nymeria init`",
         )
-    try:
-        parts = urlsplit(base_url)
-        parts.port  # noqa: B018 - raises on a malformed port
-        usable = parts.scheme in ("http", "https") and bool(parts.hostname)
-    except ValueError:
-        usable = False
-    if not usable:
-        # Never echoed and never probed: a malformed or scheme-less value
-        # ("user:pw@host:1", "searxng:8080") can still carry credentials, and
-        # urlsplit finds no userinfo in it to redact.
+    if base_url_problem(base_url) is not None:
+        # The rule `nymeria init` applies to the same setting. Never echoed
+        # and never probed: a malformed or scheme-less value ("user:pw@host:1",
+        # "searxng:8080") can still carry credentials, and urlsplit finds no
+        # userinfo in it to redact.
         return CheckResult(
             "SearXNG",
             "warn",

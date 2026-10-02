@@ -449,6 +449,20 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         value = getattr(args, attr, None)
         if value:
             optional_env[env_var] = value.strip()
+    searxng_url = optional_env.get("SEARXNG_BASE_URL")
+    if searxng_url:
+        # Refused here, before anything touches disk: written as given, a
+        # scheme-less address fails every search and only doctor noticed.
+        # The message never quotes the value (it may hold credentials).
+        from ..core.searxng_health import base_url_problem
+
+        problem = base_url_problem(searxng_url)
+        if problem:
+            raise SystemExit(
+                f"--searxng-base-url is not usable: {problem}. Expected the "
+                "SearXNG address as http://host:port, for example "
+                "http://localhost:8080"
+            )
 
     extras: dict[str, object] = {}
     for attr, family in _FAMILY_FLAGS:

@@ -15,6 +15,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.widgets import Input, Static
 
+from ...core.searxng_health import base_url_problem
 from ..nav import Step
 from ..tool_keys import KeySpec, backend_keys_needed, required_backend_credentials
 from .base import FormStep
@@ -66,7 +67,7 @@ class BackendKeysStep(FormStep):
 
     def action_next(self) -> None:
         # Enter steps to the next key field; advances from the last one. Keys are
-        # optional, so there is nothing to validate.
+        # optional; collect() checks only a URL's shape.
         self.show_error("")
         inputs = list(self.query(Input))
         focused = self.focused
@@ -80,11 +81,28 @@ class BackendKeysStep(FormStep):
             self._wizard.advance()
 
     def collect(self) -> bool:
+        entered: list[tuple[KeySpec, str]] = []
         for spec in self._current_specs():
             try:
-                value = self.query_one(f"#{_field_id(spec)}", Input).value.strip()
+                field = self.query_one(f"#{_field_id(spec)}", Input)
             except Exception:
                 continue
+            value = field.value.strip()
+            # A URL slot (SearXNG's base URL, the only one) gets the rule
+            # doctor applies, before any field is recorded: written as typed,
+            # a scheme-less address fails every search. Never quotes the
+            # value, which may hold credentials.
+            problem = base_url_problem(value) if value and spec.kind == "url" else None
+            if problem:
+                field.focus()
+                self.show_error(
+                    f"{spec.label} is not usable: {problem}. Enter it as "
+                    "http://host:port (for example http://localhost:8080), or "
+                    "leave it blank to add it later."
+                )
+                return False
+            entered.append((spec, value))
+        for spec, value in entered:
             if value:
                 self.state.optional_env[spec.env_var] = value
             else:
