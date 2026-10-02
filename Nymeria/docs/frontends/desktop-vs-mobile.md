@@ -110,6 +110,10 @@ Both apps now use the same modular API service layout:
 | `utils/transitions.ts` | EXACT_MATCH | Shared dropdown and collapsible slide timing constants. |
 | `utils/identityScope.ts` | EXACT_MATCH | The client storage scope (#242): backend URL normalization, the `{base}-{accountId}@{backend}` key format (provisional `{base}-@{backend}` while a switch waits for `/me`, and at boot for a signed-in config with no account: `resumedScope`), scope compare, and the once-only carry-forward that drops stale older-format keys. The config stores own the live scope. |
 | `stores/backendScopedValue.svelte.ts` | EXACT_MATCH | A component-held copy of backend-served data (both settings panels' GET /settings snapshot, which their Save sends back whole): dropped on every identity reload hook, generation-guarded loads. |
+| `services/threadStateRefresh.ts`, `services/liveThreadState.ts` | EXACT_MATCH | The refresh after a typed slash command or a Thread Settings write (Save, Reset, hold Revert; desktop's route apply) (#440): context stats first (the resolver evicts an expired hold), then the thread config, plus the server settings; stats land only on the open thread, nothing after a connection switch. The first is pure (deps injected), the second binds it to the stores. |
+| `utils/fallbackHold.ts` | EXACT_MATCH | What a hold Revert restores and its button label (#236), and the header hold chip (#441): hidden once `expiresAt` passes, description names the revert target, never the hold's source. |
+| `stores/models.svelte.ts` | EXACT_MATCH | OpenRouter model metadata: a non-empty catalog latches for the connection; an empty or failed load is retried at most once per 60 s (the backend's failure-cache TTL), so panel effects cannot loop on it (#445). |
+| `stores/mcpServers.svelte.ts` | KNOWN_DRIFT | Same load path in both (desktop adds upload preview): a failed load latches `loaded` + `error`, a 403 latches a silent `forbidden`, a known non-admin never asks; `refresh()` asks again (#445). |
 | `components/credentials/CredentialManagerPanel.svelte` | EXACT_MATCH | Platform-neutral saved-connections manager used in both settings panels. |
 | `components/notifications/index.ts` | KNOWN_DRIFT | Desktop exports notification profile/destination editors and the full panel; mobile only exports its notification center/item subset. |
 
@@ -324,6 +328,11 @@ candidate selection, `preview_token` + `candidate_id` install requests,
 `credential_values` for sensitive fields, `confirmed_risk_ids`, status/log
 rendering, and stale-tool refresh after install/retry/delete.
 
+A failed server-list load shows the error with a secondary Retry (above the
+list when one is already loaded, which may then be out of date), and a 403 or
+a known non-admin shows "managed by an admin"; neither shows the empty state.
+Reopening the panel retries a latched failure (#445).
+
 #### `components/threads/ThreadSettingsPanel.svelte`
 
 Both exist and provide per-thread LLM config UI (desktop's Model tab adds an admin-only CLIProxy route walkthrough, backlog #377 for mobile) plus dedicated Agent, MCP, Skills, and Triggers tabs for callable-thread settings, MCP tool overrides, skill overrides, and trigger setup. The desktop modal shrink-wraps wider tab sets up to a viewport-capped width, with horizontal tab scrolling as the fallback for narrow windows or future tabs. The mobile version has larger touch targets and full-screen modal presentation.
@@ -408,7 +417,7 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `components/layout/AppShell.svelte` | 3-panel flexbox with collapsible sidebars | Replaced by `MobileShell.svelte` |
 | `components/layout/Sidebar.svelte` | Left sidebar container | Replaced by `LeftPanel.svelte` |
 | `components/layout/MainPanel.svelte` | Center panel container | Replaced by `ChatPanel.svelte` |
-| `components/threads/ThreadHeader.svelte` | Current thread title + platform indicator; callable count badge uses the per-thread `/threads/{id}/callable-tools` endpoint | Integrated into `ChatPanel` header with the same per-thread callable count lookup |
+| `components/threads/ThreadHeader.svelte` | Current thread title + platform indicator; callable count badge uses the per-thread `/threads/{id}/callable-tools` endpoint; an active fallback hold shows a `fallback: <model>` chip that opens the Model tab | Integrated into `ChatPanel` header with the same per-thread callable count lookup; the hold shows as an inert `fallback: <model>` badge (no 44px target fits the badge strip; the gear is the way in). Both come from `fallbackHoldChip` and drop when the hold expires |
 | `components/threads/FolderItem.svelte` | Folder display in thread list | Not needed (folders not in mobile UI) |
 | Thread config sharing UI | Import `.nymeria-thread.json` files from the desktop thread list and export portable config-only shares from thread context menus | Backend API exists for mobile, but mobile has no UI in v1 |
 | `components/common/CLIProxyPanel.svelte` | CLIProxy management UI; also hosted in thread scope by the thread Model tab (admin-only "Route via CLIProxy" walkthrough, apply-route scope thread) | Desktop-only; mobile's `CLIProxySection` applies globally only (backlog #377) |
@@ -434,7 +443,7 @@ centralized in mobile `app.css`, so component scroll containers only need their
 | `utils/lifecycle.ts` | Capacitor app lifecycle (back button, foreground/background, Preferences backup/restore) | Capacitor-specific |
 | `utils/haptics.ts` | Haptic feedback wrapper (`hapticImpact`, `hapticNotification`) | Capacitor-specific |
 | `stores/backendSwitch.svelte.ts` | Settings > Connection Save and Test (#242) | Desktop's counterpart is `connections.svelte.ts::applyConnection` |
-| `stores/headerStoreLoads.svelte.ts` | Keeps the chat header's stores loaded, again after a switch resets them | Desktop carries the same effect inline in `MainPanel.svelte`; tested in the vitest `runes` project (`*.svelte.test.ts`, mobile only), whose client transform lets `$effect` run |
+| `stores/headerStoreLoads.svelte.ts` | Keeps the chat header's stores loaded, again after a switch resets them | Desktop carries the same effect inline in `MainPanel.svelte`; tested in the vitest `runes` project (`*.svelte.test.ts`, both apps since #445), whose client transform lets `$effect` run |
 | `utils/threadLlmSave.ts` | Thread Settings Save round-trips the stored `base_url`/`api_key` when untouched | Desktop's Thread Settings passes the saved `base_url` to `llmRouteConfigFrom` |
 
 ### Component Directory Reorganization
