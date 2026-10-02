@@ -22,7 +22,8 @@ Shape (coordinator decisions M1 to M8 plus the review fixes, design record
   whose route already has a probe in flight starts none and reads the
   route's verdict at its next turn start. A probe (or a thread's check) in
   flight longer than the timeout plus a margin is presumed hung and
-  discarded, so nothing stays "checking".
+  discarded, so nothing stays "checking"; a hung probe counts as a
+  ``timeout`` failure, so a black-holed route backs off like a down one.
 - POLICY on a healthy verdict lives in the consent layer
   (``fallback_approvals.reclaim_action``): a hold a human chose
   (``hold_origin`` "user", or permanent) is never auto-ended: it stays and
@@ -43,8 +44,8 @@ Shape (coordinator decisions M1 to M8 plus the review fixes, design record
   our side jump to the cap; a 400/422 stops probing that hold for good (an
   ambiguous signal must neither reclaim nor spin). A verdict is about a hold
   only when its probe was SENT after that hold formed. A hold re-forming on
-  a route within 30 minutes of its reclaim (a flap) starts that route at
-  the cap. Route state is in-memory: a restart costs at most one extra probe
+  a route within 30 minutes of any reclaim on it (a flap) starts that route
+  at the cap and discards a probe in flight. Route state is in-memory: a restart costs at most one extra probe
   per route.
 - The turn-start seam also evicts an EXPIRED hold (reason ``expired``), a
   ``/resume`` re-drive included (its note rides the next prompted turn): the
@@ -64,9 +65,11 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
+import os
 import re
 import threading
-from dataclasses import dataclass
+import traceback
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
@@ -93,10 +96,14 @@ PROBE_MAX_TOKENS = 64
 PROBE_MAX_TOKENS_ALWAYS_THINKING = 2048
 # A probe (or a thread's background check) in flight this long is presumed
 # hung (a provider factory that ignores request_timeout): it is discarded,
-# so the route can be probed again and no status stays "checking". A late
-# result from it never overwrites a newer probe's verdict.
+# so no status stays "checking". A hung probe is recorded as a ``timeout``
+# failure when the next check finds it, so the route backs off on the ladder
+# rather than being re-probed every minute; its late result is dropped.
 _INFLIGHT_STALE_SECONDS = PROBE_TIMEOUT_SECONDS + 30
 _FLAP_WINDOW = timedelta(minutes=30)
+# How long a route remembers its reclaims: a hold's first check can come long
+# after it formed, and must still see a reclaim just before it.
+_RECLAIM_MEMORY = _FLAP_WINDOW + timedelta(seconds=86400)
 
 HEALTHY = "healthy"
 PROBE_INVALID = "probe_invalid"
@@ -119,11 +126,13 @@ _CAP_VERDICTS = frozenset({"rate_limited", "auth_error", PROBE_INVALID, PROBE_ER
 # HEALTHY, never a failure: a reasoning model can spend a 64-token budget on
 # reasoning alone. Shapes: openai's LengthFinishReasonError (chat completions
 # finish_reason "length"), a Responses reply with status "incomplete" for
-# max_output_tokens surfaced as an error by a gateway or a client library,
-# and relayed finish/stop reasons (Anthropic "max_tokens", Gemini
-# "MAX_TOKENS"). NOT a request REJECTED over its max_tokens (a 400 such as
-# "max_tokens must be greater than thinking.budget_tokens" generated
-# nothing): those carry none of these markers and stay probe_invalid.
+# max_output_tokens surfaced as an error by a client library, and relayed
+# finish/stop reasons (Anthropic "max_tokens", Gemini "MAX_TOKENS"). Consulted
+# ONLY when the failure carries no HTTP error status: every real
+# exhausted-budget shape is a 200 or a status-less client-side error, while a
+# 5xx or 429 whose body merely relays an upstream stop reason is an outage
+# (reading it healthy would end an automatic hold onto a dead primary), and a
+# 400/422 is a rejected request that generated nothing.
 _BUDGET_EXHAUSTED_TYPES = frozenset({"LengthFinishReasonError"})
 _BUDGET_EXHAUSTED_PATTERNS = (
     re.compile(r"length limit was reached"),
@@ -165,7 +174,10 @@ class _RouteState:
     # or after that hold formed; one sent earlier predates the failure).
     verdict_at: Optional[datetime] = None
     verdict_sent_at: Optional[datetime] = None
-    reclaimed_at: Optional[datetime] = None
+    # Every recent reclaim on this route, not only the latest: another
+    # thread's reclaim after a hold re-formed must not hide that the hold
+    # re-formed right after an earlier one (a flap).
+    reclaims: list[datetime] = field(default_factory=list)
     flap_hold: Optional[tuple] = None
     # The one probe in flight: when it was sent and the token that owns it.
     inflight_since: Optional[datetime] = None
@@ -362,18 +374,20 @@ def output_budget_exhausted(exc: BaseException) -> bool:
 def classify_probe_failure(exc: BaseException) -> str:
     """A probe exception's verdict, in the hold reasons' own taxonomy.
 
-    An exhausted output budget is HEALTHY (the route generated). 400/422 is
-    ``probe_invalid``: the route answered, but rejected the probe's shape,
-    which says nothing about recovery (it stops probing that hold). A
-    programming error with no HTTP status is ``probe_error`` (ours, never
-    the provider's). Everything else is the retry ladder's reason mapping:
-    ``rate_limited`` and ``auth_error`` back off to the cap, the rest (5xx,
-    408 to 425, timeouts, transport, unknown) double."""
+    An exhausted output budget with no HTTP error status is HEALTHY (the
+    route generated); an error status always keeps its own verdict, whatever
+    its body says. 400/422 is ``probe_invalid``: the route answered, but
+    rejected the probe's shape, which says nothing about recovery (it stops
+    probing that hold). A programming error with no HTTP status is
+    ``probe_error`` (ours, never the provider's). Everything else is the
+    retry ladder's reason mapping: ``rate_limited`` and ``auth_error`` back
+    off to the cap, the rest (5xx, 408 to 425, timeouts, transport, unknown)
+    double."""
     from ..vendor.react_agent.nodes import llm_error_status_code, llm_failure_reason
 
-    if output_budget_exhausted(exc):
-        return HEALTHY
     status = llm_error_status_code(exc)
+    if (status is None or status < 400) and output_budget_exhausted(exc):
+        return HEALTHY
     if status in (400, 422):
         return PROBE_INVALID
     if status is None and isinstance(exc, _PROGRAMMING_ERROR_TYPES):
@@ -385,35 +399,47 @@ def run_probe(primary: Any) -> str:
     """One probe request against ``primary``; never raises. Any return (text,
     empty, truncated, even a refusal) means the route serves completions.
     A failure to BUILD the client is always ``probe_error`` (nothing was
-    sent); a ``probe_error`` is logged with its traceback, since it is a
-    bug or a misconfiguration to fix, not an outage to wait out."""
+    sent); a ``probe_error`` is logged at WARNING with its error type and
+    raise site, since it is a bug or a misconfiguration to fix, not an
+    outage to wait out."""
     from langchain_core.messages import HumanMessage
 
     from ..vendor.react_agent.providers import create_llm
 
     try:
         llm = create_llm(probe_config(primary))
-    except Exception:  # noqa: BLE001 - nothing was sent: never a provider verdict
-        _log_probe_error(primary, "building the probe client failed")
+    except Exception as exc:  # noqa: BLE001 - nothing was sent: never a provider verdict
+        _log_probe_error(primary, "building the probe client failed", exc)
         return PROBE_ERROR
     try:
         llm.invoke([HumanMessage(content=PROBE_PROMPT)])
     except Exception as exc:  # noqa: BLE001 - the verdict IS the exception class
         verdict = classify_probe_failure(exc)
         if verdict == PROBE_ERROR:
-            _log_probe_error(primary, "the probe call raised a programming error")
+            _log_probe_error(primary, "the probe call raised a programming error", exc)
         return verdict
     return HEALTHY
 
 
-def _log_probe_error(primary: Any, what: str) -> None:
+def _log_probe_error(primary: Any, what: str, exc: BaseException) -> None:
+    """The error's type and where it was raised, never its message or its
+    chain: a chained transport error can name the request URL, and a base URL
+    can be an interpolated secret (the module never logs a destination)."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    site = (
+        f" at {os.path.basename(frames[-1].filename)}:{frames[-1].lineno} "
+        f"in {frames[-1].name}"
+        if frames
+        else ""
+    )
     logger.warning(
-        "[LLM RECLAIM] route=%s verdict=%s (%s; not a provider verdict, backing "
-        "off to the cap)",
+        "[LLM RECLAIM] route=%s verdict=%s (%s: %s%s; not a provider verdict, "
+        "backing off to the cap)",
         _route_label(route_key(primary)),
         PROBE_ERROR,
         what,
-        exc_info=True,
+        type(exc).__name__,
+        site,
     )
 
 
@@ -590,6 +616,10 @@ def _settle(
             return None
         route = _ROUTES.get(state.route_key) if state.route_key is not None else None
         if route is not None:
+            # This hold's check normally found any flap first; applying it
+            # here too (idempotent per hold) keeps the damping from resting
+            # on that ordering.
+            _apply_flap(route, hold, key, backoff_cap_seconds(interval), now)
             if _fresh_verdict(route, hold) == PROBE_INVALID:
                 state.stopped = True
                 return None
@@ -653,7 +683,7 @@ def _apply_healthy(
             return None
         with _LOCK:
             if state.route_key is not None:
-                _ROUTES.setdefault(state.route_key, _RouteState()).reclaimed_at = _now()
+                _record_reclaim(_ROUTES.setdefault(state.route_key, _RouteState()), _now())
         logger.info(
             "[LLM RECLAIM] thread=%s route=%s outcome=ended (hold on %s/%s ended, "
             "reason recovered)",
@@ -696,12 +726,20 @@ def _stamp_offer(manager: Any, thread_id: str, activated_at: Any) -> bool:
 # -- the background check ------------------------------------------------------
 
 
+def _record_reclaim(route: _RouteState, at: datetime) -> None:
+    """Remember a reclaim on ``route`` (caller holds _LOCK)."""
+    route.reclaims = [r for r in route.reclaims if at - r <= _RECLAIM_MEMORY]
+    route.reclaims.append(at)
+
+
 def _apply_flap(route: _RouteState, hold: Any, key: tuple, cap: int, now: datetime) -> bool:
-    if route.reclaimed_at is None or route.flap_hold == key:
+    """A hold that formed within the flap window after ANY reclaim on its
+    route pins the route at the cap from the hold's failure (caller holds
+    _LOCK; idempotent per hold)."""
+    if route.flap_hold == key:
         return False
     activated = ensure_aware_utc(hold.activated_at)
-    gap = activated - route.reclaimed_at
-    if not (timedelta(0) <= gap <= _FLAP_WINDOW):
+    if not any(timedelta(0) <= activated - at <= _FLAP_WINDOW for at in route.reclaims):
         return False
     route.flap_hold = key
     start = activated + timedelta(seconds=cap)
@@ -711,6 +749,11 @@ def _apply_flap(route: _RouteState, hold: Any, key: tuple, cap: int, now: dateti
     route.last_verdict = FLAPPED
     route.verdict_at = now
     route.verdict_sent_at = activated
+    # A probe in flight now was judged by the same tiny-request test that
+    # just proved wrong: its answer must not lift the cap, so it is
+    # discarded (its late result is dropped like a hung probe's).
+    route.inflight_since = None
+    route.inflight_token = None
     return True
 
 
@@ -751,11 +794,19 @@ def _check_thread(host: Any, thread_id: str, user_id: str, hold: Any, key: tuple
         label = _route_label(rkey)
         sent = _now()
         probe_token: Optional[object] = None
+        hung_next_due: Optional[datetime] = None
         with _LOCK:
             state = _THREADS.get(thread_id)
             if state is not None and state.check_token is token:
                 state.route_key = rkey
             route = _ROUTES.setdefault(rkey, _RouteState())
+            if route.inflight_since is not None and not _route_inflight(route, sent):
+                # The probe in flight is presumed hung: a timeout failure on
+                # the ladder (its late answer is dropped), never a free retry.
+                _update_route(route, "timeout", route.inflight_since, sent, interval)
+                route.inflight_since = None
+                route.inflight_token = None
+                hung_next_due = route.next_due
             if _apply_flap(route, hold, key, cap, sent):
                 logger.info(
                     "[LLM RECLAIM] thread=%s route=%s verdict=flapped next_due=%s "
@@ -772,6 +823,14 @@ def _check_thread(host: Any, thread_id: str, user_id: str, hold: Any, key: tuple
                 probe_token = object()
                 route.inflight_since = sent
                 route.inflight_token = probe_token
+        if hung_next_due is not None:
+            logger.info(
+                "[LLM RECLAIM] thread=%s route=%s verdict=timeout next_due=%s "
+                "(the probe in flight was presumed hung)",
+                thread_id,
+                label,
+                hung_next_due.isoformat(),
+            )
         if probe_token is None:
             return
         verdict = run_probe(cfg)

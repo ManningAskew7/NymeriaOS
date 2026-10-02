@@ -38,12 +38,13 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import logging
 import threading
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -107,7 +108,7 @@ def _hold(
     source_model: str = PRIMARY_MODEL,
     offered: bool = False,
     activated_at: Any = None,
-    origin: str | None = None,
+    origin: Literal["automatic", "user"] | None = None,
 ) -> ActiveLLMFallback:
     now = utc_now()
     activated = activated_at if activated_at is not None else now - age
@@ -877,9 +878,10 @@ def test_a_hung_probe_is_discarded_and_never_leaves_status_checking(
     tmp_path, probe, spawned, clock
 ):
     """A probe whose factory ignores the request timeout hangs: past the
-    timeout plus a margin it is discarded, the status stops saying
-    "checking", and a later turn start probes again (red before the review
-    fix: the owning thread stayed "checking" until restart)."""
+    timeout plus a margin it is discarded and the status stops saying
+    "checking" (red before the review fix: the owning thread stayed
+    "checking" until restart). Its answer, when it finally comes, is
+    dropped: the route already recorded it as a timeout."""
     turn = _Turn(tmp_path)
     turn.seed(active_llm_fallback=_hold())
     probe.gate = threading.Event()
@@ -894,6 +896,50 @@ def test_a_hung_probe_is_discarded_and_never_leaves_status_checking(
         clock.advance(seconds=reclaim._INFLIGHT_STALE_SECONDS - reclaim.PROBE_TIMEOUT_SECONDS + 1)
         assert _status(THREAD, turn.held(), turn.agent.settings)["state"] == "scheduled"
         turn.settle()
+        spawned[-1].join(5)
+        assert _status(THREAD, turn.held(), turn.agent.settings)["state"] == "scheduled"
+    finally:
+        probe.gate.set()
+        for check in spawned:
+            check.join(5)
+    assert probe.count == 1
+    # The late healthy answer was dropped: nothing applies at a turn start.
+    status = _status(THREAD, turn.held(), turn.agent.settings)
+    assert (status["state"], status["last_verdict"]) == ("scheduled", "timeout")
+    assert turn.settle() is None
+    assert turn.hold() is not None
+
+
+def test_a_hung_probe_counts_as_a_timeout_and_backs_the_route_off(
+    tmp_path, probe, spawned, clock
+):
+    """A probe presumed hung is a timeout failure on the ladder: a black-holed
+    route is not re-probed by every turn start a minute apart, each one
+    leaving another stuck daemon thread (red before the delta-review fix:
+    the stale probe was dropped with no failure recorded)."""
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold(remaining=timedelta(hours=30)))
+    probe.gate = threading.Event()
+    start = clock.now
+    try:
+        turn.settle()  # probe 1, hangs
+        assert probe.started.wait(5)
+        found = start + timedelta(seconds=reclaim._INFLIGHT_STALE_SECONDS + 1)
+        clock.now = found
+        turn.settle()
+        spawned[-1].join(5)
+        assert probe.count == 1
+        status = _status(THREAD, turn.held(), turn.agent.settings)
+        assert (status["state"], status["last_verdict"]) == ("scheduled", "timeout")
+        # The first failure waits twice the interval, from when it was found.
+        assert status["next_check_at"] == (found + timedelta(seconds=1200)).isoformat()
+
+        clock.now = found + timedelta(seconds=1199)
+        turn.settle()
+        spawned[-1].join(5)
+        assert probe.count == 1
+        clock.now = found + timedelta(seconds=1201)
+        turn.settle()
         for _ in range(100):
             if probe.count == 2:
                 break
@@ -903,7 +949,7 @@ def test_a_hung_probe_is_discarded_and_never_leaves_status_checking(
         probe.gate.set()
         for check in spawned:
             check.join(5)
-    # Both probes finish healthy; the route's verdict applies as usual.
+    # The hung probe's late answer was dropped; the new probe's applies.
     assert turn.reclaimed()["outcome"] == "ended"
 
 
@@ -958,6 +1004,10 @@ def test_a_discarded_probe_answering_late_never_overwrites_the_newer_verdict(
         hung = _start(pending.pop())
         assert scripted.started[0].wait(5)
         clock.advance(seconds=reclaim._INFLIGHT_STALE_SECONDS + 1)
+        turn.settle()
+        _start(pending.pop()).join(5)  # finds it hung: a timeout, backing off
+        assert scripted.calls == 1
+        clock.advance(seconds=2 * 600 + 1)
         turn.settle()
         _start(pending.pop()).join(5)  # the newer probe: 503
         assert scripted.calls == 2
@@ -1669,6 +1719,135 @@ def test_a_hold_reforming_soon_after_a_reclaim_starts_the_route_at_the_cap(
     assert probe.count == 2
 
 
+def _flapped_pair(
+    turn: _Turn,
+    clock: _Clock,
+    probe: _Probe,
+    spawned: list[threading.Thread] | None = None,
+    *,
+    flap_minutes: int = 5,
+) -> datetime:
+    """Two threads held off one route. THREAD reclaims at t=1 min, then its
+    primary fails again at t=``flap_minutes`` (a flap: hold A2). reclaim-c
+    was held at t=30 s, after the first probe was sent, so that verdict is
+    not about it. Returns t=0."""
+    start = clock.now
+    turn.seed(active_llm_fallback=_hold(activated_at=start - timedelta(minutes=30)))
+    turn.seed(
+        "reclaim-c",
+        active_llm_fallback=_hold(
+            activated_at=start + timedelta(seconds=30), remaining=timedelta(hours=30)
+        ),
+    )
+    turn.settle()  # probe 1 at t=0, healthy
+    for check in spawned or []:
+        check.join(5)
+    clock.advance(minutes=1)
+    assert turn.reclaimed()["outcome"] == "ended"  # reclaimed at t=1 min
+    turn.seed(
+        active_llm_fallback=_hold(
+            activated_at=start + timedelta(minutes=flap_minutes),
+            remaining=timedelta(hours=30),
+        )
+    )
+    assert probe.count == 1
+    return start
+
+
+def test_a_flap_found_after_another_threads_fresh_probe_still_caps_the_route(
+    tmp_path, probe, inline, clock
+):
+    """Two-thread flap: another thread's healthy probe sent AFTER the flapped
+    hold formed never ends that hold before the cap. (The delta review's
+    ordering; the flapped hold's own check finds the flap first, so this
+    one held before the fix too: the two orderings below did not.)"""
+    turn = _Turn(tmp_path)
+    _flapped_pair(turn, clock, probe)
+    clock.advance(minutes=10)  # t=11 min: reclaim-c is eligible, the route due
+    turn.settle("reclaim-c")
+    assert probe.count == 2  # healthy, sent after A2 formed
+
+    clock.advance(minutes=5)  # t=16 min: A2 is eligible; its check finds the flap
+    assert turn.settle() is None
+    assert turn.settle() is None
+    assert turn.hold() is not None
+    assert probe.count == 2
+    # The route is pinned at the cap from A2's failure, for every thread.
+    assert turn.settle("reclaim-c") is None
+    assert turn.hold("reclaim-c") is not None
+    assert _status(THREAD, turn.held(), turn.agent.settings)["last_verdict"] == "flapped"
+
+
+@pytest.mark.parametrize(
+    "flap, c_probe",
+    [
+        (5, 11),
+        # The other reclaim lands more than the flap window after the first
+        # one: the route must still remember the first.
+        (30, 31),
+    ],
+)
+def test_another_threads_reclaim_never_hides_a_flap(
+    tmp_path, probe, inline, clock, flap, c_probe
+):
+    """The flapped hold's own check comes after ANOTHER thread reclaimed on a
+    fresh healthy probe: the newest reclaim is after A2 formed, but the one
+    before it is the flap, so the route still starts at the cap (red before
+    the delta-review fix: only the latest reclaim was kept)."""
+    turn = _Turn(tmp_path)
+    start = _flapped_pair(turn, clock, probe, flap_minutes=flap)
+    clock.now = start + timedelta(minutes=c_probe)
+    turn.settle("reclaim-c")  # probe 2, healthy
+    clock.advance(minutes=1)
+    assert turn.reclaimed("reclaim-c")["outcome"] == "ended"
+
+    clock.now = start + timedelta(minutes=flap + 11)  # A2 is eligible
+    assert turn.settle() is None
+    assert turn.settle() is None
+    assert turn.hold() is not None
+    assert probe.count == 2
+    # Bounded: past A2's activation plus the cap the route is probed again
+    # and a healthy answer ends A2 as usual.
+    clock.now = start + timedelta(minutes=flap, seconds=3601)
+    turn.settle()
+    assert probe.count == 3
+    assert turn.reclaimed()["outcome"] == "ended"
+
+
+def test_a_probe_in_flight_when_a_flap_is_found_never_lifts_the_cap(
+    tmp_path, probe, spawned, clock
+):
+    """Another thread's probe is in flight when A2's check finds the flap:
+    its healthy answer lands after the flap and must not undo it (red before
+    the delta-review fix: the late write reset the route to due-in-10-min
+    and its healthy verdict ended A2 at the next turn start)."""
+    turn = _Turn(tmp_path)
+    start = _flapped_pair(turn, clock, probe, spawned)
+    probe.gate = threading.Event()
+    probe.started.clear()
+    try:
+        clock.now = start + timedelta(minutes=15, seconds=30)
+        turn.settle("reclaim-c")  # probe 2 in flight
+        assert probe.started.wait(5)
+        clock.now = start + timedelta(minutes=16)  # A2 eligible: finds the flap
+        turn.settle()
+        spawned[-1].join(5)
+        assert not spawned[-1].is_alive()
+    finally:
+        probe.gate.set()
+        for check in spawned:
+            check.join(5)
+    assert probe.count == 2
+
+    assert turn.settle() is None
+    assert turn.settle() is None
+    assert turn.hold() is not None
+    assert turn.settle("reclaim-c") is None
+    assert turn.hold("reclaim-c") is not None
+    assert probe.count == 2
+    assert _status(THREAD, turn.held(), turn.agent.settings)["last_verdict"] == "flapped"
+
+
 # -- copy, events, status ------------------------------------------------------------
 
 
@@ -1758,9 +1937,10 @@ _Reworded.__name__ = "LengthFinishReasonError"
 
 
 def _budget_errors() -> list[Any]:
-    import anthropic
+    """Status-less or success-status shapes only: an HTTP error status is
+    never an exhausted budget (``_status_errors_naming_a_cap``)."""
+    import httpx
     import openai
-    from google.genai import errors as genai_errors
     from openai.types.chat import ChatCompletion
 
     return [
@@ -1783,49 +1963,25 @@ def _budget_errors() -> list[Any]:
             id="openai-responses-incomplete-client",
         ),
         pytest.param(
-            _sdk_error(
-                openai.BadRequestError,
-                400,
-                "Incomplete response returned, reason: max_output_tokens",
-            ),
-            id="openai-responses-incomplete-gateway-400",
-        ),
-        pytest.param(
-            _sdk_error(
-                openai.InternalServerError,
-                502,
-                "upstream response not completed",
+            openai.APIResponseValidationError(
+                response=httpx.Response(
+                    200, request=httpx.Request("POST", "http://upstream.invalid/v1/x")
+                ),
                 body={
                     "status": "incomplete",
                     "incomplete_details": {"reason": "max_output_tokens"},
                 },
+                message="Incomplete response returned, reason: max_output_tokens",
             ),
-            id="openai-responses-incomplete-relayed-body",
+            id="openai-responses-incomplete-200-unparsed",
         ),
         pytest.param(
-            _sdk_error(
-                anthropic.InternalServerError,
-                500,
-                "upstream ended the message early",
-                body={
-                    "type": "error",
-                    "error": {"type": "api_error", "message": "stop_reason: max_tokens"},
-                },
-            ),
-            id="anthropic-stop-reason-max-tokens",
+            ValueError("message ended early: stop_reason: max_tokens"),
+            id="anthropic-stop-reason-max-tokens-client",
         ),
         pytest.param(
-            genai_errors.ServerError(
-                500,
-                {
-                    "error": {
-                        "code": 500,
-                        "message": "Model output ended with finish_reason MAX_TOKENS",
-                        "status": "INTERNAL",
-                    }
-                },
-            ),
-            id="gemini-finish-reason-max-tokens",
+            ValueError("Model output ended with finish_reason MAX_TOKENS"),
+            id="gemini-finish-reason-max-tokens-client",
         ),
     ]
 
@@ -1844,6 +2000,87 @@ def test_an_exhausted_output_budget_reads_healthy(probe, exc):
     probe.outcome = exc
 
     assert reclaim.run_probe(_primary_config()) == "healthy"
+
+
+def _status_errors_naming_a_cap() -> list[Any]:
+    """HTTP errors whose text happens to name a token cap: a gateway relaying
+    an upstream body during an outage, say. An error status never means "the
+    model generated until its cap" (every real exhausted-budget shape is a
+    200 or a status-less client error), so the status keeps its verdict."""
+    import anthropic
+    import openai
+    from google.genai import errors as genai_errors
+
+    return [
+        pytest.param(
+            _sdk_error(
+                openai.BadRequestError,
+                400,
+                "Incomplete response returned, reason: max_output_tokens",
+            ),
+            "probe_invalid",
+            id="openai-responses-incomplete-gateway-400",
+        ),
+        pytest.param(
+            _sdk_error(
+                openai.InternalServerError,
+                502,
+                "upstream response not completed",
+                body={
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                },
+            ),
+            "provider_server_error",
+            id="openai-responses-incomplete-relayed-body-502",
+        ),
+        pytest.param(
+            _sdk_error(
+                anthropic.InternalServerError,
+                500,
+                "upstream ended the message early",
+                body={
+                    "type": "error",
+                    "error": {"type": "api_error", "message": "stop_reason: max_tokens"},
+                },
+            ),
+            "provider_server_error",
+            id="anthropic-500-stop-reason-max-tokens",
+        ),
+        pytest.param(
+            genai_errors.ServerError(
+                500,
+                {
+                    "error": {
+                        "code": 500,
+                        "message": "Model output ended with finish_reason MAX_TOKENS",
+                        "status": "INTERNAL",
+                    }
+                },
+            ),
+            "provider_server_error",
+            id="gemini-500-finish-reason-max-tokens",
+        ),
+        pytest.param(
+            _sdk_error(
+                openai.RateLimitError,
+                429,
+                'slow down; last upstream reply: {"finish_reason": "length"}',
+            ),
+            "rate_limited",
+            id="openai-429-finish-reason-length",
+        ),
+    ]
+
+
+@pytest.mark.parametrize("exc, verdict", _status_errors_naming_a_cap())
+def test_an_http_error_naming_a_token_cap_keeps_its_status_verdict(probe, exc, verdict):
+    """A 5xx or 429 during a real outage must never read healthy because its
+    body relays a stop or finish reason: that would end an automatic hold
+    onto a dead primary (red before the delta-review fix)."""
+    probe.outcome = exc
+
+    assert reclaim.run_probe(_primary_config()) == verdict
 
 
 def _rejected_budgets() -> list[Any]:
@@ -1895,14 +2132,45 @@ def test_an_exhausted_budget_ends_the_hold_at_the_next_turn(tmp_path, probe, inl
     assert [e["outcome"] for e in _reclaims(events)] == ["ended"]
 
 
+SECRET_DESTINATION = "https://key-in-path.example.invalid/v1/sk-live-123"
+
+
+def _raised_while_handling(exc: BaseException, context: BaseException) -> BaseException:
+    """``exc`` as Python chains it when raised inside an ``except`` block."""
+    try:
+        try:
+            raise context
+        except BaseException:
+            raise exc
+    except BaseException as chained:
+        return chained
+
+
+def _formatted(record: logging.LogRecord) -> str:
+    """The record as a log handler writes it, traceback included."""
+    return logging.Formatter("%(message)s").format(record)
+
+
 @pytest.mark.parametrize(
-    "exc",
+    "exc, kind",
     [
-        TypeError("create() got an unexpected keyword argument 'x'"),
-        AttributeError("'NoneType' object has no attribute 'content'"),
+        (TypeError("create() got an unexpected keyword argument 'x'"), "TypeError"),
+        (AttributeError("'NoneType' object has no attribute 'content'"), "AttributeError"),
+        # Our fault while handling a transport error that names the request
+        # URL: the chain carries a destination the module never logs.
+        (
+            _raised_while_handling(
+                KeyError("choices"), ConnectError(f"connect failed: {SECRET_DESTINATION}")
+            ),
+            "KeyError",
+        ),
     ],
 )
-def test_our_own_fault_is_a_probe_error_logged_with_its_traceback(probe, caplog, exc):
+def test_our_own_fault_is_a_probe_error_logged_without_its_chain(probe, caplog, exc, kind):
+    """Logged loudly enough to fix (the error type and where it was raised),
+    but never the exception chain: a chained transport error can carry the
+    request URL, and a base URL can be an interpolated secret (red before
+    the delta-review fix, which logged the traceback)."""
     probe.outcome = exc
 
     with caplog.at_level("WARNING", logger="nymeria.core.fallback_reclaim"):
@@ -1911,7 +2179,9 @@ def test_our_own_fault_is_a_probe_error_logged_with_its_traceback(probe, caplog,
     (record,) = [r for r in caplog.records if r.name == "nymeria.core.fallback_reclaim"]
     assert record.levelname == "WARNING"
     assert "not a provider verdict" in record.getMessage()
-    assert record.exc_info is not None and record.exc_info[1] is exc
+    assert kind in record.getMessage()
+    assert record.exc_info is None
+    assert "key-in-path" not in _formatted(record)
 
 
 def test_a_client_that_cannot_be_built_is_a_probe_error(monkeypatch, caplog):
@@ -1919,7 +2189,7 @@ def test_a_client_that_cannot_be_built_is_a_probe_error(monkeypatch, caplog):
 
     def broken(cfg: Any) -> Any:
         sent.append(cfg)
-        raise ValueError("Unknown provider: nope")
+        raise ValueError(f"Unknown provider for base URL {SECRET_DESTINATION}")
 
     monkeypatch.setattr(providers_module, "create_llm", broken)
 
@@ -1927,7 +2197,10 @@ def test_a_client_that_cannot_be_built_is_a_probe_error(monkeypatch, caplog):
         assert reclaim.run_probe(_primary_config()) == "probe_error"
 
     assert len(sent) == 1
-    assert any("building the probe client failed" in r.getMessage() for r in caplog.records)
+    (record,) = [r for r in caplog.records if r.name == "nymeria.core.fallback_reclaim"]
+    assert "building the probe client failed" in record.getMessage()
+    assert "ValueError" in record.getMessage()
+    assert "key-in-path" not in _formatted(record)
 
 
 def test_a_probe_error_backs_off_to_the_cap_and_never_reclaims(

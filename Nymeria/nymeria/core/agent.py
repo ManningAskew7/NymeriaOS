@@ -1750,17 +1750,18 @@ class NymeriaAgent:
         from .fallback_approvals import reclaim_offer_renders
         from .fallback_reclaim import settle_hold_at_turn_start
 
-        offers = False
-        if streaming and not resume:
-            try:
-                offers = reclaim_offer_renders(
-                    thread_id,
-                    is_autonomous=is_autonomous,
-                    holder_kind=source,
-                    declared=offer_surface,
-                )
-            except Exception:  # noqa: BLE001 - a fault means "cannot show it"
-                offers = False
+        # reclaim_offer_renders never raises: a registry fault reads as
+        # "cannot show it" inside it.
+        offers = (
+            streaming
+            and not resume
+            and reclaim_offer_renders(
+                thread_id,
+                is_autonomous=is_autonomous,
+                holder_kind=source,
+                declared=offer_surface,
+            )
+        )
         return settle_hold_at_turn_start(
             self, thread_id, user_id, offers=offers, resume=resume
         )
