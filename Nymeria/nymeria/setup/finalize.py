@@ -33,7 +33,7 @@ from .._runtime_paths import (
     configure_project_root,
     find_project_root,
 )
-from ..config.env_file import format_env_value, write_env_file
+from ..config.env_file import EnvValueError, format_env_value, write_env_file
 from ..config.llm_providers import LLMProviderSpec
 from ..core import secrets as nymeria_secrets
 from ..core.accounts import AccountsRepo, BOOTSTRAP_TOKEN_FILENAME
@@ -1095,9 +1095,11 @@ def write_config(
 ) -> None:
     """Atomically write the env file with 0600 perms (it holds API keys).
 
-    Every value goes through `format_env_value`, so each is one physical line
-    (#156); a value no env line can hold raises `EnvValueError` before the
-    file is touched, and the wizard lets it propagate.
+    Every value goes through `format_env_value` in one loop, so each is one
+    physical line (#156). A value no env line can hold (a NUL, a line
+    separator, a trailing backslash inside quotes, e.g. hydrated from a file
+    an older writer produced) ends the run with a `SystemExit` naming its env
+    var, never the value, before the file is touched.
 
     When `spec` is None (the provider step was skipped), the LLM lines are
     omitted so the backend still starts and a provider can be set later. The key
@@ -1140,7 +1142,6 @@ def write_config(
     installed wheel's version.
     """
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
     optional_env = optional_env or {}
     extra_env = extra_env or {}
     init_seed_env = init_seed_env or {}
@@ -1148,27 +1149,29 @@ def write_config(
     provider_env = provider_key_env or (
         spec.api_key_env_vars[0] if (spec and spec.api_key_env_vars) else None
     )
+    # Raw values: every one is formatted in the one loop before the write
+    # below, which knows its key (#156).
     produced: list[tuple[str, str]] = []
     if spec is not None:
         produced.append(("LLM_PROVIDER", spec.id))
-        produced.append(("LLM_MODEL", _env_value(model)))
+        produced.append(("LLM_MODEL", model))
         if api_key and provider_env:
             # Through the formatter like every other value (#156): written raw,
             # a pasted key with a line break became two lines and one with ` #`
             # was cut at the comment marker on read.
-            produced.append((provider_env, _env_value(api_key)))
+            produced.append((provider_env, api_key))
     for env_var, value in extra_env.items():
         if value:
-            produced.append((env_var, _env_value(value)))
+            produced.append((env_var, value))
     if not for_docker:
         produced.append(("DATABASE_BACKEND", "sqlite"))
-        produced.append(("NYMERIA_DATA_DIR", _env_value(str(data_dir))))
+        produced.append(("NYMERIA_DATA_DIR", str(data_dir)))
         produced.append(("API_HOST", "0.0.0.0"))
     for env_var, value in full_stack_env.items():
         # Postgres/Redis settings the full-stack compose interpolates. The DB/cache
         # passwords (already in format_env_value's safe set) write unquoted.
         if value:
-            produced.append((env_var, _env_value(value)))
+            produced.append((env_var, value))
     # Written for every shape: slim/local read it at startup, and both Docker
     # compose files interpolate it into the host-side port binding.
     produced.append(("API_PORT", str(api_port)))
@@ -1181,18 +1184,18 @@ def write_config(
     for env_var in OPTIONAL_ENV_ORDER:
         value = optional_env.get(env_var)
         if value and env_var != provider_env:
-            produced.append((env_var, _env_value(value)))
+            produced.append((env_var, value))
     if secrets_key:
         # Credential-vault encryption key (Fernet). Without it the first vault
         # write (OAuth connect, BYO bot token, integration secret) raises
         # SecretsKeyMissing. Read straight from the env by nymeria/core/secrets.py.
-        produced.append(("NYMERIA_SECRETS_KEY", _env_value(secrets_key)))
+        produced.append(("NYMERIA_SECRETS_KEY", secrets_key))
     for env_var, value in init_seed_env.items():
         # Docker first-boot pick carriers (`:`-joined name lists). Already in the
-        # safe set, so `_env_value` leaves them unquoted for both delivery paths
+        # safe set, so the formatter leaves them unquoted for both delivery paths
         # (slim `env_file:`, full-stack `--env-file` interpolation).
         if value:
-            produced.append((env_var, _env_value(value)))
+            produced.append((env_var, value))
     from ..config.init_seed_env import (
         INIT_DECLINED_CORE_TOOLS_ENV,
         format_init_name_list,
@@ -1200,7 +1203,7 @@ def write_config(
 
     if declined_core_tools:
         produced.append(
-            (INIT_DECLINED_CORE_TOOLS_ENV, _env_value(format_init_name_list(declined_core_tools)))
+            (INIT_DECLINED_CORE_TOOLS_ENV, format_init_name_list(declined_core_tools))
         )
     from .local_rag_install import DOCKER_LOCAL_RAG_ENV, requires_local_rag
 
@@ -1276,23 +1279,27 @@ def write_config(
     # a produced key (the normal case) still wins over the drop.
     drop_env = drop_env + drop_stale_server_browser
 
+    # Format every value before anything is written, here where the key is
+    # known: a refusal names the env var (the message never carries the value,
+    # which may be a secret) and exits like the runner's other input errors,
+    # instead of a traceback that names nothing.
+    formatted: list[tuple[str, str]] = []
+    for env_var, value in produced:
+        try:
+            formatted.append((env_var, format_env_value(value)))
+        except EnvValueError as exc:
+            raise SystemExit(f"{env_var}: {exc}. Nothing was written.") from exc
+
     # Reconfigure overlays produced keys onto the existing file; first-run writes
     # a fresh file with the generated-by header. Both go through the shared atomic
     # 0600 writer (`config/env_file.py`), the same one `PATCH /settings` uses.
     write_env_file(
         config_path,
-        produced,
+        formatted,
         merge=(merge and config_path.exists()),
         header="# Generated by `nymeria init`.",
         drop=drop_env,
     )
-
-
-# Value formatting and the merge/atomic-write mechanics now live in the shared
-# writer (`config/env_file.py`) so finalize and `PATCH /settings` cannot drift.
-# `_env_value` stays as a module-local alias for brevity at the internal call
-# sites below; the canonical implementation is `config/env_file.format_env_value`.
-_env_value = format_env_value
 
 
 def _resolve_secrets_key(config_path: Path) -> str:

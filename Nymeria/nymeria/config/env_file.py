@@ -79,8 +79,13 @@ _DOUBLE_QUOTED_ESCAPES = {
 # What no env-file line can carry. NUL fits no environment variable at all
 # (`os.environ` refuses it, and python-dotenv stops loading the file there,
 # so every later key is lost at boot). The other six are line breaks to
-# `str.splitlines`, which the merge below reads with, and neither parser has
-# an escape for them.
+# `str.splitlines`, which this module's merge reads with, as do the repo's
+# one-line readers (`service_install._read_env_port`, finalize's
+# `_read_env_value_from_file`, `server_browser._read_env_value`): to them a
+# value holding one continues onto a line of its own, read as a binding.
+# python-dotenv and Compose read all six literally inside double quotes and
+# need no escape (measured, #156 review), so the constraint is ours, not a
+# parser's: lifting the refusal means teaching those readers first.
 _REFUSED_CHARACTERS = {
     "\x00": "NUL",
     "\x1c": "FILE SEPARATOR",
@@ -109,8 +114,9 @@ def format_env_value(value: str | bool | None) -> str:
     line break therefore formats exactly as it did before #156.
 
     Raises :class:`EnvValueError` for what no form can carry: a NUL, the six
-    line separators neither parser can escape, and a trailing backslash on a
-    value that must be quoted (python-dotenv before 1.2.3 reads ``"...\\\\"``
+    line separators the env writer's merge and the repo's one-line readers
+    split on (``str.splitlines``), and a trailing backslash on a value that
+    must be quoted (python-dotenv before 1.2.3 reads ``"...\\\\"``
     as an escaped quote and swallows the lines after it). A trailing backslash
     on a value that is otherwise bare (``C:\\``) is written bare instead: every
     reader takes an unquoted backslash literally.
@@ -131,8 +137,8 @@ def format_env_value(value: str | bool | None) -> str:
                 "contains a NUL character (U+0000), which no environment variable can hold"
             )
         raise EnvValueError(
-            f"contains U+{ord(char):04X} ({name}), a line break env files have no "
-            "escape for"
+            f"contains U+{ord(char):04X} ({name}), a line break the env writer "
+            "and its one-line readers cannot carry"
         )
     if _is_bare(text):
         return text
@@ -324,9 +330,9 @@ def write_env_file(
 __all__ = [
     "env_line_key",
     "is_env_key_name",
+    "EnvValueError",
     "format_env_value",
     "parse_env_value",
     "merge_env_lines",
     "write_env_file",
-    "EnvValueError",
 ]

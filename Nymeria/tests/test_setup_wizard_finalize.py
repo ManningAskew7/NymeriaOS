@@ -680,7 +680,7 @@ def test_security_profile_flag_rejects_unbuilt_profiles(tmp_path, profile):
 def test_env_value_leaves_base64_unquoted():
     # A Fernet key is url-safe base64 ending in `=`; it must write unquoted so
     # Docker `env_file` does not treat the quotes literally. Asserts against the
-    # canonical `format_env_value`; finalize's `_env_value` is just an alias of it.
+    # canonical `format_env_value`, which formats every wizard value.
     from nymeria.config.env_file import format_env_value
 
     key = "5KFavWE8-H-C5jk11S6vogyg-s50WyVBvAPY6ZXzuns="
@@ -718,29 +718,65 @@ def test_write_config_keeps_a_multi_line_value_on_one_line(tmp_path):
     assert values["API_PORT"] == "8000"
 
 
-def test_write_config_refuses_an_uncarriable_value_before_writing(tmp_path):
-    # The wizard just propagates the refusal: every value is formatted before
-    # the one atomic write, so a fresh target is never created and a merge
-    # target is left byte-identical.
-    from nymeria.config.env_file import EnvValueError
+@pytest.mark.parametrize(
+    ("env_var", "value"),
+    [
+        ("TWITCH_SYSTEM_PROMPT", "sk-it38-secret\x00tail"),
+        ("TWITCH_SYSTEM_PROMPT", "sk-it38-secret\u2028tail"),
+        # The reconfigure case: a quoted path an older writer produced, which
+        # python-dotenv 1.2.3 reads back, hydrated into the run.
+        ("SERVER_BROWSER_HOME", "C:\\Users\\sk-it38-secret\\Browser Rig\\"),
+    ],
+)
+def test_write_config_refuses_an_uncarriable_value_before_writing(tmp_path, env_var, value):
+    # Every value is formatted before the one atomic write, and a refusal ends
+    # the run like the runner's other input errors: a one-line SystemExit that
+    # names the key and never echoes the value (it may be a secret). A fresh
+    # target (and its directory) is never created; a merge target is left
+    # byte-identical with no temp file beside it.
+    config = tmp_path / "root" / "config.env"
+    with pytest.raises(SystemExit) as fresh:
+        finalize_mod.write_config(config, data_dir=tmp_path / "data", extra_env={env_var: value})
+    message = str(fresh.value)
+    assert message.startswith(f"{env_var}: ")
+    assert message.endswith("Nothing was written.")
+    assert "sk-it38-secret" not in message
+    assert not config.parent.exists()
 
-    config = tmp_path / "config.env"
-    with pytest.raises(EnvValueError):
-        finalize_mod.write_config(
-            config, data_dir=tmp_path / "data", extra_env={"TWITCH_SYSTEM_PROMPT": "a\x00b"}
-        )
-    assert not config.exists()
-
-    config.write_text("LLM_MODEL=kept\n", encoding="utf-8")
+    config.parent.mkdir()
+    config.write_text("LLM_MODEL=kept\nAPI_PORT=8095\n", encoding="utf-8")
     before = config.read_bytes()
-    with pytest.raises(EnvValueError):
+    with pytest.raises(SystemExit) as merged:
         finalize_mod.write_config(
-            config,
-            data_dir=tmp_path / "data",
-            merge=True,
-            extra_env={"TWITCH_SYSTEM_PROMPT": "a\u2028b"},
+            config, data_dir=tmp_path / "data", merge=True, extra_env={env_var: value}
         )
+    assert str(merged.value) == message
     assert config.read_bytes() == before
+    assert sorted(p.name for p in config.parent.iterdir()) == ["config.env"]
+
+
+def test_non_interactive_init_names_the_key_it_cannot_write(tmp_path, capsys):
+    # Through the real door: a provider key no env line can carry ends
+    # `nymeria init --non-interactive` with the key's env var named and the
+    # value nowhere in the exit message or the output, and no config written.
+    root = tmp_path / "runtime"
+    with pytest.raises(SystemExit) as exc_info:
+        setup_main(
+            [
+                "--provider", "anthropic",
+                "--model", "claude-test-model",
+                "--api-key", "sk-ant-it38-secret\x00tail",
+                "--root", str(root),
+                "--non-interactive",
+                "--skip-llm-test",
+            ]
+        )
+    message = str(exc_info.value)
+    assert message.startswith("ANTHROPIC_DIRECT_API_KEY: contains a NUL character")
+    assert message.endswith("Nothing was written.")
+    captured = capsys.readouterr()
+    assert "sk-ant-it38-secret" not in message + captured.out + captured.err
+    assert not (root / "config.env").exists()
 
 
 def test_write_config_formats_the_provider_key_like_every_other_value(tmp_path):

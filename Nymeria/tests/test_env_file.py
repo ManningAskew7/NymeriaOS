@@ -289,11 +289,12 @@ def test_write_env_file_merge_collapses_a_duplicated_vault_key(tmp_path: Path):
 # -- #156: one physical line per key, whatever the value holds --------------
 #
 # The writer's invariant: every value it emits is ONE physical line that
-# python-dotenv (every in-repo reader) and docker compose decode back to the
+# python-dotenv (the settings loader) and docker compose decode back to the
 # exact original. Line breaks are escaped inside double quotes; the few
-# characters neither parser can carry on one line are refused with
-# EnvValueError before anything is written. The real reader is the oracle
-# throughout, never `parse_env_value` alone. Not asserted here, deliberately:
+# characters the writer's merge and the repo's one-line readers split on
+# (both parsers read them literally) are refused with EnvValueError before
+# anything is written. The real reader is the oracle throughout, never
+# `parse_env_value` alone. Not asserted here, deliberately:
 # `$word` under compose and `${NAME}` anywhere (both interpolate; pre-existing
 # and out of this slice, backlog follow-up), so the corpus holds no `${`.
 
@@ -472,9 +473,11 @@ def test_reading_and_rewriting_a_written_file_is_byte_identical(tmp_path: Path):
     "char", ["\x00", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
 )
 def test_characters_no_env_line_can_carry_are_refused(char: str):
-    # NUL fits no environment variable; the other six split the line for the
-    # merge and have no escape in python-dotenv or compose. Refused by name
-    # (the code point), never by echoing the value, which may be a secret.
+    # NUL fits no environment variable; the other six are line breaks to
+    # `str.splitlines`, so the merge and the repo's one-line readers would
+    # take what follows as a binding (python-dotenv and compose read them
+    # literally; the constraint is ours). Refused by name (the code point),
+    # never by echoing the value, which may be a secret.
     value = f"sk-it38-secret{char}tail"
 
     with pytest.raises(EnvValueError) as exc_info:

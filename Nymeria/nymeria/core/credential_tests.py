@@ -74,8 +74,11 @@ def _spec_provider_for(provider_norm: str) -> Optional[str]:
     case-folded (dispatch always folded case) and ``get_provider_spec`` folds
     too, but its index keeps a camelCase alias as declared, so such an alias
     (``microsoftGraph``) never resolves here; no provider with one has a
-    tester. Imported lazily: the registry loads every integration module, and
-    an exact registration never needs it.
+    tester. A contested alias (``aws``/``s3``/``aws_s3``, the Freshworks family)
+    resolves to ``_NAME_INDEX``'s winner, so adding a tester for one provider of
+    a contested pair probes a record saved under the shared alias at the
+    winner's endpoint. Imported lazily: the registry loads every integration
+    module, and an exact registration never needs it.
     """
     from ..tools.credential_registry import get_provider_spec
     from ..tools.native_credentials import provider_candidates

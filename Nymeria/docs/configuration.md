@@ -125,14 +125,17 @@ made only of letters, digits and `/._:-=` is written bare; anything else is
 double-quoted, with `\` and `"` escaped and line breaks written as `\n`,
 `\r`, `\v` and `\f`, escapes python-dotenv and Docker Compose both decode back
 to the original characters. The settings writer and `nymeria init` refuse,
-before writing anything, the few values no env file can hold: a NUL
-character, the separators U+001C to U+001E, U+0085, U+2028 and U+2029, and a
-trailing backslash on a value that needs quotes (python-dotenv before 1.2.3
-misreads `"...\\"` and loses the lines after it; drop the trailing backslash,
-paths work without it). A trailing backslash on an otherwise bare value, such
-as `C:\`, is written bare, which every reader takes literally. `PATCH
-/settings` answers such a value with a 400 naming the setting and never
-echoing the value. One caveat is unchanged: python-dotenv expands `${NAME}`
+before writing anything, the few values they cannot store: a NUL character
+(no environment variable can hold one), the separators U+001C to U+001E,
+U+0085, U+2028 and U+2029 (line breaks to the env writer's merge and to
+Nymeria's own one-line env readers, though python-dotenv and Compose read
+them literally), and a trailing backslash on a value that needs quotes
+(python-dotenv before 1.2.3 misreads `"...\\"` and loses the lines after it;
+drop the trailing backslash, paths work without it). A trailing backslash on
+an otherwise bare value, such as `C:\`, is written bare, which every reader
+takes literally. `PATCH /settings` answers such a value with a 400 naming the
+setting and `nymeria init` exits naming the env var; neither echoes the
+value. One caveat is unchanged: python-dotenv expands `${NAME}`
 in any saved value, and Compose also expands `$NAME` in `.env.docker`, so a
 literal `$` reference does not survive a reload or a container start.
 
