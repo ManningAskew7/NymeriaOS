@@ -18,7 +18,7 @@
     supportedEffortSet,
   } from '$lib/utils/reasoningEffort';
   import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
-  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { keepAvailableModelsLoaded } from '$lib/stores/availableModels.svelte';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
   import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, LLMProviderSpec, ProviderRoute } from '$lib/types';
   import Icon from './Icon.svelte';
@@ -217,21 +217,18 @@
   const themeList = getThemeList();
 
   // Model metadata (reactive). Every provider's /models listing is merged
-  // into the store by loadAvailableModels, so this works beyond OpenRouter.
+  // into the store by the picker below, so this works beyond OpenRouter.
   const currentModelMeta = $derived(modelsStore.getById(llmModel));
   const currentEffortSet = $derived(
     supportedEffortSet(currentModelMeta?.supported_reasoning_efforts)
   );
 
-  let availableModelsState = $state<AvailableModelsState>({
-    models: [],
-    provider: '',
-    loading: false,
-  });
-
-  $effect(() => {
-    void loadAvailableModels(llmProvider, availableModelsState, llmBaseUrl);
-  });
+  // The provider's live model list (GET /models/available). This panel
+  // stays mounted (LeftPanel), so it asks nothing while closed; an ungated
+  // effect used to ask in the background for the app's lifetime (#453).
+  const availableModelsState = keepAvailableModelsLoaded(() =>
+    open ? { provider: llmProvider, baseUrl: llmBaseUrl } : null
+  );
 
   $effect(() => {
     if (hasRouteChoice(llmProvider, providerCatalog)) {

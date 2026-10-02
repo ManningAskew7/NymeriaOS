@@ -78,6 +78,13 @@ EXACT_MATCH: set[str] = {
     "lib/stores/mcpServers.test.ts",
     "lib/stores/storeLoadLoops.svelte.test.ts",
     "lib/services/api/mcp.test.ts",
+    # #453: the provider model pickers' GET /models/available list (state,
+    # load effect, latch) and its loop proof; the retry window it shares
+    # with models.svelte.ts.
+    "lib/stores/availableModels.svelte.ts",
+    "lib/stores/availableModels.svelte.test.ts",
+    "lib/utils/retryWindow.ts",
+    "lib/utils/retryWindow.test.ts",
     "lib/stores/serverSettings.svelte.ts",
     "lib/stores/serverSettings.test.ts",
     "lib/stores/threadConfig.svelte.ts",
@@ -108,7 +115,6 @@ EXACT_MATCH: set[str] = {
     "lib/utils/ids.ts",
     "lib/utils/inputTips.ts",
     "lib/utils/modelOptions.ts",
-    "lib/utils/models.ts",
     "lib/utils/providerRoutes.ts",
     "lib/utils/reasoningEffort.ts",
     "lib/utils/time.ts",

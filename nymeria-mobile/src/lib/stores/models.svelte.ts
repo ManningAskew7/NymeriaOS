@@ -2,18 +2,13 @@
  * Lazy-loading store for OpenRouter model metadata.
  * Fetches once per connection (no polling). A non-empty catalog latches for
  * the connection; an empty or failed load is retried at most once per
- * RETRY_AFTER_MS.
+ * retry window (`utils/retryWindow.ts`).
  */
 
 import type { AvailableModel, ModelMetadata } from '$lib/types';
 import { api } from '$lib/services/api.svelte';
+import { insideRetryWindow } from '$lib/utils/retryWindow';
 import { registerIdentityReloadHook } from './config.svelte';
-
-// The backend answers an empty catalog (OpenRouter unreachable from the
-// server) out of its own 60 s failure cache, so an earlier retry can only get
-// the same answer. Without a window every panel effect that reads `loaded` or
-// `loading` re-asked on each settle, as fast as the backend answered (#445).
-const RETRY_AFTER_MS = 60_000;
 
 // Exported for the store's tests only: each instance registers an identity
 // reload hook for life, so the app uses the single `modelsStore`.
@@ -82,7 +77,9 @@ export function createModelsStore() {
 
   async function loadModels() {
     if (loaded || loading) return;
-    if (emptyAt !== null && Date.now() - emptyAt < RETRY_AFTER_MS) return;
+    // Without the window every panel effect that reads `loaded` or `loading`
+    // re-asked on each settle, as fast as the backend answered (#445).
+    if (insideRetryWindow(emptyAt)) return;
     const generation = identityGeneration;
     loading = true;
     try {

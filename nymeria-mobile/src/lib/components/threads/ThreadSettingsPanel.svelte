@@ -15,7 +15,7 @@
   } from '$lib/utils/hooks';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
-  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { keepAvailableModelsLoaded } from '$lib/stores/availableModels.svelte';
   import {
     REASONING_EFFORT_LEVELS,
     effortExceedsModelMax,
@@ -178,12 +178,6 @@
     effortExceedsModelMax(llmReasoningEffort, effortClampMax)
   );
 
-  let availableModelsState = $state<AvailableModelsState>({
-    models: [],
-    provider: '',
-    loading: false,
-  });
-
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
   }
@@ -253,11 +247,12 @@
     return supportsApiMode(provider) || selectedRoute() === 'anthropic_messages';
   }
 
-  $effect(() => {
-    if (open) {
-      void loadAvailableModels(getEffectiveProvider(), availableModelsState, llmBaseUrl);
-    }
-  });
+  // The effective provider's live model list (GET /models/available). This
+  // panel stays mounted while a thread is open, so it asks nothing while
+  // closed (#453).
+  const availableModelsState = keepAvailableModelsLoaded(() =>
+    open ? { provider: getEffectiveProvider(), baseUrl: llmBaseUrl } : null
+  );
 
   $effect(() => {
     if (open) {

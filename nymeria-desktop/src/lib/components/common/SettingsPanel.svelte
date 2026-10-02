@@ -51,7 +51,7 @@
   import SegmentedTabs from './SegmentedTabs.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
-  import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
+  import { keepAvailableModelsLoaded } from '$lib/stores/availableModels.svelte';
   import {
     DEFAULT_CLIPROXY_BASE_URL,
     DEFAULT_LOCAL_BASE_URL,
@@ -532,32 +532,26 @@
   }
 
   // Model metadata (reactive lookup based on current model ID). Every
-  // provider's /models listing is merged into the store by
-  // loadAvailableModels, so this works beyond OpenRouter.
+  // provider's /models listing is merged into the store by the picker
+  // below, so this works beyond OpenRouter.
   const currentModelMeta = $derived(modelsStore.getById(llmModel));
   const currentEffortSet = $derived(
     supportedEffortSet(currentModelMeta?.supported_reasoning_efforts)
   );
 
-  // Dynamic model list for providers that support /v1/models
-  let availableModelsState = $state<AvailableModelsState>({
-    models: [],
-    provider: '',
-    loading: false,
-  });
-
-  // Sync llmProvider from displayProvider and fetch models from the provider
-  // catalog endpoint where available. Static model options are only fallback.
+  // Sync llmProvider from displayProvider.
   $effect(() => {
     const { provider } = fromDisplayProvider(displayProvider);
     llmProvider = provider;
-    const baseUrlOverride = (
-      displayProvider === 'local_openai'
-      || displayProvider === 'openai_custom'
-      || llmBaseUrl
-    ) ? llmBaseUrl : '';
-    void loadAvailableModels(provider, availableModelsState, baseUrlOverride);
   });
+
+  // The provider's live model list (GET /models/available); the static
+  // model options are only a fallback. This panel is mounted only while
+  // Global Settings is open, so a closed panel never asks (#453).
+  const availableModelsState = keepAvailableModelsLoaded(() => ({
+    provider: fromDisplayProvider(displayProvider).provider,
+    baseUrl: llmBaseUrl,
+  }));
 
   $effect(() => {
     if (hasRouteChoice(llmProvider, providerCatalog)) {

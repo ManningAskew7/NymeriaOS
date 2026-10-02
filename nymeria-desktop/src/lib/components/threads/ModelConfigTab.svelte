@@ -1,5 +1,6 @@
 <script lang="ts">
   import { modelsStore } from '$lib/stores/models.svelte';
+  import { keepAvailableModelsLoaded } from '$lib/stores/availableModels.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -16,7 +17,6 @@
   import Modal from '$lib/components/common/Modal.svelte';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import { fallbackHoldChip, fallbackHoldExpiresIn, fallbackRevertLabel } from '$lib/utils/fallbackHold';
-  import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     buildProviderGroups,
@@ -138,12 +138,6 @@
     buildProviderGroups(providerCatalog, { includeLocalOpenAISentinel: false })
   );
 
-  let availableModelsState = $state<AvailableModelsState>({
-    models: [],
-    provider: '',
-    loading: false,
-  });
-
   const inheritsGlobalModel = $derived(!llmModel);
   const globalModel = $derived(serverSettingsStore.model || '');
   // The Revert button names what the revert restores: the SAVED config (the
@@ -257,9 +251,15 @@
   $effect(() => {
     const { provider } = fromThreadDisplayProvider(threadDisplayProvider);
     llmProvider = provider;
-    const ep = getEffectiveProvider();
-    const baseUrlOverride = supportsApiMode(ep) ? llmBaseUrl : '';
-    void loadAvailableModels(ep, availableModelsState, baseUrlOverride);
+  });
+
+  // The effective provider's live model list. Declared after the sync
+  // above so its first run reads the synced provider. This tab is mounted
+  // only while Thread Settings shows a Model section, so a closed panel
+  // never asks (#453).
+  const availableModelsState = keepAvailableModelsLoaded(() => {
+    const provider = getEffectiveProvider();
+    return { provider, baseUrl: supportsApiMode(provider) ? llmBaseUrl : '' };
   });
 
   $effect(() => {
