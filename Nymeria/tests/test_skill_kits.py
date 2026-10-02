@@ -2122,6 +2122,124 @@ def test_defer_block_steers_to_the_kit_bind_once(tmp_path: Path):
     assert "bind-only tool" in header
 
 
+# The bind the steer points at resolves the outer kit's tools PLUS its nested
+# kits' (one level, `expanded_required_tools`), so its honesty checks must
+# cover that union, not only the outer kit's own list (#417 closer, PA-N1).
+
+NESTING_KIT_MD = """---
+name: nesting-kit
+description: A protected and an ordinary tool, plus a nested kit.
+metadata:
+  nymeria:
+    required_tools:
+      - hook_config
+      - memory_clear_all
+    required_skills:
+      - inner-kit
+    tool_ttl: 30m
+---
+
+# Nesting Kit
+"""
+
+INNER_KIT_MD = """---
+name: inner-kit
+description: The nested kit.
+metadata:
+  nymeria:
+    required_tools:
+      - hello_test
+    tool_ttl: 30m
+---
+
+# Inner Kit
+"""
+
+
+def _nesting_meta_tool(tmp_path: Path):
+    """The Skill meta-tool over nesting-kit and its nested inner-kit."""
+    outer = load_skill_directory(
+        _write_skill(tmp_path, "nesting-kit", NESTING_KIT_MD), scope="bundled"
+    )
+    inner = load_skill_directory(
+        _write_skill(tmp_path, "inner-kit", INNER_KIT_MD), scope="bundled"
+    )
+    assert outer is not None and inner is not None
+    meta = cast(StructuredTool, create_skill_meta_tool([outer, inner]))
+    assert meta.func is not None
+    return meta.func
+
+
+def _nesting_call(meta_func, *, defer: bool):
+    return meta_func(
+        "nesting-kit", ttl="2h", defer=defer, tool_call_id="call-1",
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+
+def test_defer_role_blocked_tool_in_a_nested_kit_drops_the_kit_bind_steer(
+    tmp_path: Path,
+):
+    """The outer kit's own tools are all usable, but its nested kit carries a
+    developer-only tool: the strict union bind is refused for a non-admin
+    (shown by following the old steer), so neither the deferred block nor the
+    tool_invoke note may steer to it, and the blocked nested tool is named."""
+    agent = _agent_with(tmp_path, role="user")  # seed defaults: tool_invoke
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["tool_invoke"]
+    agent.thread_config_manager.save_config(tc)
+    meta_func = _nesting_meta_tool(tmp_path)
+    with _as_current(agent):
+        result = _nesting_call(meta_func, defer=True)
+        bind_attempt = _nesting_call(meta_func, defer=False)
+
+    text = _defer_text(result)
+    listing = _deferred_listing(text)
+    assert listing["runnable"] == ["memory_clear_all"]
+    assert listing["bind_only"] == ["hook_config"]
+    assert listing["unavailable"] == []
+    assert "ttl=..." not in text.replace("Skill(name=..., ttl=...)", "")
+    header = next(
+        line for line in text.splitlines() if line.startswith("[Skill Kit deferred]")
+    )
+    assert "blocked for your role" in header
+    assert "hello_test" in header and "inner-kit" in header
+    note = text[text.index("[tool_invoke disabled on this thread]"):]
+    assert "blocked for your role" in note
+    nested_entry = next(
+        line for line in text.splitlines() if line.startswith("  - inner-kit (kit)")
+    )
+    assert "hello_test" in nested_entry and "your role" in nested_entry
+    # The premise: the union bind the old copy steered to is refused outright.
+    assert isinstance(bind_attempt, str)
+    assert bind_attempt.startswith("[Skill Kit activation failed: nesting-kit]")
+    assert "Developer-only" in bind_attempt
+    after = agent.thread_config_manager.get_config("thread-a")
+    assert after is not None and after.disabled_tools == ["tool_invoke"]
+
+
+def test_defer_kit_bind_steer_names_a_disabled_tool_in_a_nested_kit(
+    tmp_path: Path,
+):
+    """A thread-disabled tool inside a nested kit: the union bind works but
+    un-disables it, so the kit steer stays and says so."""
+    agent = _FakeAgent(tmp_path / "data")  # admin; seed defaults: tool_invoke
+    tc = ThreadConfig(thread_id="thread-a")
+    tc.disabled_tools = ["hello_test"]
+    agent.thread_config_manager.save_config(tc)
+    meta_func = _nesting_meta_tool(tmp_path)
+    with _as_current(agent):
+        result = _nesting_call(meta_func, defer=True)
+
+    text = _defer_text(result)
+    assert _deferred_listing(text)["runnable"] == ["memory_clear_all"]
+    header = next(
+        line for line in text.splitlines() if line.startswith("[Skill Kit deferred]")
+    )
+    assert 'Skill(name="nesting-kit", ttl=...)' in header
+    assert "also re-enables hello_test" in header
+
+
 def _bundled_kit_names() -> list[str]:
     import nymeria
 

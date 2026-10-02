@@ -353,7 +353,11 @@ The kit-level steer, `Skill(name=..., ttl=...)`, appears once per result
 block and only where that bind would work: a kit bind is strict, so one
 role-blocked tool refuses the whole kit, and then every steer is replaced by
 that explanation. When the kit holds a thread-disabled tool, the steer says
-the bind would re-enable it (a kit bind un-disables before binding).
+the bind would re-enable it (a kit bind un-disables before binding). Both
+checks cover every tool that bind resolves, nested kits' `required_tools`
+included: a role-blocked tool in a nested kit is named in the header, and
+that nested kit's entry in the deferred listing says binding it is refused
+for the caller's role.
 
 When none of a kit's tools is runnable or bound and it declares no thread
 templates or nested skills (today `tool-management`, `skill-management` and

@@ -439,13 +439,16 @@ class _DeferredKitTool(NamedTuple):
     ``unavailable`` entries, empty otherwise; ``kind`` is that refusal's kind
     (``by_name_gate_refusals``), which decides whether the kit-level bind
     steer is honest (``_kit_bind_refused_for_role``,
-    ``_kit_bind_reenable_note``).
+    ``_kit_bind_reenable_note``). ``via`` names the nested kit that brings a
+    tool into the kit bind's union (``_deferred_bind_states``); empty for the
+    kit's own tools, the only ones the deferred block lists.
     """
 
     name: str
     state: DeferredToolState
     reason: str = ""
     kind: Optional["ByNameRefusalKind"] = None
+    via: str = ""
 
 
 def _classify_deferred_kit_tools(
@@ -555,6 +558,35 @@ def _classify_deferred_kit_tools(
     return classified
 
 
+def _deferred_bind_states(
+    tool_states: List[_DeferredKitTool],
+    nested_skills: List[Skill],
+    config: RunnableConfig,
+) -> List[_DeferredKitTool]:
+    """Every tool the kit-level bind steer would bind, classified (#417).
+
+    ``Skill(name, ttl=...)`` binds the kit's own tools PLUS its nested kits'
+    (one level, ``expanded_required_tools``) in one strict call, so whether
+    a steer toward it is honest (``_kit_bind_refused_for_role``,
+    ``_kit_bind_reenable_note``) depends on that whole union, not only on
+    the tools the deferred block lists: a role-blocked tool inside a nested
+    kit refuses the bind just as surely. Returns ``tool_states`` followed by
+    the nested-only tools, each tagged ``via`` the first nested kit that
+    declares it.
+    """
+    seen = {t.name for t in tool_states}
+    via: dict[str, str] = {}
+    for nested in nested_skills:
+        for name in nested.required_tools:
+            if name not in seen:
+                seen.add(name)
+                via[name] = nested.name
+    if not via:
+        return list(tool_states)
+    extras = _classify_deferred_kit_tools(list(via), config)
+    return list(tool_states) + [t._replace(via=via[t.name]) for t in extras]
+
+
 _KIT_BIND_TTL_CHOICE = (
     'choosing the ttl for how long you expect to need them (Nm/Nh/Nd/Nw or '
     '"permanent")'
@@ -572,9 +604,33 @@ def _kit_bind_refused_for_role(tool_states: List[_DeferredKitTool]) -> bool:
     admin/developer gates in ``tool_search._validate_and_gate_tools`` refuse
     the WHOLE request on one blocked name, so a single role-blocked tool
     makes every kit-level bind steer point at a bind that fails. No deferred
-    surface may offer it then; they say ``_KIT_BIND_REFUSED_FOR_ROLE``.
+    surface may offer it then; they say ``_KIT_BIND_REFUSED_FOR_ROLE``. Pass
+    the bind's whole union (``_deferred_bind_states``), not only the listed
+    tools.
     """
-    return any(t.state == "unavailable" and t.kind == "role" for t in tool_states)
+    return any(_role_blocked(t) for t in tool_states)
+
+
+def _role_blocked(entry: _DeferredKitTool) -> bool:
+    return entry.state == "unavailable" and entry.kind == "role"
+
+
+def _kit_bind_role_blocked_where(bind_states: List[_DeferredKitTool]) -> str:
+    """Where the role-blocked tools behind ``_KIT_BIND_REFUSED_FOR_ROLE`` are.
+
+    The kit's own ones are in the deferred block's Unavailable section; a
+    nested kit's ones are listed nowhere else, so they are named here with
+    the gate's reason.
+    """
+    text = ""
+    if any(_role_blocked(t) and not t.via for t in bind_states):
+        text += " The blocked ones are listed under Unavailable below."
+    nested = [t for t in bind_states if _role_blocked(t) and t.via]
+    if nested:
+        text += " Blocked in its nested kits: " + "; ".join(
+            f"{t.via}: {t.reason}" for t in nested
+        ) + "."
+    return text
 
 
 def _kit_bind_reenable_note(tool_states: List[_DeferredKitTool]) -> str:
@@ -614,6 +670,8 @@ def _defer_refusal(
     only by disables (or the allowlist) gets no steer: the bind would work,
     but by reversing the user's own decision.
     """
+    # A kit with nested skills never reaches the steer below, so the kit's
+    # own tool states are the bind's whole union here.
     if not tool_states or skill.thread_templates or skill.required_skills:
         return None
     if any(t.state in ("runnable", "bound") for t in tool_states):
@@ -649,7 +707,7 @@ def _ensure_deferred_executor(
     config: RunnableConfig,
     use_direct: bool,
     needs_executor: bool,
-    tool_states: Optional[List[_DeferredKitTool]] = None,
+    bind_states: Optional[List[_DeferredKitTool]] = None,
 ) -> tuple[str, bool, bool]:
     """Guarantee the executor a deferred activation tells the model to use.
 
@@ -675,9 +733,10 @@ def _ensure_deferred_executor(
       return, with a steer note.
 
     Both steer notes offer the kit bind only when it would work: never with
-    a role-blocked kit tool in ``tool_states`` (the strict bind refuses the
-    whole kit), and naming any thread-disabled kit tool it would re-enable
-    (#417 review).
+    a role-blocked tool in ``bind_states`` (every tool that bind resolves,
+    nested kits' included, ``_deferred_bind_states``; the strict bind
+    refuses the whole kit), and naming any thread-disabled one it would
+    re-enable (#417 review).
 
     Returns ``(note_block, emit_reload_command, executor_bound)``.
     ``emit_reload_command`` is True only when the auto-bind was persisted on
@@ -697,7 +756,7 @@ def _ensure_deferred_executor(
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
 
-    states = tool_states or []
+    states = bind_states or []
     bind_refused = _kit_bind_refused_for_role(states)
 
     state = thread_tool_reachability("tool_invoke", thread_id, user_id)
@@ -789,6 +848,7 @@ def _defer_kit_tools_block(
     tool_states: List[_DeferredKitTool],
     use_direct: bool,
     executor_bound: bool = False,
+    bind_states: Optional[List[_DeferredKitTool]] = None,
 ) -> str:
     """Body block for a deferred Skill Kit activation (binds no kit tools).
 
@@ -803,7 +863,9 @@ def _defer_kit_tools_block(
     (never a ``tool_manage`` detour, backlog #170), appears ONCE, in the
     header, and covers the bind-only tools too; it is replaced by why a bind
     is no remedy when a role-blocked tool would make the strict kit bind
-    refuse, and names any thread-disabled tool the bind would re-enable. When
+    refuse, and names any thread-disabled tool the bind would re-enable;
+    both judged over ``bind_states`` (the bind's whole union, nested kits'
+    tools included; defaults to ``tool_states``). When
     ``executor_bound`` (the activation auto-bound ``tool_invoke``), the
     cache-safe framing is dropped: the tools prefix DID change, and the
     auto-bound note explains why.
@@ -824,10 +886,10 @@ def _defer_kit_tools_block(
         "[Skill Kit deferred] None of this kit's tools were bound by this "
         "activation. "
     )
-    if _kit_bind_refused_for_role(tool_states):
-        header += (
-            f"{_KIT_BIND_REFUSED_FOR_ROLE} The blocked ones are listed under "
-            "Unavailable below."
+    steer_states = tool_states if bind_states is None else bind_states
+    if _kit_bind_refused_for_role(steer_states):
+        header += _KIT_BIND_REFUSED_FOR_ROLE + _kit_bind_role_blocked_where(
+            steer_states
         )
     else:
         when = (
@@ -840,7 +902,7 @@ def _defer_kit_tools_block(
         header += (
             f'{when}, activate it again with Skill(name="{skill.name}", '
             f"ttl=...) to bind its tools first-class instead, "
-            f"{_KIT_BIND_TTL_CHOICE}." + _kit_bind_reenable_note(tool_states)
+            f"{_KIT_BIND_TTL_CHOICE}." + _kit_bind_reenable_note(steer_states)
         )
     lines = [header]
 
@@ -924,22 +986,21 @@ def _nested_skill_bodies_block(skill: Skill, nested_skills: List[Skill]) -> str:
 
 
 def _defer_required_skills_block(
-    skill: Skill,
-    skill_manager: Optional[SkillManager],
-    user_id: Optional[str],
-    snapshot_by_name: dict[str, Skill],
+    nested: List[Skill],
+    missing: List[str],
+    bind_states: List[_DeferredKitTool],
 ) -> str:
     """Deferred listing of a kit's nested skills: name + description only.
 
     Nothing activates; each entry is loadable on demand via Skill(). A name
     that does not resolve is listed as not installed rather than failing,
-    because defer binds nothing so there is no partial state to protect.
+    because defer binds nothing so there is no partial state to protect. A
+    nested kit carrying a tool blocked for the caller's role says so on its
+    entry (#417): binding it alone is refused for the same reason.
     """
-    if not skill.required_skills:
+    if not nested and not missing:
         return ""
-    nested, missing = resolve_nested_skills(
-        skill, skill_manager, user_id, snapshot_by_name=snapshot_by_name
-    )
+    role_blocked = {t.name for t in bind_states if _role_blocked(t)}
     lines = [
         "\n\n---\n"
         "[Required skills (deferred)] This kit pulls in the skills below. "
@@ -949,6 +1010,12 @@ def _defer_required_skills_block(
     for nested_skill in nested:
         kind = "kit" if nested_skill.is_skill_kit else "skill"
         desc = nested_skill.description.strip().replace("\n", " ")
+        blocked = [n for n in nested_skill.required_tools if n in role_blocked]
+        if blocked:
+            desc += (
+                " (binding it is refused for your role: "
+                + ", ".join(blocked) + ")"
+            )
         lines.append(f"  - {nested_skill.name} ({kind}): {desc}")
     for name in missing:
         lines.append(
@@ -1254,19 +1321,30 @@ def create_skill_meta_tool(
             refusal = _defer_refusal(skill, tool_states)
             if refusal is not None:
                 return refusal
+            # The kit-level steer points at a bind of the kit's tools plus its
+            # nested kits' (one level), so its honesty checks judge that union.
+            nested_skills, missing_nested = (
+                resolve_nested_skills(
+                    skill, skill_manager, user_id, snapshot_by_name=snapshot_by_name
+                )
+                if skill.required_skills
+                else ([], [])
+            )
+            bind_states = _deferred_bind_states(tool_states, nested_skills, config)
             body = _render_skill_body(skill)
             use_direct = _unbound_direct_calls_active()
             needs_executor = bool(skill.thread_templates) or any(
                 t.state == "runnable" for t in tool_states
             )
             executor_note, emit_reload, executor_bound = _ensure_deferred_executor(
-                skill, config, use_direct, needs_executor, tool_states
+                skill, config, use_direct, needs_executor, bind_states
             )
             body += _defer_kit_tools_block(
-                skill, tool_states, use_direct, executor_bound=executor_bound
+                skill, tool_states, use_direct, executor_bound=executor_bound,
+                bind_states=bind_states,
             )
             body += _defer_required_skills_block(
-                skill, skill_manager, user_id, snapshot_by_name
+                nested_skills, missing_nested, bind_states
             )
             body += _defer_thread_templates_block(skill, use_direct)
             body += executor_note
