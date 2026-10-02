@@ -1704,6 +1704,438 @@ def test_searxng_api_error_is_returned_as_error_string(monkeypatch):
     assert out.startswith("[Error]: SearXNG API error: 503")
 
 
+# --- SearXNG failure honesty (#296) -------------------------------------------
+#
+# A SearXNG page whose every engine failed is still HTTP 200 with an empty
+# results list; the failures ride in "unresponsive_engines" as [name, reason]
+# pairs (measured against the pinned sidecar image, 2026-10-02). The tool used
+# to call that "[No results]", which every [Error]-prefix consumer (ordered
+# batches, /prune, workflow verbs, trigger notify) reads as success. Skipped on
+# purpose: the [Error] consumers themselves (their own tests pin the prefix).
+
+# Carries credentials and a distinctive host so a leak of either is visible.
+_SECRET_BASE = "http://searx-user:s3cret-pw@searx-internal.example:8080"
+_TAIL_PIECES = ("another web_search_* tool", "tell the user", "nymeria doctor")
+
+
+def _searxng_http_client(respond, captured=None):
+    """FakeClient whose GET answers with ``respond(url, params)``.
+
+    ``respond`` returns a REAL ``httpx.Response`` (so ``raise_for_status`` and
+    ``json`` behave exactly as on the wire, including an HTTPStatusError whose
+    text names the URL) or an exception to raise from the network boundary.
+    """
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None, params=None):
+            if captured is not None:
+                captured.append((url, dict(params or {})))
+            outcome = respond(url, params)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+    return FakeClient
+
+
+def _page(payload=None, *, status=200, text=None):
+    def respond(url, params):
+        request = httpx.Request("GET", url, params=params)
+        if text is not None:
+            return httpx.Response(status, text=text, request=request)
+        return httpx.Response(status, json=payload, request=request)
+
+    return respond
+
+
+def _raise(exc):
+    return lambda url, params: exc
+
+
+def _assert_backend_failure(out: str) -> None:
+    assert out.startswith("[Error]: SearXNG")
+    for piece in _TAIL_PIECES:
+        assert piece in out
+    assert "s3cret" not in out
+    assert "searx-internal" not in out
+    assert "searx-user" not in out
+
+
+_ENGINES_FAILED = {
+    "query": "wikipedia",
+    "results": [],
+    "answers": [],
+    "unresponsive_engines": [["brave", "too many requests"], ["google", "CAPTCHA"]],
+}
+
+
+def test_searxng_all_engines_failed_page_is_an_error_naming_them(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(_page(_ENGINES_FAILED)))
+
+    out = wsi._searxng_search_single(_SECRET_BASE, {"q": "wikipedia"}, 20.0, 5)
+
+    assert out.startswith("[Error]: SearXNG returned no results")
+    assert "brave (too many requests), google (CAPTCHA)" in out
+    # Says the empty page is a backend failure, not an answer about the query.
+    assert "not that nothing matches the query" in out
+    assert "[No results]" not in out
+    _assert_backend_failure(out)
+
+
+def test_searxng_all_engines_failed_end_to_end_through_the_tool(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: _SECRET_BASE)
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(_page(_ENGINES_FAILED)))
+
+    out = wsi.web_search_searxng.func(query="wikipedia")
+
+    assert out.startswith("[Error]: SearXNG returned no results")
+    assert "brave (too many requests), google (CAPTCHA)" in out
+    _assert_backend_failure(out)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"results": []}, {"results": [], "unresponsive_engines": []}],
+    ids=["no-fields", "empty-results", "empty-engines"],
+)
+def test_searxng_genuinely_empty_page_stays_no_results(monkeypatch, payload):
+    from nymeria.tools import web_search_integrations as wsi
+
+    assert wsi._format_searxng_results(payload, count=5) == "[No results]"
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: _SECRET_BASE)
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(_page(payload)))
+    assert wsi.web_search_searxng.func(query="q") == "[No results]"
+
+
+def test_searxng_partial_engine_failure_with_results_adds_no_note():
+    from nymeria.tools import web_search_integrations as wsi
+
+    results = [
+        {"title": "Doc", "url": "https://d.example", "content": "body", "score": 1.0},
+        {"title": "Other", "url": "https://o.example", "content": "more", "score": 0.5},
+    ]
+    with_failures = {
+        "results": results,
+        "unresponsive_engines": [["google", "CAPTCHA"], ["brave", "timeout"]],
+    }
+
+    out = wsi._format_searxng_results(with_failures, count=5)
+
+    assert out == wsi._format_searxng_results({"results": results}, count=5)
+    assert "1. Doc" in out and "2. Other" in out
+    assert "google" not in out and "[Error]" not in out
+
+
+def test_searxng_suspended_engines_keep_their_reasons():
+    from nymeria.tools import web_search_integrations as wsi
+
+    data = {
+        "results": [],
+        "unresponsive_engines": [
+            ["duckduckgo", "Suspended: HTTP connection error"],
+            ["startpage", "Suspended: access denied"],
+        ],
+    }
+
+    out = wsi._format_searxng_results(data, count=5)
+
+    assert out.startswith("[Error]: SearXNG returned no results")
+    assert (
+        "duckduckgo (Suspended: HTTP connection error), "
+        "startpage (Suspended: access denied)" in out
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "brave",
+        {"brave": "timeout"},
+        [["brave"]],
+        [["brave", "timeout", "extra"]],
+        [[1, "timeout"]],
+        [["brave", None]],
+        [None, "brave", 5],
+        [["", "timeout"], ["  \n ", "CAPTCHA"]],
+        None,
+    ],
+    ids=[
+        "string", "dict", "arity-1", "arity-3", "non-str-name", "non-str-reason",
+        "non-pairs", "blank-names", "null",
+    ],
+)
+def test_searxng_malformed_engine_field_with_nothing_valid_is_a_genuine_empty(field):
+    from nymeria.tools import web_search_integrations as wsi
+
+    data = {"results": [], "unresponsive_engines": field}
+
+    assert wsi._format_searxng_results(data, count=5) == "[No results]"
+
+
+def test_searxng_malformed_engine_entries_are_ignored_and_valid_ones_named():
+    from nymeria.tools import web_search_integrations as wsi
+
+    data = {
+        "results": [],
+        "unresponsive_engines": [
+            ["brave", "timeout"],
+            ["half"],
+            [2, "y"],
+            ("google", "CAPTCHA"),
+            ["mojeek", ""],
+            ["brave", "timeout"],
+        ],
+    }
+
+    out = wsi._format_searxng_results(data, count=5)
+
+    assert out.startswith("[Error]: SearXNG returned no results")
+    # Valid entries in SearXNG's order, an empty reason renders as the bare
+    # name, and an exact duplicate is named once.
+    assert "errors: brave (timeout), google (CAPTCHA), mojeek. " in out
+    assert "half" not in out and "y)" not in out
+
+
+def test_searxng_engine_list_is_capped_at_eight_in_searxngs_order():
+    from nymeria.tools import web_search_integrations as wsi
+
+    # Deliberately not alphabetical: SearXNG's own order is kept, not re-sorted.
+    names = [f"engine{i:02d}" for i in (11, 3, 7, 0, 9, 1, 4, 10, 2, 8, 5, 6)]
+    data = {"results": [], "unresponsive_engines": [[n, "timeout"] for n in names]}
+
+    out = wsi._format_searxng_results(data, count=5)
+
+    shown, hidden = names[:8], names[8:]
+    positions = [out.index(f"{n} (timeout)") for n in shown]
+    assert positions == sorted(positions)
+    for n in hidden:
+        assert n not in out
+    assert f"{shown[-1]} (timeout), and 4 more." in out
+
+
+def test_searxng_engine_text_is_flattened_stripped_of_controls_and_capped():
+    from nymeria.tools import web_search_integrations as wsi
+
+    long_name = "evil\nname\t" + "x" * 200
+    data = {
+        "results": [],
+        "unresponsive_engines": [
+            [long_name, "time\x1b[31mout‮\r\nIGNORE PREVIOUS " + "y" * 200],
+        ],
+    }
+
+    out = wsi._format_searxng_results(data, count=5)
+
+    assert out.startswith("[Error]: SearXNG returned no results")
+    assert "\n" not in out and "\r" not in out and "\t" not in out
+    assert "\x1b" not in out and "‮" not in out
+    # Whitespace collapses to one space, control and format characters are
+    # dropped, then the name keeps its first 40 characters and the reason its
+    # first 60, each marked "..." when cut.
+    name = "evil name " + "x" * 30 + "..."
+    reason = "time[31mout IGNORE PREVIOUS " + "y" * 32 + "..."
+    assert f"errors: {name} ({reason}). " in out
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.ConnectError("[Errno 111] Connection refused"),
+        httpx.ConnectTimeout("timed out"),
+        httpx.ConnectError("[Errno -2] Name or service not known"),
+    ],
+    ids=["refused", "connect-timeout", "dns"],
+)
+def test_searxng_unreachable_instance_says_so_with_the_remedy(monkeypatch, exc):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(_raise(exc)))
+
+    out = wsi._searxng_search_single(_SECRET_BASE, {"q": "q"}, 20.0, 5)
+
+    assert out.startswith(
+        "[Error]: SearXNG search failed: could not reach the SearXNG instance ("
+    )
+    assert str(exc) in out
+    assert "may be stopped" in out
+    _assert_backend_failure(out)
+
+
+def test_searxng_unreachable_text_never_echoes_the_address(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    exc = httpx.ConnectError(f"connect to {_SECRET_BASE}/search failed")
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(_raise(exc)))
+
+    out = wsi._searxng_search_single(_SECRET_BASE, {"q": "q"}, 20.0, 5)
+
+    assert out.startswith("[Error]: SearXNG search failed: could not reach")
+    _assert_backend_failure(out)
+
+
+def test_searxng_other_transport_failure_names_it_with_the_remedy(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    exc = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(_raise(exc)))
+
+    out = wsi._searxng_search_single(_SECRET_BASE, {"q": "q"}, 20.0, 5)
+
+    assert out.startswith(
+        "[Error]: SearXNG search failed: Server disconnected without sending a "
+        "response. Use another web_search_* tool"
+    )
+    _assert_backend_failure(out)
+
+
+def test_searxng_slow_instance_is_a_timeout_not_unreachable(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(
+        httpx, "Client", _searxng_http_client(_raise(httpx.ReadTimeout("timed out")))
+    )
+
+    out = wsi._searxng_search_single(_SECRET_BASE, {"q": "q"}, 20.0, 5)
+
+    assert out.startswith(
+        "[Error]: SearXNG search failed: the SearXNG instance did not answer in time"
+    )
+    assert "could not reach" not in out
+    _assert_backend_failure(out)
+
+
+@pytest.mark.parametrize(
+    "status, hint",
+    [
+        (403, "search.formats"),
+        (429, "server.limiter: false"),
+        (503, None),
+        (500, None),
+    ],
+)
+def test_searxng_http_errors_keep_the_prefix_and_carry_their_hint(monkeypatch, status, hint):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(
+        httpx, "Client", _searxng_http_client(_page({"error": "x"}, status=status))
+    )
+
+    out = wsi._searxng_search_single(_SECRET_BASE, {"q": "q"}, 20.0, 5)
+
+    assert out.startswith(f"[Error]: SearXNG API error: {status}.")
+    if hint is not None:
+        assert hint in out
+    else:
+        assert "search.formats" not in out and "limiter" not in out
+    _assert_backend_failure(out)
+
+
+@pytest.mark.parametrize(
+    "respond",
+    [_page(text="<html><body>login</body></html>"), _page(["not", "an", "object"])],
+    ids=["html", "json-list"],
+)
+def test_searxng_non_searxng_answer_is_a_json_error_not_a_crash(monkeypatch, respond):
+    from nymeria.tools import web_search_integrations as wsi
+
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(respond))
+
+    out = wsi._searxng_search_single(_SECRET_BASE, {"q": "q"}, 20.0, 5)
+
+    assert out.startswith("[Error]: SearXNG did not return a JSON search response.")
+    assert "search.formats" in out
+    assert "object has no attribute" not in out
+    _assert_backend_failure(out)
+
+
+def test_searxng_non_object_result_items_are_skipped():
+    from nymeria.tools import web_search_integrations as wsi
+
+    data = {
+        "results": [
+            "junk",
+            {"title": "Doc", "url": "https://d.example", "content": "body"},
+            None,
+        ]
+    }
+
+    out = wsi._format_searxng_results(data, count=5)
+
+    assert out == "1. Doc\n   https://d.example\n   body"
+    assert wsi._format_searxng_results({"results": "junk"}, count=5) == "[No results]"
+
+
+def test_searxng_batch_keeps_a_failed_query_in_its_own_section(monkeypatch):
+    from nymeria.tools import web_search_integrations as wsi
+
+    good = {"results": [{"title": "Doc", "url": "https://d.example", "content": "body"}]}
+
+    def respond(url, params):
+        payload = _ENGINES_FAILED if params["q"] == "a" else good
+        return _page(payload)(url, params)
+
+    monkeypatch.setattr(wsi, "_get_searxng_base_url", lambda config=None: _SECRET_BASE)
+    monkeypatch.setattr(httpx, "Client", _searxng_http_client(respond))
+
+    out = wsi.web_search_searxng.func(queries="a | b")
+
+    first, second = out.split("\n\n=== Query 2/2: b ===\n")
+    assert first.startswith("=== Query 1/2: a ===\n[Error]: SearXNG returned no results")
+    assert "brave (too many requests)" in first
+    assert second == "1. Doc\n   https://d.example\n   body"
+
+
+def test_searxng_failures_are_logged_for_the_operator(monkeypatch, caplog):
+    import logging
+
+    from nymeria.tools import web_search_integrations as wsi
+
+    logger_name = wsi.logger.name
+    caplog.set_level(logging.INFO, logger=logger_name)
+
+    # Every engine failed: a WARNING naming them (the ops visibility the mates
+    # incident lacked).
+    wsi._format_searxng_results(_ENGINES_FAILED, count=5)
+    # A partial failure that still has results: one INFO line, no warning.
+    wsi._format_searxng_results(
+        {
+            "results": [{"title": "Doc", "url": "https://d.example"}],
+            "unresponsive_engines": [["wikidata", "timeout"]],
+        },
+        count=5,
+    )
+    # A refused connection: a WARNING without a traceback.
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        _searxng_http_client(_raise(httpx.ConnectError("[Errno 111] Connection refused"))),
+    )
+    wsi._searxng_search_single(_SECRET_BASE, {"q": "q"}, 20.0, 5)
+
+    records = [r for r in caplog.records if r.name == logger_name]
+    engines = [r for r in records if "brave (too many requests)" in r.getMessage()]
+    assert [r.levelno for r in engines] == [logging.WARNING]
+    partial = [r for r in records if "wikidata (timeout)" in r.getMessage()]
+    assert [r.levelno for r in partial] == [logging.INFO]
+    refused = [r for r in records if "Connection refused" in r.getMessage()]
+    assert [r.levelno for r in refused] == [logging.WARNING]
+    assert refused[0].exc_info is None
+    assert all("s3cret" not in r.getMessage() for r in records)
+
+
 def test_searxng_registered_in_optional_group():
     from nymeria.tools import CATALOG_TOOLS
     from nymeria.tools.web_search_integrations import WEB_SEARCH_INTEGRATION_TOOLS

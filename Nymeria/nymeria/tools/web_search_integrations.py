@@ -20,6 +20,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.http_policy import policy_http_client as _http_client
+from ..core.searxng_health import describe_engines, transport_reason, unresponsive_engines
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
@@ -159,6 +160,23 @@ _BRAVE_DATE_RANGE = re.compile(r"^\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}$")
 # restricted to the text-useful ones for an agent.
 _SEARXNG_TIME_RANGES = {"day", "week", "month", "year"}
 _SEARXNG_CATEGORIES = {"general", "news", "science"}
+# Closes every SearXNG backend-failure result (#296). One sentence the agent
+# can act on; never the base URL, which is an internal address or a per-user
+# saved value.
+_SEARXNG_FAILURE_TAIL = (
+    "Use another web_search_* tool if one is available, and tell the user the "
+    "SearXNG search backend is failing (an admin can check it with nymeria doctor)."
+)
+_SEARXNG_HTTP_HINTS = {
+    403: (
+        "The instance refused a JSON search (SearXNG answers 403 when its "
+        "search.formats setting does not include json)."
+    ),
+    429: (
+        "The instance's rate limiter refused the request; a private instance "
+        "should set server.limiter: false."
+    ),
+}
 
 # ddgs maps the family's day/week/month/year onto its single-letter timelimit.
 _DDGS_TIME_RANGES = {"day": "d", "week": "w", "month": "m", "year": "y"}
@@ -954,8 +972,34 @@ def _format_searxng_results(data: dict, count: int) -> str:
     default "general" (e.g. news/science) so the agent can tell result types
     apart. We keep the top "count": the search is already paid for, so this only
     caps how much enters the model context.
+
+    An empty page is "[No results]" only when no engine reported an error. A
+    page with no results AND failed engines (``unresponsive_engines``; still
+    HTTP 200 when every engine failed) is a backend failure and returns an
+    ``[Error]`` naming them, so the prefix consumers (ordered batches, /prune,
+    workflow verbs, trigger notify) see a failure, not an answer (#296).
+    Failed engines beside real results are only logged: on a datacenter IP
+    some engine fails on every call, and the agent cannot act on that.
     """
-    results = data.get("results") or []
+    raw_results = data.get("results")
+    results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
+    failed = unresponsive_engines(data)
+    if failed and not results:
+        described = describe_engines(failed)
+        logger.warning("SearXNG returned no results; its engines failed: %s", described)
+        return (
+            "[Error]: SearXNG returned no results, and its search engines reported "
+            f"errors: {described}. An empty page with engine errors means the "
+            "upstream engines are blocking or cannot be reached from the SearXNG "
+            "instance, not that nothing matches the query. "
+            f"{_SEARXNG_FAILURE_TAIL}"
+        )
+    if failed:
+        logger.info(
+            "SearXNG returned %d result(s); some engines failed: %s",
+            len(results),
+            describe_engines(failed),
+        )
     # Defensive re-sort by score (SearXNG normally pre-sorts, but engine results
     # merge asynchronously); items without a numeric score sort last.
     results = sorted(
@@ -997,6 +1041,10 @@ def _searxng_search_single(base_url: str, params: dict, timeout: float, count: i
 
     url = f"{base_url.rstrip('/')}/search"
 
+    # Failure wording (#296): every backend failure is "[Error]: SearXNG ..."
+    # plus a cause and _SEARXNG_FAILURE_TAIL; never the URL (str() of an
+    # HTTPStatusError names it, so only the status code is used). Expected
+    # backend failures log a WARNING without a traceback.
     try:
         with _http_client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(url, headers={"Accept": "application/json"}, params=params)
@@ -1005,9 +1053,13 @@ def _searxng_search_single(base_url: str, params: dict, timeout: float, count: i
         try:
             data = response.json()
         except Exception:
+            data = None
+        if not isinstance(data, dict):
+            logger.warning("SearXNG answered without a JSON search response")
             return (
-                "[Error]: SearXNG did not return JSON. Enable the JSON format on the "
-                "instance (search.formats must include 'json')."
+                "[Error]: SearXNG did not return a JSON search response. The address "
+                "may not point at a SearXNG instance, or the instance's "
+                f"search.formats setting does not include json. {_SEARXNG_FAILURE_TAIL}"
             )
 
         out = _format_searxng_results(data, count)
@@ -1015,12 +1067,37 @@ def _searxng_search_single(base_url: str, params: dict, timeout: float, count: i
         return out
 
     except httpx.HTTPStatusError as e:
-        error_msg = f"SearXNG API error: {e.response.status_code}"
-        logger.error(error_msg)
-        return f"[Error]: {error_msg}"
+        status = e.response.status_code
+        logger.warning("SearXNG API error: %s", status)
+        hint = _SEARXNG_HTTP_HINTS.get(status)
+        hint = f" {hint}" if hint else ""
+        return f"[Error]: SearXNG API error: {status}.{hint} {_SEARXNG_FAILURE_TAIL}"
+
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+        reason = transport_reason(e, base_url)
+        logger.warning("SearXNG unreachable: %s", reason)
+        return (
+            "[Error]: SearXNG search failed: could not reach the SearXNG instance "
+            f"({reason}). The search sidecar or instance may be stopped, or its "
+            f"address is wrong. {_SEARXNG_FAILURE_TAIL}"
+        )
+
+    except httpx.TimeoutException as e:
+        reason = transport_reason(e, base_url)
+        logger.warning("SearXNG timed out: %s", reason)
+        return (
+            "[Error]: SearXNG search failed: the SearXNG instance did not answer in "
+            f"time ({reason}). {_SEARXNG_FAILURE_TAIL}"
+        )
+
+    except httpx.TransportError as e:
+        reason = transport_reason(e, base_url).rstrip(".")
+        logger.warning("SearXNG transport error: %s", reason)
+        return f"[Error]: SearXNG search failed: {reason}. {_SEARXNG_FAILURE_TAIL}"
 
     except Exception as e:
-        error_msg = f"SearXNG search failed: {str(e)}"
+        # Unexpected (an invalid URL, or a bug here): keep the traceback.
+        error_msg = f"SearXNG search failed: {transport_reason(e, base_url)}"
         logger.error(error_msg, exc_info=True)
         return f"[Error]: {error_msg}"
 
@@ -1064,6 +1141,9 @@ def web_search_searxng(
         Ranked sources as "N. <title>[ [news]]\\n   <url> · <date>\\n   <snippet>".
         Non-general categories are tagged. Batch mode: sections separated by
         "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
+        "[No results]" means a genuinely empty search; an empty page whose
+        upstream engines failed is an "[Error]" naming them (the search
+        backend is failing, not the query).
     """
     # Parse queries (batch takes precedence over single query).
     query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
