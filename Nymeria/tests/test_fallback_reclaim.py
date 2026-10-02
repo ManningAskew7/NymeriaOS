@@ -714,16 +714,18 @@ def test_a_healthy_probe_resets_the_ladder(tmp_path, probe, inline, clock):
 @pytest.mark.parametrize(
     "hold, interval, label",
     [
-        (_hold(age=timedelta(minutes=5)), 600, "younger than the interval"),
-        (_hold(), 0, "interval 0 is off"),
-        (_hold(offered=True), 600, "already offered"),
-        (_hold(reason="refusal"), 600, "refusal hold"),
-        (_hold(reason="invalid_request"), 600, "invalid_request hold"),
+        ({"age": timedelta(minutes=5)}, 600, "younger than the interval"),
+        ({}, 0, "interval 0 is off"),
+        ({"offered": True}, 600, "already offered"),
+        ({"reason": "refusal"}, 600, "refusal hold"),
+        ({"reason": "invalid_request"}, 600, "invalid_request hold"),
     ],
 )
 def test_ineligible_holds_are_never_probed(tmp_path, probe, inline, hold, interval, label):
+    # The hold is built HERE, not at collection: its age is relative to now,
+    # and a full suite run can take longer than the interval.
     turn = _Turn(tmp_path, llm_fallback_reclaim_interval_seconds=interval)
-    turn.seed(active_llm_fallback=hold)
+    turn.seed(active_llm_fallback=_hold(**hold))
 
     events = turn.astream()
     turn.astream()

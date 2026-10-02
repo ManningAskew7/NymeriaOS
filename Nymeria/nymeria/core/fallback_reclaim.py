@@ -4,8 +4,9 @@ A hold (``ThreadConfig.active_llm_fallback``) exists to ride out an outage,
 but nothing used to notice the outage ending: the thread kept the fallback
 until its timer, forever for a permanent hold. This module notices.
 
-Shape (coordinator decisions M1 to M8 plus the review fixes, design record
-``docs/private/plans/llm-fallback-consent.md`` "Primary reclaim"):
+Shape (coordinator decisions M1 to M8 plus the review fixes; design record:
+the fallback-consent plan's "Primary reclaim" section, pass note
+``shipped/07`` #439):
 
 - DETECTION is a turn-start probe: at the start of a held thread's turn
   (``NymeriaAgent.chat``/``astream``, under the turn lock, BEFORE the graph
