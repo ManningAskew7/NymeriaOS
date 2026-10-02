@@ -930,7 +930,7 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `NYMERIA_SNAPSHOTS_DIR` | `<data_dir>/snapshots` | Override where `snapshot create` writes user-data backup artifacts. See `docs/deployment/backup-and-restore.md` |
 | `NYMERIA_SNAPSHOT_PASSPHRASE` | - | Passphrase for `snapshot` create/verify/restore when running non-interactively (alternative to `--passphrase-file`). Never persisted by Nymeria; set it in the invoking environment only |
 | `NYMERIA_WORKSPACE_DIR` | `/workspace` | Workspace root for generated artifacts and optional file-tool confinement |
-| `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
+| `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria`. A `--root DIR` flag (`nymeria --root DIR <command>`) outranks it for one command |
 | `NYMERIA_SETTINGS_FILE` | - (containers: `/data/settings.env`) | Where settings changed at runtime are saved, loaded after every other env file so its values win. Set it in the process environment (compose does), never in an env file, since it decides which env files load; a relative path is taken against the project root. Holds provider keys, so the file tools refuse it and the exec sandbox denies it when it sits outside the project root. Unset: writes go to the highest-precedence existing root dotenv, as before |
 | `NYMERIA_CONFINE_FILE_TO_WORKSPACE` | `false` | When true, `file_write` and `file_edit` reject write targets outside `NYMERIA_WORKSPACE_DIR`. False keeps broad personal-assistant file access and relies on deployment sandboxing |
 | `NYMERIA_ALLOW_SELF_EDIT` | `true` | Enables admin-only `self_file_write`, `self_file_delete`, and `self_reload`; set false to disable self-modifying maintenance tools |
@@ -963,12 +963,31 @@ One root holds one install. Every process loads its root's `.env`,
 install sharing a root with a Docker install's `.env.docker` runs with the
 Docker values, container-only hostnames included. Give each install its own
 root with `NYMERIA_PROJECT_ROOT` (export it in the shell profile of whoever
-runs that install). `nymeria init` prints the root it resolved and why on
-every run, and scopes discovery to an exported root, so it never reconfigures
-another install; it warns when it writes a local config beside a
-`.env.docker`. At boot, a process that loaded a `.env.docker` outside Docker
-warns when that file overrides the local config or points at Docker service
-hostnames (key and host names only).
+runs that install), or name it per command with the global flag:
+`nymeria --root <dir> <command>` (any command; `init`, `service`, and
+`browser` also accept `--root` after the command, with the same meaning).
+The flag is the portable spelling: PowerShell and cmd have no
+`VAR=value command` prefix. Write it in full (`--root DIR` or
+`--root=DIR`): the root is chosen before any config file loads, so a
+process started with `--root B` reads only B's files, never the default
+root's, and an abbreviated spelling is refused rather than guessed at.
+
+`nymeria init` prints the root it resolved and why on every run, and scopes
+discovery to an exported root, so it never reconfigures another install. A
+new install's `NYMERIA_SECRETS_KEY` comes only from its own root (a hosting
+switch inside one root keeps the key) or is generated; it is never copied
+from another install or from your shell (a shell export is named, never
+printed, because the file's key wins at boot). When the root it wrote is not
+what a bare `nymeria` command would find, the closing commands include
+`--root <dir>`. It refuses to write a local or background-service config
+into a root that holds a `.env.docker` unless `--root` names that root (the
+interactive wizard asks first; headless runs exit with code 2 before
+anything is written), and with `--root` it writes and warns. It suggests
+removing an installed background service only when that service runs this
+install's root: one per user account, so it may belong to another install.
+At boot, a process that loaded a `.env.docker` outside Docker warns when
+that file overrides the local config or points at Docker service hostnames
+(key and host names only).
 The beta Windows desktop release is client-only: it does not bundle a backend
 executable, does not read or write backend config files, and does not set
 `NYMERIA_PROJECT_ROOT` for a local backend process.
