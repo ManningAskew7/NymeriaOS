@@ -200,6 +200,12 @@ class WizardState:
     # whether the container answered, which app copies it removed), read by
     # the post-start note so it never names a copy this run cleared.
     app_settings_run: ShadowRun | None = None
+    # The keys the env files defined when run.py loaded them into os.environ
+    # (the OLD config on a reconfigure), set once finalize has written the
+    # Docker config: every compose call after that drops them from its
+    # environment, so `--env-file` supplies this run's values (finalize's
+    # `_compose_env`).
+    stale_compose_env_keys: frozenset[str] = frozenset()
 
     def resolved_api_port(self) -> int:
         """The chosen API port with the default applied."""

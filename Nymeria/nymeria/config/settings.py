@@ -798,11 +798,13 @@ RemovalStatus = Literal[
 
 
 class RuntimeSettingsReadError(OSError):
-    """The runtime settings file could not be read or parsed.
+    """The runtime settings file could not be read or parsed, and so nothing
+    was written.
 
-    Raised by ``remove_runtime_settings_keys`` before it writes (and by its
-    re-read after one), apart from a failed WRITE (a plain ``OSError``), so
-    the #434 clear route keeps answering a read failure 400 as it did.
+    Raised by ``remove_runtime_settings_keys`` only before it writes, apart
+    from a failed WRITE and a failed re-read after one (plain ``OSError``s),
+    so the #434 clear route keeps answering a read failure 400 "Nothing was
+    changed" as it did, and only when that is true.
     """
 
 
@@ -853,10 +855,10 @@ def remove_runtime_settings_keys(
     writer cannot replace, such as ``export KEY=...``: left alone and never
     claimed removed); ``relocation_refused``; ``malformed`` (not a key name,
     or a relocation pair that is not a known slot and its twin). Raises
-    ``RuntimeSettingsReadError`` when the file cannot be read (before
-    anything is written, or on the re-read after the write) and ``OSError``
-    when the write fails (nothing replaced). A shape with no runtime file
-    reports every well-formed key ``not_saved``.
+    ``RuntimeSettingsReadError`` when the file cannot be read before anything
+    is written, and a plain ``OSError`` when the write fails (nothing
+    replaced) or the re-read after it does (the replace already landed). A
+    shape with no runtime file reports every well-formed key ``not_saved``.
     """
     from .env_file import env_line_key, format_env_value, is_env_key_name, write_env_file
     from .vendor_keys import VENDOR_KEY_SLOTS
@@ -901,7 +903,14 @@ def remove_runtime_settings_keys(
     write_env_file(runtime, produced, merge=True, drop=drop)
     # A second line for the key in a shape the writer cannot drop (beside one
     # it could) still sets it: say so rather than claim it removed.
-    _lines, remaining = _read_runtime_settings(runtime)
+    try:
+        _lines, remaining = _read_runtime_settings(runtime)
+    except RuntimeSettingsReadError as exc:
+        # The replace above already landed, so this is not the read error
+        # a caller answers "Nothing was changed" for (#435 delta review).
+        raise OSError(
+            "the runtime settings file was rewritten but could not be read back"
+        ) from exc
     for key in drop:
         if remaining.get(key) is not None:
             status[key] = "unparsable"

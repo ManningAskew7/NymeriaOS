@@ -174,6 +174,13 @@ class _DockerStackSpec:
     # pins it for the same process-env-beats-env-file reason as api_port, and
     # the start command rebuilds when the existing image lacks it (#314).
     local_rag: bool | None = None
+    # The keys the env files defined when run.py loaded them into os.environ
+    # (WizardState.stale_compose_env_keys; empty until this run wrote its
+    # config). _compose_env drops them: those are the OLD config's values,
+    # and compose would interpolate them over --env-file, so the full stack's
+    # `environment:` block would keep the old route and compose would see no
+    # change to recreate (#435 delta DF1). The three pins above are set after.
+    stale_env_keys: frozenset[str] = frozenset()
 
 
 def _searxng_sidecar_selected(state: WizardState) -> bool:
@@ -238,6 +245,7 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
             command_env=command_env,
             api_port=port,
             image_version=_PACKAGE_VERSION if clone_free else None,
+            stale_env_keys=state.stale_compose_env_keys,
         )
     return _DockerStackSpec(
         compose_args=("--env-file", ".env.docker", *profile_args),
@@ -256,6 +264,7 @@ def _docker_stack_spec(state: WizardState) -> _DockerStackSpec:
         # so allow longer than the single container.
         health_timeout=120.0,
         local_rag=_config_bakes_local_rag(state),
+        stale_env_keys=state.stale_compose_env_keys,
     )
 
 
@@ -325,12 +334,18 @@ def _compose_argv(spec: _DockerStackSpec, *subcommand: str) -> list[str]:
 def _compose_env(spec: _DockerStackSpec) -> dict[str, str]:
     """Process env for a compose invocation (os.environ plus the stack's env).
 
-    API_PORT is always pinned to the spec's port: os.environ holds whatever
-    run.py's import-time dotenv load saw (the OLD config on a reconfigure, or
-    a foreign checkout's .env.docker), and compose resolves `${API_PORT}` from
-    the process env BEFORE --env-file.
+    os.environ holds whatever run.py's boot dotenv load saw (the OLD config on
+    a reconfigure, or a foreign checkout's .env.docker), and compose resolves
+    `${VAR}` from the process env BEFORE --env-file. So the keys those files
+    defined are dropped (``spec.stale_env_keys``, empty before this run wrote
+    its config), leaving compose exactly what a clean shell running the
+    printed command gets; the shell's own exports stay (wider isolation is
+    a separate item). API_PORT, and the image pins below, are then set from
+    the spec.
     """
     env = dict(os.environ)
+    for key in spec.stale_env_keys:
+        env.pop(key, None)
     env.update(dict(spec.command_env))
     env["API_PORT"] = str(spec.api_port)
     if spec.local_rag is not None:
@@ -814,6 +829,10 @@ def finalize(
         drop_stale_server_browser=drop_stale_server_browser,
         drop_stale_tuning=tuning_drop_env(state),
     )
+    if for_docker:
+        # From here on every compose call reads this run's file, never the
+        # launch-time copy of the old one (_DockerStackSpec.stale_env_keys).
+        state.stale_compose_env_keys = pre_write_env_keys
 
     console.print(f"[green]Config:[/green] {config_path}")
     _warn_shared_docker_root(console, config_path=config_path, for_docker=for_docker)
@@ -3242,14 +3261,15 @@ def _start_now_docker(
     _print_command(console, up_command)
     try:
         # env-gate: full-copy - compose interpolation reads the process
-        # environment, and on the slim default-port source-checkout path
-        # `--env-file` is deliberately NOT passed (see _docker_stack_spec), so
-        # the process env is the ONLY source for `${...}` in the compose file.
-        # Scrubbing here would silently substitute empty strings into the
-        # containers this is provisioning. The values ARE the stack's
-        # configuration and compose is the thing that installs them, so this is
-        # the same category as the API re-exec rather than a leak: what makes
-        # it acceptable is that the child is bringing up Nymeria itself.
+        # environment first, so the shell's environment passes through rather
+        # than being scrubbed into compose defaults. `_compose_env` drops only
+        # the launch-time copy of the OLD config's keys, so `--env-file`
+        # supplies this run's values; on the slim default-port source-checkout
+        # path (no `--env-file`, see _docker_stack_spec) the one `${...}` the
+        # started service reads is API_PORT, which it pins. The values ARE the
+        # stack's configuration and compose is the thing that installs them, so
+        # this is the same category as the API re-exec rather than a leak: what
+        # makes it acceptable is that the child is bringing up Nymeria itself.
         result = subprocess.run(
             _compose_argv(spec, *up),
             cwd=str(root),

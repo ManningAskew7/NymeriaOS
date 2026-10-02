@@ -883,3 +883,25 @@ def test_an_unreadable_file_raises_the_read_error_and_writes_nothing(container):
         settings_mod.remove_runtime_settings_keys(["OPENAI_API_KEY"])
 
     assert runtime.read_bytes() == before
+
+
+def test_a_read_failure_after_the_write_is_not_the_nothing_written_error(container, monkeypatch):
+    # Delta review finding 2: the re-read that checks for a leftover line runs
+    # AFTER the replace, so the key is already gone. The read error means
+    # "nothing was written" to the #434 route; this one must not say that.
+    _app, runtime = container
+    runtime.write_text(f"# keep\nOPENAI_API_KEY=sk-{DUMMY}\nUSER_TIMEZONE=UTC\n", encoding="utf-8")
+    real_read_text = Path.read_text
+
+    def unreadable_once_written(self, *args, **kwargs):
+        if self == runtime and b"OPENAI_API_KEY" not in self.read_bytes():
+            raise PermissionError("denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable_once_written)
+
+    with pytest.raises(OSError) as raised:
+        settings_mod.remove_runtime_settings_keys(["OPENAI_API_KEY"])
+
+    assert not isinstance(raised.value, settings_mod.RuntimeSettingsReadError)
+    assert runtime.read_bytes() == b"# keep\nUSER_TIMEZONE=UTC\n"

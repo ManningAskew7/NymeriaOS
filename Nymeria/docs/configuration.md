@@ -89,13 +89,15 @@ not running, or its image predates the check, the wizard names this run's keys
 and the commands to run once it is up; if the wizard then starts that stack
 itself, it asks the same questions once the stack is healthy (judged against
 the new config, so a saved copy equal to the new value is not asked about, but
-a shared key judged under the route it was saved beside, so a real vendor key
-still moves) and restarts the api (and on the full stack the worker) after
-removing anything. A key whose saved route setup cannot read (a `$VAR`
-reference in the old `.env.docker`) is never moved, and `--clear-app-overrides`
-keeps it with a warning. After a wizard-run start, the closing note also names
-any key this run removed that the app's copy still brings back, unless you
-declined to remove it.
+a shared key judged under the route the old `.env.docker` set, so a real vendor
+key still moves) and restarts the api (and on the full stack the worker) after
+removing anything. That is the file as it was before this run, not what the old
+containers ran: a `.env.docker` edited by hand after the last `up -d`, or a
+route key the old stack took from a shell export, is not seen. A key whose
+saved route setup cannot read (a `$VAR` reference in the old `.env.docker`) is
+never moved, and `--clear-app-overrides` keeps it with a warning. After a
+wizard-run start, the closing note also names any key this run removed that
+the app's copy still brings back, unless you declined to remove it.
 
 **Note:** Nymeria validates configuration on startup. If required keys are missing, you'll see clear error messages with instructions.
 

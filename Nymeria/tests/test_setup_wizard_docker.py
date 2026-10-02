@@ -2271,6 +2271,42 @@ def test_force_over_an_unchanged_config_restarts_instead_of_claiming_a_recreate(
         assert _restarts(fake) == []
 
 
+@pytest.mark.parametrize("start", [False, True])
+def test_force_with_a_rotated_key_rides_the_recreate_without_a_restart(
+    monkeypatch, tmp_path, capsys, start
+):
+    # Delta review finding 3: the F7 twin where --force rewrites the SAME
+    # keys with one VALUE changed. That is a different configuration, so the
+    # recreate applies the removal: the recreate copy, never the
+    # unchanged-config restart.
+    root, fake = _installed(
+        monkeypatch, tmp_path, *_OPENAI, app_file=f"OPENAI_API_KEY=sk-{DUMMY}-app\n"
+    )
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    capsys.readouterr()
+    flags = ["--start"] if start else []
+
+    assert setup_main([
+        *_docker(), "--root", str(root), *_OPENAI_NEW_KEY, "--force",
+        "--clear-app-overrides", *flags,
+    ]) == 0
+
+    assert fake.text().strip() == ""
+    out = _flat(capsys.readouterr().out)
+    assert "did not change" not in out
+    assert _restarts(fake) == []
+    up = "docker compose -f docker-compose.single.yml up -d"
+    if start:
+        assert (
+            "This takes effect when the stack is recreated: the start command "
+            f"(`{up}`) does that." in out
+        )
+        assert sum("up" in cmd for cmd in fake.calls) == 1
+    else:
+        assert f"The app's settings already changed, so recreate the stack now with `{up}`." in out
+        assert not any("up" in cmd for cmd in fake.calls)
+
+
 def test_after_the_start_a_copy_declined_before_it_is_not_named_again(monkeypatch, tmp_path):
     # Review NIT: the user said no before the start; the closing note does
     # not repeat it (a headless warning still is, see the W21 test).
@@ -2315,3 +2351,68 @@ def test_no_start_command_is_built_when_nothing_is_removed(tmp_path):
     assert run.checked is True
     assert built == []
     assert console.text == ""
+
+
+def _launched_from(monkeypatch, root: Path) -> dict[str, str]:
+    """os.environ as run.py's boot load (`_load_environment`) leaves it for an
+    `init` started from ``root``: every env file there merged in with override,
+    so the OLD config on a reconfigure."""
+    from dotenv import dotenv_values
+
+    from nymeria.config.settings import get_env_file_paths
+
+    loaded: dict[str, str] = {}
+    for path in get_env_file_paths(root):
+        if path.is_file():
+            loaded.update(
+                (key, value) for key, value in dotenv_values(path).items() if value is not None
+            )
+    for key, value in loaded.items():
+        monkeypatch.setenv(key, value)
+    return loaded
+
+
+@pytest.mark.parametrize("stack,port", [("full", []), ("slim", ["--port", "8097"])])
+def test_the_start_interpolates_this_runs_config_not_the_launch_env(
+    monkeypatch, tmp_path, stack, port
+):
+    # Delta review DF1: `init` runs with the OLD .env.docker in os.environ,
+    # and compose resolves `${VAR}` from the process env BEFORE --env-file,
+    # so the full stack's api/worker `environment:` block kept the old route
+    # and key, and compose saw nothing to recreate. Wherever --env-file is
+    # passed (the full stack always; the single container on a non-default
+    # port, say), compose must interpolate exactly the file this run wrote,
+    # while the shell's own environment (PATH, a DOCKER_HOST export) still
+    # reaches docker.
+    from dotenv import dotenv_values
+
+    from nymeria.setup.local_rag_install import DOCKER_LOCAL_RAG_ENV
+
+    root, fake = _installed(monkeypatch, tmp_path, *_GATEWAY, *port, stack=stack)
+    launched = _launched_from(monkeypatch, root)
+    assert launched["LLM_BASE_URL"] == "http://127.0.0.1:9/v1"
+    monkeypatch.setenv("NYMERIA_IT31_SHELL_ONLY", "kept")
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+
+    assert setup_main([*_docker(stack), "--root", str(root), *_ANTHROPIC, *port, "--start"]) == 0
+
+    new = {k: v for k, v in dotenv_values(root / ".env.docker").items() if v is not None}
+    [(up, up_env)] = [(cmd, env) for cmd, env in zip(fake.calls, fake.envs) if "up" in cmd]
+    assert up[up.index("--env-file") + 1] == ".env.docker"
+
+    def interpolated(key: str) -> str | None:
+        # Compose's precedence: the process env, then --env-file.
+        return up_env.get(key, new.get(key))
+
+    # The four old values the unfixed start handed compose: the route, the
+    # model, and the retired gateway key.
+    assert interpolated("LLM_PROVIDER") == "anthropic"
+    assert interpolated("LLM_MODEL") == "claude-dummy"
+    assert interpolated("LLM_BASE_URL") is None
+    assert interpolated("OPENAI_API_KEY") is None
+    # Every key the launch loaded, bar the three finalize pins on purpose.
+    pinned = {"API_PORT", "NYMERIA_VERSION", DOCKER_LOCAL_RAG_ENV}
+    assert {k for k in launched.keys() - pinned if interpolated(k) != new.get(k)} == set()
+    assert up_env["API_PORT"] == (port[1] if port else "8000")
+    assert up_env["NYMERIA_IT31_SHELL_ONLY"] == "kept"
+    assert up_env["PATH"] == os.environ["PATH"]
