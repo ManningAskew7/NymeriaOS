@@ -521,3 +521,194 @@ def test_searxng_probe_uses_policy_client(monkeypatch):
     assert calls["url"] == "http://searxng:8080/search"
     assert calls["factory_kwargs"].get("timeout") == credential_tests._DEFAULT_TIMEOUT_SECONDS
     assert calls["factory_kwargs"].get("follow_redirects") is True
+
+
+# ---------------------------------------------------------------------------
+# #244: a record stored under a declared spec alias is probed by its provider's
+# tester. The rule is the vault lookup's (`native_credentials.provider_candidates`:
+# the canonical name, its dash/underscore twins, and the declared aliases
+# verbatim), case-folded the way dispatch always was. A spelling the runtime
+# cannot match (a dash variant of an ALIAS) keeps `no_tester`, so the Test
+# button never verifies a record every tool would refuse to use (decision
+# "runtime-exact"). Widening `provider_candidates` later flips those cases on
+# purpose; the ratchet below follows it automatically.
+# ---------------------------------------------------------------------------
+
+
+def _recording_tester(calls: list[str], label: str):
+    async def tester(provider, kind, metadata, secret_fields, settings):
+        _ = kind, metadata, secret_fields, settings
+        calls.append(provider)
+        return CredentialTestResult(ok=True, message=label, code=f"fake:{label}")
+
+    return tester
+
+
+def _dispatch(name: str, secret: str = "it244-secret") -> CredentialTestResult:
+    return asyncio.run(
+        run_credential_test(
+            provider=name,
+            kind="api_key",
+            metadata={},
+            secret_fields={"api_key": secret},
+        )
+    )
+
+
+def test_declared_alias_runs_its_providers_real_tester(monkeypatch):
+    # The item's own example, through the real Todoist tester (only the network
+    # probe is faked), so the URL and header are what a real Test click sends.
+    # Red before the fix: `todoist_api` matched nothing and returned no_tester
+    # without probing.
+    captured = _capture_probe(monkeypatch)
+
+    result = _dispatch("todoist_api", secret="td-it244")
+
+    assert result.code == "verified"
+    assert result.verified is True
+    assert captured["url"] == "https://api.todoist.com/api/v1/projects"
+    assert captured["headers"] == {"Authorization": "Bearer td-it244"}
+
+
+def test_every_runtime_spelling_of_a_tested_provider_reaches_its_tester(monkeypatch):
+    # The ratchet: every name the vault lookup accepts for a provider with a
+    # registered tester dispatches to THAT tester, which receives the canonical
+    # provider name. Driven from the live spec registry, so a newly declared
+    # alias is covered without editing this test.
+    from nymeria.tools.credential_registry import iter_provider_specs
+    from nymeria.tools.native_credentials import provider_candidates
+
+    tested = [
+        spec for spec in iter_provider_specs() if spec.provider in credential_tests._TESTERS
+    ]
+    # Guard against a vacuous pass (an empty registry or renamed testers).
+    assert {"todoist", "tavily", "perplexity", "searxng"} <= {s.provider for s in tested}
+
+    checked = 0
+    for spec in tested:
+        calls: list[str] = []
+        monkeypatch.setitem(
+            credential_tests._TESTERS, spec.provider, _recording_tester(calls, spec.provider)
+        )
+        for name in sorted(provider_candidates(spec.provider, spec.aliases)):
+            calls.clear()
+            result = _dispatch(name)
+            assert result.code == f"fake:{spec.provider}", name
+            assert calls == [spec.provider], name
+            checked += 1
+    # 8 providers, 22 spellings today; the floor only rises as aliases are added.
+    assert checked >= 22
+
+
+def test_alias_dispatch_strips_and_folds_case(monkeypatch):
+    # The normalization dispatch always applied (strip, lower) happens BEFORE
+    # alias resolution, so a padded, upper-cased alias still resolves.
+    calls: list[str] = []
+    monkeypatch.setitem(credential_tests._TESTERS, "todoist", _recording_tester(calls, "todoist"))
+
+    result = _dispatch(" Todoist_API ")
+
+    assert result.code == "fake:todoist"
+    assert calls == ["todoist"]
+
+
+def test_exact_registrations_still_win(monkeypatch):
+    # Names with their own registration keep it: anthropic_direct has no spec
+    # at all; outlook is registered directly. And an exact registration
+    # outranks alias resolution: a dedicated tester registered under an alias
+    # name is the one that runs, not the canonical provider's.
+    captured = _capture_probe(monkeypatch)
+    result = _dispatch("anthropic_direct", secret="ant-it244")
+    assert result.code == "verified"
+    assert captured["url"] == "https://api.anthropic.com/v1/models"
+
+    outlook_calls: list[str] = []
+    monkeypatch.setitem(
+        credential_tests._TESTERS, "outlook", _recording_tester(outlook_calls, "outlook")
+    )
+    assert _dispatch("outlook").code == "fake:outlook"
+    assert outlook_calls == ["outlook"]
+
+    canonical_calls: list[str] = []
+    alias_calls: list[str] = []
+    monkeypatch.setitem(
+        credential_tests._TESTERS, "todoist", _recording_tester(canonical_calls, "todoist")
+    )
+    monkeypatch.setitem(
+        credential_tests._TESTERS, "todoist_api", _recording_tester(alias_calls, "alias")
+    )
+    assert _dispatch("todoist_api").code == "fake:alias"
+    assert alias_calls == ["todoist_api"]
+    assert canonical_calls == []
+
+
+def test_llm_fallback_is_unchanged_and_keeps_the_stored_name(monkeypatch):
+    # A known LLM provider with no spec tester still gets the generic
+    # openai-compatible probe at its registry base URL.
+    from nymeria.config.llm_providers import is_known_llm_provider, resolve_provider_base_url
+    from nymeria.tools.credential_registry import get_provider_spec
+
+    assert is_known_llm_provider("groq") and get_provider_spec("groq") is None
+    base = resolve_provider_base_url("groq", include_default=True)
+    assert base
+    captured = _capture_probe(monkeypatch)
+
+    result = _dispatch("groq", secret="gsk-it244")
+
+    assert result.code == "verified"
+    assert captured["url"] == f"{base.rstrip('/')}/models"
+    assert captured["headers"] == {"Authorization": "Bearer gsk-it244"}
+
+    # A spec provider WITHOUT a tester that is also an LLM id (openai) must
+    # still fall through to the LLM probe, not stop at "spec found".
+    assert get_provider_spec("openai") is not None
+    assert "openai" not in credential_tests._TESTERS
+    openai_base = resolve_provider_base_url("openai", include_default=True)
+    assert openai_base
+    assert _dispatch("openai", secret="sk-it244").code == "verified"
+    assert captured["url"] == f"{openai_base.rstrip('/')}/models"
+
+
+def test_specs_without_a_tester_and_unknown_names_stay_unprobed(monkeypatch):
+    # Alias resolution only finds testers that exist. Notion has a spec (and
+    # aliases) but no tester; an unknown name has neither.
+    captured = _capture_probe(monkeypatch)
+    for name in ("notion", "notion_api", "not-real-provider-it244"):
+        result = _dispatch(name)
+        assert (result.ok, result.verified, result.code) == (True, False, "no_tester"), name
+    assert captured == {}
+
+
+def test_spellings_the_runtime_cannot_match_stay_no_tester(monkeypatch):
+    # Decision "runtime-exact": `todoist-api` and `perplexity-api` are dash
+    # variants of ALIASES. `get_provider_spec` resolves them, but the vault
+    # lookup (`provider_candidates`) never matches a record stored under them,
+    # so every Todoist/Perplexity tool reports no credential. The Test button
+    # must not call such a record verified.
+    captured = _capture_probe(monkeypatch)
+    for name in ("todoist-api", "perplexity-api", "tavily-api", "searx-ng"):
+        result = _dispatch(name)
+        assert result.code == "no_tester", name
+    assert captured == {}
+
+
+def test_alias_of_an_llm_named_spec_without_a_tester_is_not_llm_probed(monkeypatch):
+    # When the canonical provider has no tester, the LLM fallback still keys
+    # on the STORED name, never the canonical one. The aws spec shows why:
+    # `aws` is also an LLM provider id, but its records (and those of its `s3`
+    # alias) are S3 access keys, which an openai-compatible `/models` probe
+    # would send as a Bearer token to an LLM host.
+    captured = _capture_probe(monkeypatch)
+    for name in ("s3", "aws_s3", "openai_api"):
+        assert _dispatch(name).code == "no_tester", name
+    assert captured == {}
+
+
+def test_perplexity_aliases_resolve_through_the_spec_not_registrations():
+    # The per-alias registrations the Perplexity fix added are gone, so the
+    # all-aliases dispatch test above now passes only through spec resolution.
+    # anthropic_direct (no spec) keeps its own.
+    assert "perplexity" in credential_tests._TESTERS
+    assert "perplexity_api" not in credential_tests._TESTERS
+    assert "pplx" not in credential_tests._TESTERS
+    assert credential_tests._TESTERS["anthropic_direct"] is credential_tests._test_anthropic

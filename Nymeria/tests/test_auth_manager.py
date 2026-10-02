@@ -474,6 +474,48 @@ def test_auth_test_pending_only_reports_pending(tmp_path, monkeypatch):
     assert body["pending_setup"] == 1
 
 
+def test_auth_test_probes_a_record_saved_under_a_declared_alias(tmp_path, monkeypatch):
+    # #244 through a real door: REST create, setup sessions and
+    # request_credential store the provider spelling verbatim, so a record
+    # saved as `todoist_api` (a declared Todoist alias, which the Todoist tools
+    # DO find) must be probed by the Todoist tester. Only the network probe is
+    # faked; dispatch is real. Before the fix this answered `no_tester` and
+    # marked the unprobed record active.
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="todoist alias key",
+        provider="todoist_api",
+        kind="api_key",
+        secret_fields={"api_key": "td-alias-it244"},
+    )
+    import nymeria.core.credential_tests as tests_mod
+
+    probed: list[tuple[str, dict]] = []
+
+    async def fake_probe(url, *, headers, secrets, timeout=10.0):
+        _ = secrets, timeout
+        probed.append((url, headers))
+        return CredentialTestResult(ok=False, message="HTTP 401", code="http_error")
+
+    monkeypatch.setattr(tests_mod, "_get_json_probe", fake_probe)
+
+    body = _test({"credential_id": record.id})
+
+    assert body["probe"]["code"] == "http_error"
+    assert probed == [
+        (
+            "https://api.todoist.com/api/v1/projects",
+            {"Authorization": "Bearer td-alias-it244"},
+        )
+    ]
+    updated = repo.get_credential(record.id)
+    assert updated is not None
+    assert updated.status == "invalid"
+    assert "td-alias-it244" not in json.dumps(body)
+
+
 # ---------------------------------------------------------------------------
 # auth_write
 # ---------------------------------------------------------------------------

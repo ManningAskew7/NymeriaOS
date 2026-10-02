@@ -62,6 +62,52 @@ def _base_url(metadata: dict[str, Any], *keys: str) -> Optional[str]:
     return None
 
 
+def _spec_provider_for(provider_norm: str) -> Optional[str]:
+    """The canonical spec provider a stored name belongs to, as the TOOLS see it.
+
+    Only names the vault lookup itself accepts for that spec count:
+    ``native_credentials.provider_candidates`` (the canonical name, its
+    dash/underscore twins, the declared aliases). ``get_provider_spec`` alone
+    also resolves dash variants of an ALIAS (``todoist-api``), which no tool's
+    lookup matches; probing those would mark a record verified that every tool
+    refuses to use, so they stay unresolved (#244). ``provider_norm`` arrives
+    case-folded (dispatch always folded case) and ``get_provider_spec`` folds
+    too, but its index keeps a camelCase alias as declared, so such an alias
+    (``microsoftGraph``) never resolves here; no provider with one has a
+    tester. Imported lazily: the registry loads every integration module, and
+    an exact registration never needs it.
+    """
+    from ..tools.credential_registry import get_provider_spec
+    from ..tools.native_credentials import provider_candidates
+
+    spec = get_provider_spec(provider_norm)
+    if spec is None or provider_norm not in provider_candidates(spec.provider, spec.aliases):
+        return None
+    return spec.provider.strip().lower()
+
+
+def _resolve_tester(provider_norm: str) -> tuple[Optional[CredentialTester], str]:
+    """The tester for a stored (stripped, lowercased) provider name, and the name to pass it.
+
+    An exact registration wins (``anthropic_direct`` and ``outlook`` have no
+    spec); then a declared alias of a spec reaches the canonical provider's
+    tester, called with the canonical name; then the openai-compatible LLM
+    probe, keyed on the STORED name only (the aws spec's canonical name is also
+    an LLM id, but its S3 records are no LLM key); else nothing (``no_tester``).
+    """
+    tester = _TESTERS.get(provider_norm)
+    if tester is not None:
+        return tester, provider_norm
+    canonical = _spec_provider_for(provider_norm)
+    if canonical is not None:
+        tester = _TESTERS.get(canonical)
+        if tester is not None:
+            return tester, canonical
+    if is_known_llm_provider(provider_norm):
+        return _test_openai_compatible_llm, provider_norm
+    return None, provider_norm
+
+
 async def test_credential_fields(
     *,
     provider: str,
@@ -81,9 +127,7 @@ async def test_credential_fields(
             verified=False,
         )
 
-    tester = _TESTERS.get(provider_norm)
-    if tester is None and is_known_llm_provider(provider_norm):
-        tester = _test_openai_compatible_llm
+    tester, tester_provider = _resolve_tester(provider_norm)
     if tester is None:
         return CredentialTestResult(
             ok=True,
@@ -94,7 +138,7 @@ async def test_credential_fields(
 
     try:
         return await asyncio.wait_for(
-            tester(provider_norm, kind, clean_metadata, secret_fields, settings),
+            tester(tester_provider, kind, clean_metadata, secret_fields, settings),
             timeout=max(0.1, float(timeout_seconds)),
         )
     except asyncio.TimeoutError:
@@ -639,10 +683,10 @@ register_credential_tester("exa", _test_exa)
 register_credential_tester("firecrawl", _test_firecrawl)
 register_credential_tester("brave", _test_brave)
 register_credential_tester("searxng", _test_searxng)
-# Aliases mirror tools/web.py's ProviderCredentialSpec for the same provider.
+# Primaries only: a declared spec alias (`perplexity_api`, `pplx`, `todoist_api`)
+# reaches its provider's tester through `_resolve_tester` (#244). Register a
+# name here only when it has no spec to resolve through (`anthropic_direct`).
 register_credential_tester("perplexity", _test_perplexity)
-register_credential_tester("perplexity_api", _test_perplexity)
-register_credential_tester("pplx", _test_perplexity)
 register_credential_tester("outlook", _test_outlook)
 
 

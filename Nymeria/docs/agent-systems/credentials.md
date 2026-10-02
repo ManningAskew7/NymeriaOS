@@ -634,7 +634,13 @@ The registry includes probes for GitHub, Todoist, Anthropic, Tavily, Exa,
 Firecrawl, Brave, SearXNG, Perplexity (a `GET /v1/models` auth check;
 Perplexity's model list lives under `/v1`, so the generic LLM fallback
 below, which probes `/models` on the registry's chat base URL, 404s on
-every key), and known OpenAI-compatible LLM providers. If a
+every key), and known OpenAI-compatible LLM providers. A record saved under a
+provider's declared alias (`todoist_api`, `tvly`, `pplx`) is probed by that
+provider's tester, under the names the tools' vault lookup accepts: the
+provider name, its dash/underscore twins and its declared aliases (the test
+ignores letter case, as it always has). A spelling the tools cannot find (a
+dash variant of an alias, such as `todoist-api`) is deliberately not probed,
+so a record the tools would never use is not reported as verified. If a
 provider has no tester, the test result is `ok=true`, `verified=false`,
 `code="no_tester"`, with an explicit "no verification probe yet" message
 rather than pretending the provider accepted the key. Prompt submit responses
