@@ -147,7 +147,7 @@ HEALTH_POLL_SECONDS = 3
 HTTP_TIMEOUT_SECONDS = 10
 
 # The one shape of a commit id here: markers, stamps, HEAD and a target's
-# reported commit all go through it (a sha256 repository is backlog #461).
+# reported commit all go through it (a sha256 repository is backlog #450).
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 FILES_DIGEST_RE = re.compile(r"[0-9a-f]{16}")
 
