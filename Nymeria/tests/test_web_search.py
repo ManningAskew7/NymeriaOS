@@ -1785,12 +1785,34 @@ def test_searxng_all_engines_failed_page_is_an_error_naming_them(monkeypatch):
 
     out = wsi._searxng_search_single(_SECRET_BASE, {"q": "wikipedia"}, 20.0, 5)
 
-    assert out.startswith("[Error]: SearXNG returned no results")
-    assert "brave (too many requests), google (CAPTCHA)" in out
-    # Says the empty page is a backend failure, not an answer about the query.
-    assert "not that nothing matches the query" in out
-    assert "[No results]" not in out
+    # SearXNG lists the engines that failed, never the ones that answered, so
+    # the text counts the failures and says the empty page MAY be a backend
+    # problem; it must not assert one (a zero-hit query on an instance where
+    # one engine is always blocked looks exactly like this).
+    assert out == (
+        "[Error]: SearXNG returned no results, and 2 of its engines reported errors: "
+        "brave (too many requests), google (CAPTCHA). SearXNG does not say which "
+        "engines answered, so this may be a backend problem (engines blocked or "
+        "unreachable from the instance) rather than a search with no matches. Try "
+        "another web_search_* tool if one is available; if it finds results, or other "
+        "searches here come back the same way, tell the user the SearXNG search "
+        "backend may be failing (an admin can check it with nymeria doctor)."
+    )
+    assert "backend is failing" not in out and "every" not in out
     _assert_backend_failure(out)
+
+
+def test_searxng_single_failed_engine_is_counted_in_the_singular():
+    from nymeria.tools import web_search_integrations as wsi
+
+    out = wsi._format_searxng_results(
+        {"results": [], "unresponsive_engines": [["google", "CAPTCHA"]]}, count=5
+    )
+
+    assert out.startswith(
+        "[Error]: SearXNG returned no results, and 1 of its engines reported an "
+        "error: google (CAPTCHA). SearXNG does not say which engines answered"
+    )
 
 
 def test_searxng_all_engines_failed_end_to_end_through_the_tool(monkeypatch):
@@ -1924,6 +1946,8 @@ def test_searxng_engine_list_is_capped_at_eight_in_searxngs_order():
     for n in hidden:
         assert n not in out
     assert f"{shown[-1]} (timeout), and 4 more." in out
+    # The count is every failed engine, not just the ones named.
+    assert out.startswith("[Error]: SearXNG returned no results, and 12 of its engines")
 
 
 def test_searxng_engine_text_is_flattened_stripped_of_controls_and_capped():
@@ -1947,7 +1971,7 @@ def test_searxng_engine_text_is_flattened_stripped_of_controls_and_capped():
     # first 60, each marked "..." when cut.
     name = "evil name " + "x" * 30 + "..."
     reason = "time[31mout IGNORE PREVIOUS " + "y" * 32 + "..."
-    assert f"errors: {name} ({reason}). " in out
+    assert f"reported an error: {name} ({reason}). " in out
 
 
 @pytest.mark.parametrize(

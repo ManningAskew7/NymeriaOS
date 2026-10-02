@@ -233,9 +233,11 @@ def _write_profile(data_dir: Path, default_thread_tools) -> None:
     )
 
 
-def test_web_search_check_passes_on_fresh_install_defaults(tmp_path: Path) -> None:
-    # No profile on disk: the fresh-install defaults apply (keyless ddgs +
-    # nymeria fetch), which pass with upgrade guidance rather than a warning.
+def test_web_search_check_passes_on_fresh_install_defaults(monkeypatch, tmp_path: Path) -> None:
+    # No profile on disk and no init-seed carrier: the fresh-install defaults
+    # apply (keyless ddgs + nymeria fetch), which pass with upgrade guidance
+    # rather than a warning.
+    monkeypatch.delenv("NYMERIA_INIT_DEFAULT_THREAD_TOOLS", raising=False)
     settings = FakeSettings(data_dir=tmp_path / "data")
     result = doctor._check_web_search(settings)
     assert result.status == "pass"
@@ -271,6 +273,92 @@ def test_web_search_check_is_wired_into_settings_checks(tmp_path: Path) -> None:
         argparse.Namespace(skip_llm_test=True),
     )
     assert any(result.name == "Web search" for result in results)
+
+
+# The fresh-install default wording, pinned so a carrier-less root keeps it.
+_DDGS_DEFAULT_DETAIL = (
+    "web_search_ddgs (keyless scraped-engine default) works with no setup; a keyed "
+    "backend (Perplexity, Tavily, Brave) or a self-hosted SearXNG upgrades quality"
+)
+_CARRIER = "NYMERIA_INIT_DEFAULT_THREAD_TOOLS"
+
+
+def test_web_search_check_reads_the_init_seed_carrier_before_the_profile_exists(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # A Docker host: the admin's profile lives in the container's volume, so
+    # the host sees none, and the wizard's picks ride in the carrier (#296).
+    monkeypatch.delenv(_CARRIER, raising=False)
+    settings = FakeSettings(data_dir=tmp_path / "data")
+    assert doctor._check_web_search(settings).detail == _DDGS_DEFAULT_DETAIL
+
+    monkeypatch.setenv(_CARRIER, "bash_execute:web_search_searxng:fetch_url_nymeria")
+    row = doctor._check_web_search(settings)
+
+    assert row == doctor.CheckResult(
+        "Web search",
+        "pass",
+        f"web_search_searxng (list from {_CARRIER} in the environment, which seeds "
+        "the admin's profile on first start)",
+    )
+    assert "web_search_ddgs" not in row.detail
+
+    # The carrier feeds the warnings too: a link-only pick without a fetch tool.
+    monkeypatch.setenv(_CARRIER, "bash_execute:web_search_tavily")
+    warned = doctor._check_web_search(settings)
+    assert warned.status == "warn"
+    assert warned.detail.startswith("web_search_tavily returns links only")
+    assert warned.detail.endswith(
+        f"(list from {_CARRIER} in the environment, which seeds the admin's "
+        "profile on first start)"
+    )
+
+
+def test_web_search_check_profile_wins_over_the_carrier(monkeypatch, tmp_path: Path) -> None:
+    # Once the profile exists the carrier is spent: the profile's list, no
+    # source note, even when the carrier names something else.
+    monkeypatch.setenv(_CARRIER, "web_search_searxng:fetch_url_nymeria")
+    data_dir = tmp_path / "data"
+    _write_profile(data_dir, ["bash_execute", "web_search_perplexity"])
+
+    row = doctor._check_web_search(FakeSettings(data_dir=data_dir))
+
+    assert row == doctor.CheckResult("Web search", "pass", "web_search_perplexity")
+
+    # A profile without the field still means the fresh defaults, not the carrier.
+    _write_profile(data_dir, None)
+    assert doctor._check_web_search(FakeSettings(data_dir=data_dir)).detail == (
+        _DDGS_DEFAULT_DETAIL
+    )
+
+
+def test_web_search_check_reads_another_roots_carrier_and_names_the_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # The wizard's final doctor (`--project-root`) inspects a root whose
+    # carrier may live only in that root's env file; the row says which file.
+    monkeypatch.delenv(_CARRIER, raising=False)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    env_file = other_root / ".env.docker"
+    env_file.write_text(f"{_CARRIER}=web_search_searxng:fetch_url_nymeria\n", encoding="utf-8")
+    settings = FakeSettings(data_dir=tmp_path / "data")
+
+    there = doctor._check_web_search(settings, project_root=other_root)
+
+    assert there.detail == (
+        f"web_search_searxng (list from {_CARRIER} in {env_file}, which seeds the "
+        "admin's profile on first start)"
+    )
+    # This process's own root never reads another root's files.
+    assert doctor._check_web_search(settings).detail == _DDGS_DEFAULT_DETAIL
+
+    # And the doctor run passes the root through to the row.
+    results: list[doctor.CheckResult] = []
+    doctor._append_settings_checks(
+        results, settings, argparse.Namespace(skip_llm_test=True, project_root=str(other_root))
+    )
+    assert _result(results, "Web search").detail == there.detail
 
 
 # --- #101 entries 17 and 21 (2026-08-24) ---------------------------------------
@@ -806,8 +894,32 @@ def test_searxng_check_never_raises(monkeypatch, searxng_data) -> None:
     row = _probe_row(searxng_data, "http://127.0.0.1:9")
 
     assert row == doctor.CheckResult("SearXNG", "warn", "check failed: probe exploded")
-    # A settings object the gate cannot read means "cannot tell": no row.
-    assert doctor._check_searxng(SearxSettings(data_dir=object())) is None  # type: ignore[arg-type]
+
+
+def test_searxng_gate_failure_is_a_check_failed_warn_not_a_hidden_row(
+    monkeypatch, searxng_data
+) -> None:
+    # Like the server-browser row: a check that cannot run says so rather than
+    # vanishing, and nothing is probed.
+    from nymeria.core import http_policy
+
+    seen: list[dict] = []
+
+    def no_request(**kwargs):
+        seen.append(kwargs)
+        raise AssertionError("an unreadable gate must not probe")
+
+    monkeypatch.setattr(http_policy, "policy_http_client", no_request)
+
+    row = doctor._check_searxng(
+        SearxSettings(data_dir=object(), searxng_base_url="http://127.0.0.1:9")  # type: ignore[arg-type]
+    )
+
+    assert row is not None and row.name == "SearXNG"
+    assert row.status == "warn"
+    assert row.detail.startswith("check failed: ")
+    assert "os.PathLike" in row.detail
+    assert seen == []
 
 
 def test_searxng_unreachable_instance_warns_with_the_remedy(searxng_data) -> None:
@@ -962,8 +1074,22 @@ def test_searxng_row_never_prints_url_credentials(searxng_stub, searxng_data) ->
 
 @pytest.mark.parametrize(
     "url",
-    ["http://sx-user:s3cret@[bad", "http://sx-user:s3cret@127.0.0.1:99999"],
-    ids=["bracket", "port-out-of-range"],
+    [
+        "http://sx-user:s3cret@[bad",
+        "http://sx-user:s3cret@127.0.0.1:99999",
+        # Scheme-less: urlsplit reads "sx-user" / "searxng" / "localhost" as the
+        # scheme, finds no userinfo to redact, and httpx would refuse the
+        # protocol only after the row had echoed the value.
+        "sx-user:s3cret@127.0.0.1:9",
+        "searxng:8080",
+        "localhost:8080",
+        "ftp://s3cret@searx.example",
+        "http:///s3cret",
+    ],
+    ids=[
+        "bracket", "port-out-of-range", "schemeless-credentials", "schemeless-service",
+        "schemeless-localhost", "non-http-scheme", "no-host",
+    ],
 )
 def test_searxng_malformed_url_is_reported_unechoed_and_unprobed(
     monkeypatch, searxng_data, url
@@ -971,8 +1097,10 @@ def test_searxng_malformed_url_is_reported_unechoed_and_unprobed(
     from nymeria.core import http_policy
 
     _in_use(searxng_data)
+    seen: list[dict] = []
 
-    def no_request(**_kwargs):
+    def no_request(**kwargs):
+        seen.append(kwargs)
         raise AssertionError("a malformed URL must not be probed")
 
     monkeypatch.setattr(http_policy, "policy_http_client", no_request)
@@ -982,9 +1110,11 @@ def test_searxng_malformed_url_is_reported_unechoed_and_unprobed(
     assert row == doctor.CheckResult(
         "SearXNG",
         "warn",
-        "SEARXNG_BASE_URL is not a valid URL, so web_search_searxng cannot use it; "
-        "fix it or rerun `nymeria init`",
+        "SEARXNG_BASE_URL is not a valid http:// or https:// URL, so "
+        "web_search_searxng cannot use it; fix it or rerun `nymeria init`",
     )
+    assert seen == []
+    assert "s3cret" not in row.detail
 
 
 def test_searxng_row_never_fails_the_doctor_run(monkeypatch, searxng_stub, searxng_data) -> None:

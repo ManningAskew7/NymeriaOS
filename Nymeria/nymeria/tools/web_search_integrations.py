@@ -167,6 +167,14 @@ _SEARXNG_FAILURE_TAIL = (
     "Use another web_search_* tool if one is available, and tell the user the "
     "SearXNG search backend is failing (an admin can check it with nymeria doctor)."
 )
+# The engines-failed page only MAY be a backend failure (SearXNG lists the
+# engines that failed, never the ones that answered), so its tail conditions
+# the claim the agent passes on rather than asserting it.
+_SEARXNG_ENGINES_FAILED_TAIL = (
+    "Try another web_search_* tool if one is available; if it finds results, or "
+    "other searches here come back the same way, tell the user the SearXNG search "
+    "backend may be failing (an admin can check it with nymeria doctor)."
+)
 _SEARXNG_HTTP_HINTS = {
     403: (
         "The instance refused a JSON search (SearXNG answers 403 when its "
@@ -975,24 +983,32 @@ def _format_searxng_results(data: dict, count: int) -> str:
 
     An empty page is "[No results]" only when no engine reported an error. A
     page with no results AND failed engines (``unresponsive_engines``; still
-    HTTP 200 when every engine failed) is a backend failure and returns an
-    ``[Error]`` naming them, so the prefix consumers (ordered batches, /prune,
-    workflow verbs, trigger notify) see a failure, not an answer (#296).
-    Failed engines beside real results are only logged: on a datacenter IP
-    some engine fails on every call, and the agent cannot act on that.
+    HTTP 200 when every engine failed) returns an ``[Error]`` naming them, so
+    the prefix consumers (ordered batches, /prune, workflow verbs, trigger
+    notify) see a possible failure, not an answer (#296). The wording is
+    hedged: SearXNG lists the engines that failed but not the ones that
+    answered, so "every engine failed" and "one failed and the rest found
+    nothing" look the same; the text counts the failures and says the empty
+    page MAY be a backend problem. Failed engines beside real results are only
+    logged: on a datacenter IP some engine fails on every call, and the agent
+    cannot act on that.
     """
     raw_results = data.get("results")
     results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     failed = unresponsive_engines(data)
     if failed and not results:
         described = describe_engines(failed)
-        logger.warning("SearXNG returned no results; its engines failed: %s", described)
+        failures = (
+            "1 of its engines reported an error"
+            if len(failed) == 1
+            else f"{len(failed)} of its engines reported errors"
+        )
+        logger.warning("SearXNG returned no results; %s: %s", failures, described)
         return (
-            "[Error]: SearXNG returned no results, and its search engines reported "
-            f"errors: {described}. An empty page with engine errors means the "
-            "upstream engines are blocking or cannot be reached from the SearXNG "
-            "instance, not that nothing matches the query. "
-            f"{_SEARXNG_FAILURE_TAIL}"
+            f"[Error]: SearXNG returned no results, and {failures}: {described}. "
+            "SearXNG does not say which engines answered, so this may be a backend "
+            "problem (engines blocked or unreachable from the instance) rather than "
+            f"a search with no matches. {_SEARXNG_ENGINES_FAILED_TAIL}"
         )
     if failed:
         logger.info(
@@ -1141,9 +1157,10 @@ def web_search_searxng(
         Ranked sources as "N. <title>[ [news]]\\n   <url> · <date>\\n   <snippet>".
         Non-general categories are tagged. Batch mode: sections separated by
         "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
-        "[No results]" means a genuinely empty search; an empty page whose
-        upstream engines failed is an "[Error]" naming them (the search
-        backend is failing, not the query).
+        "[No results]" means a genuinely empty search; an empty page on which
+        upstream engines reported errors is an "[Error]" naming them (it may
+        be a backend problem rather than no matches: SearXNG does not say
+        which engines answered).
     """
     # Parse queries (batch takes precedence over single query).
     query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)

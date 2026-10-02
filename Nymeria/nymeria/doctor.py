@@ -98,7 +98,7 @@ def _append_settings_checks(
         [
             _check_data_dir(settings),
             _check_secrets_key(project_root=_project_root_override(args)),
-            _check_web_search(settings),
+            _check_web_search(settings, project_root=_project_root_override(args)),
         ]
     )
     searxng = _check_searxng(settings, project_root=_project_root_override(args))
@@ -289,35 +289,92 @@ def _check_local_rag(settings: Any) -> CheckResult | None:
     )
 
 
-def _check_web_search(settings: Any) -> CheckResult:
+def _init_seed_tools(project_root: Path | None) -> tuple[list[str], str] | None:
+    """The init-seed carrier's tool names and where they were read, else None.
+
+    ``NYMERIA_INIT_DEFAULT_THREAD_TOOLS`` is what the bootstrap admin's profile
+    is seeded with when it is first created; on a Docker host that profile lives
+    in the container's volume and the wizard's picks ride in the env file. The
+    process environment wins (``run.py`` loaded this install's env files into
+    it); for another root, that root's own env files fill in, a later file over
+    an earlier one, as for the secrets key. The second element names the source
+    for a row's detail. Callers consult this only while the bootstrap profile
+    does not exist: once it does, the carrier is spent.
+    """
+    from .config.init_seed_env import INIT_DEFAULT_THREAD_TOOLS_ENV, parse_init_name_list
+
+    names = parse_init_name_list(os.environ.get(INIT_DEFAULT_THREAD_TOOLS_ENV))
+    if names:
+        return names, f"{INIT_DEFAULT_THREAD_TOOLS_ENV} in the environment"
+    if project_root is None:
+        return None
+    from dotenv import dotenv_values
+
+    found: tuple[list[str], str] | None = None
+    for env_path in get_env_file_paths(project_root):
+        try:
+            if not env_path.is_file():
+                continue
+            names = parse_init_name_list(dotenv_values(env_path).get(INIT_DEFAULT_THREAD_TOOLS_ENV))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if names:
+            found = (names, f"{INIT_DEFAULT_THREAD_TOOLS_ENV} in {env_path}")
+    return found
+
+
+def _bootstrap_profile_path(settings: Any) -> Path:
+    from .core.accounts import BOOTSTRAP_USER_ID
+
+    return Path(settings.data_dir) / "users" / BOOTSTRAP_USER_ID / "profile.json"
+
+
+def _check_web_search(settings: Any, *, project_root: Path | None = None) -> CheckResult:
     """Web capability of the default toolset: search present, fetch dependency met.
 
     Reads the bootstrap admin's ``default_thread_tools`` straight from
     ``profile.json`` (no UserProfileManager, which would side-effect a fresh
-    install by seeding the profile); an absent or unset profile means the
-    fresh-install defaults apply, whose web portion is
-    ``DEFAULT_WEB_TOOL_NAMES``. Warns when the defaults carry no web search at
-    all, or a link-only backend without a fetch tool (search results would be
-    unreadable); the deliberate keyless ddgs default passes with upgrade
-    guidance rather than warning on every fresh install.
+    install by seeding the profile). While that profile does not exist, the
+    init-seed carrier it will be seeded from (:func:`_init_seed_tools`, the
+    Docker host's case) is read instead, and the detail names where; with
+    neither, or a profile without the field, the fresh-install defaults apply,
+    whose web portion is ``DEFAULT_WEB_TOOL_NAMES``. Warns when the defaults
+    carry no web search at all, or a link-only backend without a fetch tool
+    (search results would be unreadable); the deliberate keyless ddgs default
+    passes with upgrade guidance rather than warning on every fresh install.
     """
     import json
 
-    from .core.accounts import BOOTSTRAP_USER_ID
     from .core.user_profile import DEFAULT_WEB_TOOL_NAMES
 
     names = None
+    source = None
     try:
-        profile_path = (
-            Path(settings.data_dir) / "users" / BOOTSTRAP_USER_ID / "profile.json"
-        )
+        profile_path = _bootstrap_profile_path(settings)
         if profile_path.exists():
             raw = json.loads(profile_path.read_bytes())
             names = (raw.get("tool_preferences") or {}).get("default_thread_tools")
+        else:
+            seeded = _init_seed_tools(project_root)
+            if seeded is not None:
+                names, source = seeded
     except Exception:  # noqa: BLE001 - diagnostics must not crash on a bad profile
         names = None
+        source = None
     if not isinstance(names, list):
         names = list(DEFAULT_WEB_TOOL_NAMES)
+        source = None
+    row = _web_search_row(names)
+    if source is not None:
+        row = CheckResult(
+            row.name,
+            row.status,
+            f"{row.detail} (list from {source}, which seeds the admin's profile on first start)",
+        )
+    return row
+
+
+def _web_search_row(names: list[Any]) -> CheckResult:
     search = [n for n in names if isinstance(n, str) and n.startswith("web_search_")]
     fetch = [n for n in names if isinstance(n, str) and n.startswith("fetch_url_")]
     if not search:
@@ -356,18 +413,12 @@ def _searxng_in_default_tools(settings: Any, project_root: Path | None) -> bool:
     Raw reads of every ``data/users/*/profile.json`` (never UserProfileManager,
     which seeds a missing profile as a side effect), so a non-admin account
     carrying SearXNG counts too. When the bootstrap admin's profile does not
-    exist yet, the init-seed carrier (``NYMERIA_INIT_DEFAULT_THREAD_TOOLS``,
-    what that profile will be seeded with) counts as well: on a Docker host the
-    profile lives in the container's volume and the wizard's picks ride in the
-    env file. The process environment wins; another root's own env files fill
-    in, as for the secrets key. With neither, the fresh defaults apply, and
-    they carry no SearXNG. A per-thread enable is not covered here; the tool's
-    own ``[Error]`` covers it at run time.
+    exist yet, the init-seed carrier (:func:`_init_seed_tools`, the same reader
+    the ``Web search`` row uses) counts as well. With neither, the fresh
+    defaults apply, and they carry no SearXNG. A per-thread enable is not
+    covered here; the tool's own ``[Error]`` covers it at run time.
     """
     import json
-
-    from .config.init_seed_env import INIT_DEFAULT_THREAD_TOOLS_ENV, parse_init_name_list
-    from .core.accounts import BOOTSTRAP_USER_ID
 
     data_dir = getattr(settings, "data_dir", None)
     users_dir = Path(data_dir) / "users" if data_dir else None
@@ -385,19 +436,10 @@ def _searxng_in_default_tools(settings: Any, project_root: Path | None) -> bool:
             continue
         if isinstance(names, list) and _SEARXNG_TOOL in names:
             return True
-    if users_dir is not None and (users_dir / BOOTSTRAP_USER_ID / "profile.json").exists():
+    if users_dir is not None and _bootstrap_profile_path(settings).exists():
         return False
-    carrier = os.environ.get(INIT_DEFAULT_THREAD_TOOLS_ENV) or ""
-    if not carrier and project_root is not None:
-        from dotenv import dotenv_values
-
-        for env_path in get_env_file_paths(project_root):
-            try:
-                if env_path.is_file():
-                    carrier = dotenv_values(env_path).get(INIT_DEFAULT_THREAD_TOOLS_ENV) or carrier
-            except (OSError, UnicodeDecodeError, ValueError):
-                continue
-    return _SEARXNG_TOOL in parse_init_name_list(carrier)
+    seeded = _init_seed_tools(project_root)
+    return seeded is not None and _SEARXNG_TOOL in seeded[0]
 
 
 def _check_searxng(settings: Any, *, project_root: Path | None = None) -> CheckResult | None:
@@ -417,11 +459,8 @@ def _check_searxng(settings: Any, *, project_root: Path | None = None) -> CheckR
     try:
         if not _searxng_in_default_tools(settings, project_root):
             return None
-    except Exception:  # noqa: BLE001 - cannot tell whether SearXNG is used: no row
-        return None
-    try:
         return _searxng_row(settings)
-    except Exception as exc:  # noqa: BLE001 - diagnostics report, never raise
+    except Exception as exc:  # noqa: BLE001 - diagnostics report, never raise or hide
         return CheckResult("SearXNG", "warn", f"check failed: {_compact_error(exc)}")
 
 
@@ -441,13 +480,18 @@ def _searxng_row(settings: Any) -> CheckResult:
     try:
         parts = urlsplit(base_url)
         parts.port  # noqa: B018 - raises on a malformed port
+        usable = parts.scheme in ("http", "https") and bool(parts.hostname)
     except ValueError:
-        # Never echoed: a malformed URL can still carry credentials.
+        usable = False
+    if not usable:
+        # Never echoed and never probed: a malformed or scheme-less value
+        # ("user:pw@host:1", "searxng:8080") can still carry credentials, and
+        # urlsplit finds no userinfo in it to redact.
         return CheckResult(
             "SearXNG",
             "warn",
-            "SEARXNG_BASE_URL is not a valid URL, so web_search_searxng cannot use "
-            "it; fix it or rerun `nymeria init`",
+            "SEARXNG_BASE_URL is not a valid http:// or https:// URL, so "
+            "web_search_searxng cannot use it; fix it or rerun `nymeria init`",
         )
     service_host = _docker_service_host(base_url)
     if service_host and not _in_container():

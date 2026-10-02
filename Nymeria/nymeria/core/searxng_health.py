@@ -44,9 +44,9 @@ from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 from urllib.parse import urlsplit
 
-CANARY_QUERY = "wikipedia"
-MAX_NAMED_ENGINES = 8
-PROBE_CONNECT_TIMEOUT_SECONDS = 3.0
+_CANARY_QUERY = "wikipedia"
+_MAX_NAMED_ENGINES = 8
+_PROBE_CONNECT_TIMEOUT_SECONDS = 3.0
 PROBE_TIMEOUT_SECONDS = 10.0
 
 _NAME_CAP = 40
@@ -115,7 +115,7 @@ def unresponsive_engines(page: Any) -> list[tuple[str, str]]:
 
 
 def describe_engines(
-    engines: Sequence[tuple[str, str]], *, limit: int = MAX_NAMED_ENGINES
+    engines: Sequence[tuple[str, str]], *, limit: int = _MAX_NAMED_ENGINES
 ) -> str:
     """``"brave (too many requests), google (CAPTCHA), and 3 more"``.
 
@@ -129,7 +129,7 @@ def describe_engines(
     return ", ".join(named)
 
 
-def scrub_address(text: str, base_url: str) -> str:
+def _scrub_address(text: str, base_url: str) -> str:
     """``text`` with the base URL and its host part replaced by a placeholder.
 
     Transport errors name an errno, not the address, today; this keeps a future
@@ -150,13 +150,13 @@ def scrub_address(text: str, base_url: str) -> str:
 def transport_reason(exc: BaseException, base_url: str) -> str:
     """One line describing a transport failure, address scrubbed, capped."""
     text = " ".join((str(exc) or exc.__class__.__name__).split())
-    text = scrub_address(text, base_url)
+    text = _scrub_address(text, base_url)
     if len(text) > _REASON_TEXT_CAP:
         text = text[:_REASON_TEXT_CAP].rstrip() + "..."
     return text
 
 
-def probe_searxng(base_url: str, *, query: str = CANARY_QUERY) -> SearxngProbe:
+def probe_searxng(base_url: str, *, query: str = _CANARY_QUERY) -> SearxngProbe:
     """Run one canary search against ``base_url`` and report what came back.
 
     The same request shape as the tool (``format=json``, ``categories=general``,
@@ -175,7 +175,7 @@ def probe_searxng(base_url: str, *, query: str = CANARY_QUERY) -> SearxngProbe:
         "safesearch": 1,
         "pageno": 1,
     }
-    timeout = httpx.Timeout(PROBE_TIMEOUT_SECONDS, connect=PROBE_CONNECT_TIMEOUT_SECONDS)
+    timeout = httpx.Timeout(PROBE_TIMEOUT_SECONDS, connect=_PROBE_CONNECT_TIMEOUT_SECONDS)
     try:
         with policy_http_client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(
@@ -211,14 +211,10 @@ def probe_searxng(base_url: str, *, query: str = CANARY_QUERY) -> SearxngProbe:
 
 
 __all__ = [
-    "CANARY_QUERY",
-    "MAX_NAMED_ENGINES",
-    "PROBE_CONNECT_TIMEOUT_SECONDS",
     "PROBE_TIMEOUT_SECONDS",
     "SearxngProbe",
     "describe_engines",
     "probe_searxng",
-    "scrub_address",
     "transport_reason",
     "unresponsive_engines",
 ]
