@@ -588,3 +588,66 @@ def test_only_an_exported_root_counts_as_explicit(tmp_path: Path, exported: bool
     assert result.returncode == 0, result.stderr[-2000:]
     expected = str(tmp_path.resolve()) if exported else "None"
     assert f"EXPLICIT={expected}" in result.stdout
+
+
+@pytest.mark.parametrize("exported", [True, False])
+def test_a_root_flag_counts_as_explicit_and_outranks_the_export(tmp_path: Path, exported: bool):
+    # #101 entry 6: run.py selects a --root flag's root before any env file
+    # loads; afterwards the process looks exactly like an exported launch,
+    # except that a bare command printed for the NEXT shell still resolves the
+    # export or discovery (bare_launch_root), never the flag.
+    import os
+    import subprocess
+    import sys
+
+    flagged = tmp_path / "flagged"
+    exported_root = tmp_path / "exported"
+    env = {k: v for k, v in os.environ.items() if k != "NYMERIA_PROJECT_ROOT"}
+    if exported:
+        env["NYMERIA_PROJECT_ROOT"] = str(exported_root)
+    program = (
+        "import os, sys\n"
+        "from nymeria import _runtime_paths as rp\n"
+        "bare_before = rp.bare_launch_root()\n"
+        "rp.select_project_root(sys.argv[1] + '/./')\n"
+        "print('EXPLICIT=' + str(rp.explicit_project_root()))\n"
+        "print('ENV=' + os.environ['NYMERIA_PROJECT_ROOT'])\n"
+        "print('CONFIGURED=' + str(rp.configure_project_root()))\n"
+        "print('BARE=' + str(rp.bare_launch_root()))\n"
+        "print('BARE_UNCHANGED=' + str(rp.bare_launch_root() == bare_before))\n"
+    )
+    checkout = Path(_runtime_paths.__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(flagged)],
+        cwd=str(checkout),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    out = result.stdout
+    assert f"EXPLICIT={flagged.resolve()}" in out
+    assert f"ENV={flagged.resolve()}" in out
+    assert f"CONFIGURED={flagged.resolve()}" in out
+    bare = exported_root.resolve() if exported else checkout.resolve()
+    assert f"BARE={bare}" in out
+    assert "BARE_UNCHANGED=True" in out
+
+
+def test_discovery_without_an_export_reads_and_writes_no_environment(monkeypatch, tmp_path):
+    root = tmp_path / "Nymeria"
+    (root / "nymeria" / "config").mkdir(parents=True)
+    (root / "run.py").write_text("", encoding="utf-8")
+    (root / "nymeria" / "config" / "soul.md").write_text("", encoding="utf-8")
+    monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(tmp_path / "ignored"))
+
+    assert _runtime_paths.discover_project_root(root / "nymeria" / "cli_entry.py") == root.resolve()
+    assert _runtime_paths.discover_project_root(tmp_path / "nowhere" / "x.py") == (
+        _runtime_paths.default_user_project_root()
+    )
+    import os
+
+    assert os.environ["NYMERIA_PROJECT_ROOT"] == str(tmp_path / "ignored")

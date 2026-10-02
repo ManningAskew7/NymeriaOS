@@ -88,7 +88,7 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
         if for_docker:
             state.hosting = HostingOption.DOCKER
         else:
-            state.hosting = _recover_local_hosting(values)
+            state.hosting = _recover_local_hosting(values, root=config_path.parent)
 
     if for_docker and state.docker_stack is None:
         # Slim vs full is recoverable: the full stack writes POSTGRES_PASSWORD,
@@ -649,20 +649,26 @@ def _hydrate_carrier_picks(state: WizardState, values: dict[str, str]) -> None:
         _apply_skill_picks(state, skills)
 
 
-def _recover_local_hosting(values: dict[str, str]) -> HostingOption:
-    """LOCAL vs SERVICE for a non-Docker config.
+def _recover_local_hosting(values: dict[str, str], *, root: Path) -> HostingOption:
+    """LOCAL vs SERVICE for a non-Docker config at ``root``.
 
     The NYMERIA_HOSTING marker (written by finalize) is authoritative, so
     switching away from SERVICE sticks even while the old unit is still
     installed. Marker-less configs predate the marker: fall back to the
-    installed service artifact (unit/plist) as the durable SERVICE signal.
+    installed service artifact (unit/plist) as the durable SERVICE signal, but
+    only when it runs THIS root. The one per-user unit may serve another
+    install on the machine (#101 entry 41), and one whose root cannot be read
+    back proves nothing either.
     """
     marker = _get(values, HOSTING_MARKER_ENV)
     if marker in (HostingOption.LOCAL.value, HostingOption.SERVICE.value):
         return HostingOption(marker)
-    from nymeria.service_install import installed_artifact_path
+    from nymeria.service_install import installed_artifact_path, service_root_from_artifact
 
-    return HostingOption.SERVICE if installed_artifact_path() else HostingOption.LOCAL
+    artifact = installed_artifact_path()
+    if artifact is not None and service_root_from_artifact(artifact) == root.resolve():
+        return HostingOption.SERVICE
+    return HostingOption.LOCAL
 
 
 def _get(values: dict[str, str], key: str) -> Optional[str]:

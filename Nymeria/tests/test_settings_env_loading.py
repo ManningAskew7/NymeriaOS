@@ -59,6 +59,35 @@ def test_a_file_edit_after_boot_does_not_reach_a_reloaded_settings(tmp_path: Pat
     assert get_settings().twitch_channel != "edited-behind-our-back"
 
 
+def test_the_launch_environment_is_the_shells_not_the_loaded_files(tmp_path: Path, monkeypatch):
+    # #101 entry 6: setup code that hands an environment to ANOTHER install,
+    # or judges what the user's shell exports, must not see the env files the
+    # boot load merged into os.environ.
+    monkeypatch.setenv("IT32_SHELL_ONLY", "shell")
+    monkeypatch.setenv("IT32_BOTH", "shell")
+    monkeypatch.delenv("IT32_FILE_ONLY", raising=False)
+    (tmp_path / ".env").write_text("IT32_FILE_ONLY=file\nIT32_BOTH=file\n", encoding="utf-8")
+
+    # Nothing loaded yet: the live environment is all there is.
+    assert settings_mod.launch_environment()["IT32_SHELL_ONLY"] == "shell"
+
+    settings_mod.load_env_files_into_environ(tmp_path, force=True)
+    assert os.environ["IT32_FILE_ONLY"] == "file" and os.environ["IT32_BOTH"] == "file"
+
+    launch = settings_mod.launch_environment()
+    assert launch["IT32_SHELL_ONLY"] == "shell"
+    assert launch["IT32_BOTH"] == "shell"  # the shell's value, not the file's
+    assert "IT32_FILE_ONLY" not in launch
+
+    # A copy: a caller building a child env cannot edit the record.
+    launch["IT32_SHELL_ONLY"] = "edited"
+    assert settings_mod.launch_environment()["IT32_SHELL_ONLY"] == "shell"
+
+    # A reload neither refreshes nor replaces it.
+    settings_mod.load_env_files_into_environ(tmp_path, force=True)
+    assert "IT32_FILE_ONLY" not in settings_mod.launch_environment()
+
+
 def test_a_key_added_to_the_file_after_boot_stays_out(tmp_path: Path):
     # The gap-fill's widest hole: a key absent from the environment was served
     # straight from the file, so adding a line applied it on the next reload.

@@ -30,7 +30,9 @@ from rich.markup import escape
 
 from .. import __version__ as _PACKAGE_VERSION
 from .._runtime_paths import (
+    bare_launch_root,
     configure_project_root,
+    default_user_project_root,
     find_project_root,
 )
 from ..config.env_file import EnvValueError, format_env_value, write_env_file
@@ -431,6 +433,13 @@ def finalize(
             )
             return 2
 
+    # A local or service config beside another install's `.env.docker` would
+    # run on the Docker install's values: stop before the LLM test and before
+    # anything is written, unless --root named this root (#101 entry 6).
+    refused = _refuse_local_beside_docker(state, console, non_interactive=non_interactive)
+    if refused is not None:
+        return refused
+
     # Out-of-the-box RAG: if nothing RAG-related was configured (no embedder chosen
     # and no embedding key supplied), equip the free, private local stack
     # (granite + Ettin) so semantic memory works with no API key and no cost. This
@@ -531,7 +540,9 @@ def finalize(
         api_key = ""
         console.print(
             "[yellow]No LLM provider configured. Set one later with "
-            "`nymeria init` or by editing config.env.[/yellow]"
+            f"`{escape(_install_command(state, 'init'))}` or by editing the "
+            "config file.[/yellow]",
+            soft_wrap=True,
         )
     else:
         # Reconfigure with a blank key field: keep the on-disk key. There is no
@@ -728,7 +739,7 @@ def finalize(
     if rig_home is not None:
         extra_env[HOME_ENV_KEY] = str(rig_home)
     drop_stale_server_browser = _server_browser_drop_env(rig_home)
-    secrets_key = _resolve_secrets_key(config_path)
+    secrets_key = _resolve_secrets_key(config_path, console=console)
     is_full_stack = _is_full_stack(state)
     # Docker owns its `/data` volume, so the host cannot seed the bootstrap profile
     # (that is why the Docker branch below skips seed_bootstrap_profile). Carry the
@@ -921,10 +932,12 @@ def finalize(
         # it with full_validation=False) precisely so a wizard re-run can fix
         # a broken config, so an invalid pre-existing value falls back to
         # constructor defaults instead of aborting a half-finished install.
-        # Residual caveat, consistent with the alternate-root story (backlog
-        # #101 entries 6/10/15a): process env, which run.py already merged
-        # from the launch root's dotenv, still outranks the target root's
-        # files inside Settings.
+        # Process env still outranks those files inside Settings, which is
+        # now the runtime's own view: run.py selects the root before it loads
+        # any env file (a `--root` included, #101 entry 6), so the process
+        # holds this root's files plus the shell's exports, never another
+        # install's. (A reconfigure sees the pre-write values of this root's
+        # own files; the wizard writes no account-policy key.)
         try:
             from ..config.settings import Settings as _Settings
             from ..config.settings import get_env_file_paths as _env_paths
@@ -1043,6 +1056,61 @@ def finalize(
 # --- config writing ---------------------------------------------------------
 
 
+def _refuse_local_beside_docker(
+    state: WizardState, console: Console, *, non_interactive: bool
+) -> int | None:
+    """Stop a local or service config from landing beside a `.env.docker` by accident.
+
+    Every process started from that root loads `.env.docker` AFTER the local
+    file, so the Docker install's values win and fill every key the local
+    config leaves unset (#101 entry 6): the new install would not run on its
+    own settings. An ambient root (discovery, or an exported
+    NYMERIA_PROJECT_ROOT) is how users land there by accident, so only a root
+    named with `--root` in this run proceeds (with `_warn_shared_docker_root`'s
+    note after the write). Headless runs stop with exit 2; the interactive
+    wizard asks, defaulting to stop. Runs before the LLM test and before
+    anything is written. Returns the exit code to stop with, or None.
+    """
+    if state.hosting is HostingOption.DOCKER or state.root is not None:
+        return None
+    root = resolve_runtime_root(state, for_docker=False)
+    docker_file = root / ".env.docker"
+    if not docker_file.exists():
+        return None
+    per_user = default_user_project_root()
+    example = (
+        f" (for example {per_user})"
+        if per_user != root
+        and not any((per_user / name).exists() for name in (".env", "config.env", ".env.docker"))
+        else ""
+    )
+    console.print(
+        f"\n[yellow]{escape(str(root))} holds .env.docker, a Docker install's "
+        "config. A local or service install written here would not run on its "
+        "own settings: every process started from this root loads .env.docker "
+        "after the local config, so the Docker install's values win and fill "
+        "every key the local config leaves unset, container-only addresses "
+        "included.[/yellow]",
+        soft_wrap=True,
+    )
+    remedies = (
+        f"Give this install its own root: `{_nymeria_with_root('<dir>', 'init')}`"
+        f"{example}. Or, if that Docker install is retired (`docker compose "
+        "down`), move its .env.docker aside and run init again. To write here "
+        "anyway, name this root: "
+        f"`{_nymeria_with_root(_shell_arg(str(root)), 'init')}`."
+    )
+    if non_interactive:
+        console.print(f"[red]Nothing was written. {escape(remedies)}[/red]", soft_wrap=True)
+        return 2
+    if app_settings_shadow._ask(
+        console, "Write the local config here anyway?", default=False
+    ):
+        return None
+    console.print(f"Nothing was written. {escape(remedies)}", soft_wrap=True)
+    return 2
+
+
 def _warn_shared_docker_root(console: Console, *, config_path: Path, for_docker: bool) -> None:
     """A local config written beside another install's `.env.docker` (#101 entry 6).
 
@@ -1063,8 +1131,10 @@ def _warn_shared_docker_root(console: Console, *, config_path: Path, for_docker:
         f"install's config). Every process started from this root loads it "
         f"after {config_path.name}, so its values win and fill any key this "
         "config leaves unset, container-only addresses included. Give this "
-        "install its own root: set NYMERIA_PROJECT_ROOT to another directory "
-        "in your shell profile, then run nymeria init again.[/yellow]"
+        "install its own root: run `nymeria --root <dir> init`, or set "
+        "NYMERIA_PROJECT_ROOT to another directory in your shell profile and "
+        "run nymeria init again.[/yellow]",
+        soft_wrap=True,
     )
 
 
@@ -1302,21 +1372,54 @@ def write_config(
     )
 
 
-def _resolve_secrets_key(config_path: Path) -> str:
-    """Return a stable `NYMERIA_SECRETS_KEY`: preserve an existing one, else mint.
+# The target root's other env files a write may take the vault key from, in
+# load precedence. Never `.env.docker`: for a Docker write that file IS the
+# target (read first above), and for a local write in a shared root it is
+# another install's config, whose key decides who decrypts that install's
+# vault. So a Docker write adopts a local config's key in its own root (a
+# hosting switch keeps the install's vault), never the reverse.
+_SECRETS_KEY_SIBLINGS = ("config.env", ".env")
 
-    Never rotate an existing key (rotation orphans every secret already encrypted
-    with it). Looks first in the env file we are about to write (so a `--force`
-    re-run keeps the same key), then the process environment, then mints a fresh
-    Fernet key via `nymeria.core.secrets.generate_key`.
+
+def _resolve_secrets_key(config_path: Path, *, console: Console | None = None) -> str:
+    """Return this install's `NYMERIA_SECRETS_KEY`: the TARGET root's own, else a new one.
+
+    Never rotate an existing key (rotation orphans every secret already
+    encrypted with it): the file about to be written wins (so a `--force`
+    re-run keeps the same key), then the root's other local env files
+    (`_SECRETS_KEY_SIBLINGS`), then a fresh Fernet key.
+
+    Never the process environment (#451, #101 entry 6): it holds whatever the
+    LAUNCH root's env files put there, so taking it copied one install's vault
+    key into another, and a key there that no file of this root holds belongs
+    to some other install or to the shell. A shell export is named (never its
+    value) because the file's key wins over it at boot.
     """
     existing = _read_secrets_key_from_file(config_path)
     if existing:
         return existing
-    env_key = os.environ.get("NYMERIA_SECRETS_KEY")
-    if env_key and env_key.strip():
-        return env_key.strip()
-    return nymeria_secrets.generate_key()
+    for name in _SECRETS_KEY_SIBLINGS:
+        sibling = config_path.parent / name
+        if sibling != config_path:
+            key = _read_secrets_key_from_file(sibling)
+            if key:
+                return key
+    minted = nymeria_secrets.generate_key()
+    if console is not None:
+        from ..config.settings import launch_environment
+
+        if (launch_environment().get("NYMERIA_SECRETS_KEY") or "").strip():
+            console.print(
+                "[yellow]Your shell exports NYMERIA_SECRETS_KEY, but this install "
+                f"gets its own new key in {escape(config_path.name)}: an install's "
+                "vault key comes only from its own config, and the file's value "
+                "wins over the export when Nymeria starts from this root. If "
+                f"{escape(str(config_path.parent))} already stores secrets "
+                "encrypted with the exported key, put that key in "
+                f"{escape(config_path.name)} before starting.[/yellow]",
+                soft_wrap=True,
+            )
+    return minted
 
 
 def _read_secrets_key_from_file(config_path: Path) -> str | None:
@@ -2802,24 +2905,82 @@ def _maybe_install_local_rag(
     console.print("[green]Local RAG dependencies installed.[/green]")
 
 
+def _installed_service_root() -> tuple[Path | None, Path | None]:
+    """``(unit or plist, the root it runs)`` for the per-user backend service.
+
+    ``(None, None)`` when none is installed; ``(path, None)`` when one is but
+    its root cannot be read back (``service_root_from_artifact``).
+    """
+    from nymeria.service_install import installed_artifact_path, service_root_from_artifact
+
+    artifact = installed_artifact_path()
+    if artifact is None:
+        return None, None
+    return artifact, service_root_from_artifact(artifact)
+
+
+def _service_serves_another_root(root: Path) -> Path | None:
+    """The OTHER install's root when the installed backend service runs one, else None."""
+    _artifact, served = _installed_service_root()
+    if served is None or served == Path(root).resolve():
+        return None
+    return served
+
+
+def _note_service_owner(state: WizardState, console: Console) -> None:
+    """Before printing `service install`: say when the unit belongs to another install."""
+    other = _service_serves_another_root(resolve_runtime_root(state, for_docker=False))
+    if other is not None:
+        console.print(
+            f"[yellow]The background service on this machine runs another "
+            f"install now, at {escape(str(other))}. There is one per user "
+            "account, so this command replaces it.[/yellow]",
+            soft_wrap=True,
+        )
+
+
 def _warn_stale_service_artifact(state: WizardState, console: Console) -> None:
-    """Warn when a previously installed background service was switched away.
+    """Warn when THIS install's background service was switched away.
 
     The wizard never tears the service down on a hosting switch (that is the
     user's call), but staying silent would leave the old unit running and,
     for a Docker switch, fighting the new stack for the API port.
+
+    There is one backend service per user account, not per root, so the unit
+    may run a DIFFERENT install on this machine; telling that install's user to
+    `nymeria service uninstall` it took the other install down (#101 entry 41).
+    So the advice to remove it is given only when the unit runs this root; a
+    unit for another root is named and left alone, and one whose root cannot be
+    read back is never called stale.
     """
     if state.hosting in (HostingOption.SERVICE, None):
         return
-    from nymeria.service_install import installed_artifact_path
-
-    if installed_artifact_path() is None:
+    artifact, served = _installed_service_root()
+    if artifact is None:
         return
-    console.print(
-        "\n[yellow]A background service from a previous setup is still "
-        "installed and may be running (it binds the API port). Remove it with "
-        "`nymeria service uninstall`.[/yellow]"
-    )
+    root = resolve_runtime_root(state, for_docker=state.hosting is HostingOption.DOCKER)
+    if served == root:
+        console.print(
+            "\n[yellow]A background service from a previous setup is still "
+            "installed and may be running (it binds the API port). Remove it with "
+            "`nymeria service uninstall`.[/yellow]",
+            soft_wrap=True,
+        )
+    elif served is not None:
+        console.print(
+            "\nThe background service installed on this machine runs another "
+            f"install, at {escape(str(served))}, not this one. Setup leaves it "
+            "alone; nothing here needs removing.",
+            soft_wrap=True,
+        )
+    else:
+        console.print(
+            "\n[yellow]A background service is installed on this machine "
+            f"({escape(str(artifact))}), but which install it runs could not "
+            "be read from it. It may belong to another install: check "
+            "`nymeria service status` before removing anything.[/yellow]",
+            soft_wrap=True,
+        )
 
 
 # The per-platform bot guides, on the public mirror (a pip install has no docs
@@ -2964,7 +3125,7 @@ def print_chat_apps_hint(
         console.print("  Other profiles: discord, slack, twitch.")
         console.print(f"  Setup guides: {CHAT_APPS_DOCS}", soft_wrap=True)
         return
-    _print_command(console, "nymeria telegram-bot")
+    _print_command(console, _install_command(state, "telegram-bot"))
     console.print(
         "  Or discord-bot, slack-bot, twitch-bot, each in its own terminal next "
         "to the backend. A bot finds this install by itself and says what else "
@@ -3023,11 +3184,8 @@ def print_next_action(
 ) -> None:
     if state.next_action is NextAction.CLI:
         console.print("\nEnter CLI chat with:")
-        _print_command(console, "nymeria cli")
-        console.print(
-            "\nRe-run setup anytime with `nymeria init`. Check health with "
-            "`nymeria doctor`."
-        )
+        _print_command(console, _install_command(state, "cli"))
+        _print_rerun_hint(state, console)
         return
     if state.hosting is HostingOption.DOCKER:
         # The container mints its own token on first boot; the docker printer points
@@ -3050,7 +3208,12 @@ def print_next_action(
             "keeps running) with:"
         )
         _print_command(console, _service_install_command(state))
-        console.print("Check it anytime with `nymeria service status`.")
+        _note_service_owner(state, console)
+        console.print(
+            "Check it anytime with "
+            f"`{escape(_install_command(state, 'service', 'status'))}`.",
+            soft_wrap=True,
+        )
         console.print("Remove it with `nymeria service uninstall`.")
     else:
         console.print("\nStart Nymeria with:")
@@ -3068,7 +3231,7 @@ def print_next_action(
             "once the backend is up."
         )
     console.print("\nStart the terminal chat client:")
-    _print_command(console, "nymeria cli")
+    _print_command(console, _install_command(state, "cli"))
     # Connection details. The URL is non-secret and always prints; the token
     # value prints only when the user opted in (default on in the interactive
     # wizard, off in --non-interactive so it never lands in captured stdout) and
@@ -3092,9 +3255,14 @@ def print_next_action(
         token_command=f"cat {shlex.quote(str(token_path))}",
         base_url=local_base_url(state),
     )
+    _print_rerun_hint(state, console)
+
+
+def _print_rerun_hint(state: WizardState, console: Console) -> None:
     console.print(
-        "\nRe-run setup anytime with `nymeria init`. Check health with "
-        "`nymeria doctor`."
+        f"\nRe-run setup anytime with `{escape(_install_command(state, 'init'))}`. "
+        f"Check health with `{escape(_install_command(state, 'doctor'))}`.",
+        soft_wrap=True,
     )
 
 
@@ -3102,7 +3270,7 @@ def _start_command_for_hosting(state: WizardState) -> str:
     # Only reached for LOCAL/None hosting: DOCKER and SERVICE return earlier
     # in print_next_action with their own command blocks (the Docker one owns
     # the #314 `--build` decision, so it must not grow a second copy here).
-    return "nymeria slim"
+    return _install_command(state, "slim")
 
 
 def _print_docker_next_steps(
@@ -3130,7 +3298,7 @@ def _print_docker_next_steps(
     if rebuild:
         _print_rebuild_reason(console, "the command below rebuilds it")
     _print_command(console, _compose_command_str(spec, *_up_subcommand(rebuild)))
-    _print_docker_token_command(console, spec)
+    _print_docker_token_command(console, spec, state)
     if state.auth_method_is_cliproxy() and _is_full_stack(state) and not state.cliproxy_deploy:
         # A wizard-generated deployment already joins the stack's edge network;
         # a pre-existing proxy must be attached by hand or the api/worker
@@ -3329,7 +3497,7 @@ def _start_now_docker(
             # Clone-free users never cd'ed anywhere: the wizard ran compose for
             # them, so say where the relative commands work from.
             console.print(f"Run compose commands from {root}.")
-        _print_docker_token_command(console, spec)
+        _print_docker_token_command(console, spec, state)
         _print_docker_server_browser_steps(console, state, root=root)
         return 0
     console.print("[green]Nymeria is up.[/green]")
@@ -3430,7 +3598,14 @@ def _start_now_local(
     # on the first public-beta Windows test. Run in the runtime root so slim
     # finds config.env.
     command = resolve_exec_argv()
-    env = dict(os.environ)
+    # The environment the wizard was LAUNCHED with, not os.environ: that holds
+    # the env files run.py loaded at boot (another install's on a `--root`
+    # run, the pre-reconfigure values on this one), and every key the new
+    # config does not set would reach the server from there: a removed
+    # LLM_BASE_URL, another install's route and provider keys (#101 entry 6).
+    from ..config.settings import launch_environment
+
+    env = launch_environment()
     env["NYMERIA_PROJECT_ROOT"] = str(root)
     # The server owns this terminal from here, so the smoke turn runs from a
     # daemon thread that prints one [smoke] line into the server's output, and
@@ -3445,9 +3620,10 @@ def _start_now_local(
     try:
         # env-gate: full-copy - same shape as the API self-restart, one layer
         # out: the wizard launching `<entry point> slim`, which is Nymeria
-        # itself. It adds NYMERIA_PROJECT_ROOT and otherwise hands over the
-        # environment the operator just finished configuring, because the child
-        # is the backend they asked to start.
+        # itself. It hands over the environment the wizard was launched with
+        # (the shell's, before any env file loaded) plus NYMERIA_PROJECT_ROOT,
+        # because the child is the backend they asked to start and reads this
+        # root's config itself.
         result = subprocess.run(command, cwd=str(root), env=env)
     except KeyboardInterrupt:
         return 0
@@ -3456,7 +3632,7 @@ def _start_now_local(
             f"[yellow]Could not launch the slim backend automatically ({exc}). "
             "Start it yourself:[/yellow]"
         )
-        _print_command(console, "nymeria slim")
+        _print_command(console, _nymeria_command("slim", root=root))
         return 0
     finally:
         stop.set()
@@ -3469,14 +3645,53 @@ def _start_now_local(
     return result.returncode
 
 
+def _shell_arg(arg: str, *, windows: bool | None = None) -> str:
+    """``arg`` quoted for the shell the printed command will be pasted into.
+
+    POSIX shells take ``shlex.quote``; PowerShell and cmd do not understand its
+    single quotes, so Windows gets the ``CommandLineToArgvW`` rules instead.
+    """
+    if windows is None:
+        windows = sys.platform == "win32"
+    return subprocess.list2cmdline([arg]) if windows else shlex.quote(arg)
+
+
+def _nymeria_with_root(root_arg: str, *argv: str) -> str:
+    """``nymeria --root <root_arg> <argv>``, with ``root_arg`` already quoted."""
+    return " ".join(["nymeria", "--root", root_arg, *argv])
+
+
+def _nymeria_command(*argv: str, root: Path | None) -> str:
+    """A printed ``nymeria`` command that reaches the install at ``root``.
+
+    A bare command in the user's next shell resolves the export or discovery
+    (``bare_launch_root``), not the root this run wrote to: after
+    ``nymeria init --root B`` the closing ``nymeria slim`` started the DEFAULT
+    install (#101 entry 6). So the global ``--root`` is added whenever the two
+    differ, and left out when they agree.
+    """
+    if root is not None and Path(root).resolve() != bare_launch_root():
+        return _nymeria_with_root(_shell_arg(str(root)), *argv)
+    return " ".join(["nymeria", *argv])
+
+
+def _install_command(state: WizardState, *argv: str) -> str:
+    """``_nymeria_command`` for the root this run's hosting choice writes to."""
+    root = resolve_runtime_root(state, for_docker=state.hosting is HostingOption.DOCKER)
+    return _nymeria_command(*argv, root=root)
+
+
 def _service_install_command(state: WizardState) -> str:
     """The exact manual install command for THIS config's root.
 
     A bare `nymeria service install` resolves its own root (env var or
     source-checkout discovery), which can differ from where the wizard just
-    wrote config.env; the explicit --root removes the ambiguity.
+    wrote config.env; the explicit --root removes the ambiguity. The root is
+    the one this run resolved, never the raw `--root` field, which is None
+    whenever no flag was passed (it printed `--root None`).
     """
-    return f"nymeria service install --root {shlex.quote(str(state.root))}"
+    root = resolve_runtime_root(state, for_docker=False)
+    return f"nymeria service install --root {_shell_arg(str(root))}"
 
 
 def _start_now_service(
@@ -3500,6 +3715,23 @@ def _start_now_service(
         service_manager,
     )
 
+    status_command = _nymeria_command("service", "status", root=root)
+    other_root = _service_serves_another_root(root)
+    if other_root is not None:
+        # One backend service per user account: installing this one would
+        # retarget the unit that keeps ANOTHER install running (#101 entry 41).
+        # That is the user's call to make by hand, never a side effect.
+        console.print(
+            "\n[yellow]The background service on this machine runs another "
+            f"install, at {escape(str(other_root))}. There is one per user "
+            "account, so installing this one would replace it; setup left it "
+            "alone. To move the service to this install, run:[/yellow]",
+            soft_wrap=True,
+        )
+        _print_command(console, _service_install_command(state))
+        console.print("Or start this install in the foreground:")
+        _print_command(console, _nymeria_command("slim", root=root))
+        return 0
     console.print("\nInstalling the background service...")
     try:
         manager = service_manager()
@@ -3511,7 +3743,7 @@ def _start_now_service(
         for hint in exc.hints:
             console.print(f"  - {escape(hint)}")
         console.print("Start Nymeria in the foreground instead:")
-        _print_command(console, "nymeria slim")
+        _print_command(console, _nymeria_command("slim", root=root))
         return 0
     except (ServiceInstallError, OSError) as exc:
         console.print(f"[yellow]Service install failed: {escape(str(exc))}[/yellow]")
@@ -3528,7 +3760,8 @@ def _start_now_service(
         console.print(
             "[yellow]Installed, but the health check has not passed yet. It "
             f"may still be coming up; check `{escape(manager.log_hint())}` "
-            "and `nymeria service status`.[/yellow]"
+            f"and `{escape(status_command)}`.[/yellow]",
+            soft_wrap=True,
         )
         console.print(
             f"Once it answers, open {local_base_url(state)} and finish in the "
@@ -3560,13 +3793,15 @@ def _start_now_service(
             "\nYour browser should open already signed in; if it does not, "
             f"open {local_base_url(state)} and paste the token printed above. "
             "The service starts on login from now on; check it with "
-            "`nymeria service status`."
+            f"`{escape(status_command)}`.",
+            soft_wrap=True,
         )
     else:
         console.print(
             f"\nOpen {local_base_url(state)} to finish in the browser (paste the "
             "one-time bootstrap token if one was printed above). The service "
-            "starts on login from now on; check it with `nymeria service status`."
+            f"starts on login from now on; check it with `{escape(status_command)}`.",
+            soft_wrap=True,
         )
     return 0
 
@@ -3742,7 +3977,9 @@ def _run_inline_chat_smoke(
     else:
         console.print(
             f"[yellow]Chat smoke test FAILED: {escape(detail)}.[/yellow] The "
-            "backend is up; check the LLM credentials with `nymeria doctor`."
+            "backend is up; check the LLM credentials with "
+            f"`{escape(_install_command(state, 'doctor'))}`.",
+            soft_wrap=True,
         )
 
 
@@ -3879,16 +4116,15 @@ def _docker_token_command(spec: _DockerStackSpec) -> str:
     )
 
 
-def _print_docker_token_command(console: Console, spec: _DockerStackSpec) -> None:
+def _print_docker_token_command(
+    console: Console, spec: _DockerStackSpec, state: WizardState
+) -> None:
     console.print(
         "\nOnce the container is healthy, read your one-time bootstrap token "
         "(paste it into the Desktop/Mobile Setup Wizard) with:"
     )
     _print_command(console, _docker_token_command(spec))
-    console.print(
-        "\nRe-run setup anytime with `nymeria init`. Check health with "
-        "`nymeria doctor`."
-    )
+    _print_rerun_hint(state, console)
 
 
 def _read_docker_bootstrap_token(*, spec: _DockerStackSpec, root: Path) -> str | None:
@@ -4115,25 +4351,33 @@ def _warn_shadowing_process_env(console: Console, written: Mapping[str, str]) ->
     docker compose resolves `${VAR}` from the process environment BEFORE the
     `--env-file`, so a `POSTGRES_PASSWORD` / `REDIS_PASSWORD` / `NYMERIA_SECRETS_KEY`
     already in the environment with a different value silently wins over the one
-    just generated. The shadowing value can come from the operator's shell OR from
-    another `.env.docker` auto-loaded at startup (a common out-of-tree-install case),
-    so the message does not assume the source. The mismatch is invisible now but
-    breaks Postgres auth or vault decryption on a later boot, so flag it.
+    just generated. The mismatch is invisible now but breaks Postgres auth or
+    vault decryption on a later boot, so flag it.
+
+    Judged against the environment the wizard was LAUNCHED with (the shell's),
+    not `os.environ`: that also holds whatever env files run.py loaded at boot,
+    which never reach the user's shell (where the printed commands run) and
+    which the wizard's own compose calls drop (`_compose_env`), so a value only
+    a file put there is no shadow, and telling the user to unset it named
+    something their shell never had (#435 review PA-4).
     """
+    from ..config.settings import launch_environment
+
+    shell = launch_environment()
     clashes = sorted(
         key
         for key, value in written.items()
-        if value and key in os.environ and os.environ[key].strip() != value
+        if value and key in shell and shell[key].strip() != value
     )
     if not clashes:
         return
     joined = ", ".join(clashes)
     console.print(
-        f"[yellow]Note:[/yellow] the environment already defines {joined} with a "
-        "value different from what was just written to .env.docker (exported in your "
-        "shell, or auto-loaded from another .env.docker). docker compose reads "
-        "${VAR} from the environment before --env-file, so that value, not the "
-        "generated one, would take effect. Clear it before bringing the stack up:"
+        f"[yellow]Note:[/yellow] your shell exports {joined} with a value "
+        "different from what was just written to .env.docker. docker compose "
+        "reads ${VAR} from the environment before --env-file, so that value, not "
+        "the generated one, would take effect. Clear it before bringing the "
+        "stack up:"
     )
     # Printed via _print_command so the command stays on one unwrapped line.
     _print_command(console, f"unset {' '.join(clashes)}")

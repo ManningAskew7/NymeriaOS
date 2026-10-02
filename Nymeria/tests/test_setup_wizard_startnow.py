@@ -13,8 +13,10 @@ from nymeria.setup.runner import main as setup_main
 
 from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _capture_console,
+    _loaded_from,
     _serve_chat_sync,
     _stub_llm,
+    _unit_for,
 )
 
 
@@ -395,7 +397,7 @@ def test_finalize_service_smoke_failure_does_not_fail_setup(
     # informs, it never fails setup.
     assert rc == 0
     assert "Chat smoke test FAILED" in out
-    assert "nymeria doctor" in out
+    assert f"nymeria --root {root} doctor" in out  # root-pinned (#101 entry 6)
 
 
 def test_finalize_local_start_spawns_smoke_thread_and_stops_it(monkeypatch, tmp_path):
@@ -579,7 +581,7 @@ def test_finalize_installs_service_when_opted_in(monkeypatch, tmp_path, capsys):
     # The smoke turn authenticated with the host-read service token.
     assert smoked == ["nym_svc_x"]
     assert "Chat smoke test passed" in out
-    assert "nymeria service status" in out
+    assert f"nymeria --root {root} service status" in out  # root-pinned
 
 
 def test_finalize_service_unavailable_falls_back_to_foreground(
@@ -610,7 +612,7 @@ def test_finalize_service_unavailable_falls_back_to_foreground(
     assert rc == 0  # config was written fine; the install is the optional part
     assert "no user manager" in out
     assert "try lingering" in out
-    assert "nymeria slim" in out
+    assert f"nymeria --root {root} slim" in out  # root-pinned
 
 
 def test_finalize_service_print_path_has_real_commands(monkeypatch, tmp_path, capsys):
@@ -635,32 +637,199 @@ def test_finalize_service_print_path_has_real_commands(monkeypatch, tmp_path, ca
     assert "not wired up yet" not in out
     assert "nymeria service install" in out
     assert "--root" in out
-    assert "nymeria service status" in out
+    assert f"nymeria --root {root} service status" in out  # root-pinned
     assert "nymeria service uninstall" in out
     # The hosting choice round-trips via the wizard-only marker.
     assert "NYMERIA_HOSTING=service" in (root / "config.env").read_text()
 
 
+def _local_run(monkeypatch, root, *extra):
+    _stub_llm(monkeypatch)
+    return setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "local",
+         "--root", str(root), "--non-interactive", *extra]
+    )
+
+
 def test_finalize_warns_about_stale_service_artifact(monkeypatch, tmp_path, capsys):
     import nymeria.service_install as si
 
-    _stub_llm(monkeypatch)
-    monkeypatch.setattr(
-        si, "installed_artifact_path", lambda: tmp_path / "nymeria.service"
-    )
     root = tmp_path / "runtime"
+    unit = _unit_for(tmp_path / "nymeria.service", root)  # THIS install's unit
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: unit)
 
-    rc = setup_main(
-        ["--provider", "anthropic", "--model", "claude-test-model",
-         "--api-key", "sk-ant-test-key", "--hosting", "local",
-         "--root", str(root), "--non-interactive"]
-    )
+    rc = _local_run(monkeypatch, root)
     out = capsys.readouterr().out
 
     assert rc == 0
     # Switching away from SERVICE never tears the unit down silently; the
     # summary must say it is still installed and how to remove it.
     assert "nymeria service uninstall" in out
+
+
+def test_another_installs_service_is_named_and_never_called_stale(monkeypatch, tmp_path, capsys):
+    # #101 entry 41: one unit per user account, so on a host whose service
+    # runs ANOTHER install (the dogfood instance), a second install was told to
+    # `nymeria service uninstall` it, which would take that install down.
+    import nymeria.service_install as si
+
+    other = tmp_path / "dogfood"
+    unit = _unit_for(tmp_path / "nymeria.service", other)
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: unit)
+
+    rc = _local_run(monkeypatch, tmp_path / "runtime")
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert rc == 0
+    assert f"runs another install, at {other}" in out
+    assert "service uninstall" not in out
+
+
+def test_a_service_unit_whose_root_cannot_be_read_is_never_called_stale(
+    monkeypatch, tmp_path, capsys
+):
+    import nymeria.service_install as si
+
+    unit = tmp_path / "nymeria.service"
+    unit.write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: unit)
+
+    rc = _local_run(monkeypatch, tmp_path / "runtime")
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert rc == 0
+    assert "which install it runs could not be read" in out
+    assert "nymeria service status" in out
+    assert "service uninstall" not in out
+
+
+def test_start_now_never_replaces_another_installs_service(monkeypatch, tmp_path, capsys):
+    # Installing is the one-per-user unit's REPLACEMENT: a wizard run must not
+    # retarget the service that keeps another install running as a side effect.
+    import shlex
+
+    import nymeria.service_install as si
+
+    _stub_llm(monkeypatch)
+    other = tmp_path / "dogfood"
+    unit = _unit_for(tmp_path / "nymeria.service", other)
+    monkeypatch.setattr(si, "installed_artifact_path", lambda: unit)
+    monkeypatch.setattr(
+        si, "service_manager", lambda: pytest.fail("must not touch the service manager")
+    )
+    monkeypatch.setattr(
+        finalize_mod, "wait_for_health", lambda **kw: pytest.fail("nothing was started")
+    )
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "service",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert rc == 0  # the config was written; the service is the user's call
+    assert f"runs another install, at {other}" in out
+    assert f"nymeria service install --root {shlex.quote(str(root))}" in out
+    assert "service uninstall" not in out
+    # The other install's unit is exactly as it was.
+    assert f"NYMERIA_PROJECT_ROOT={other}" in unit.read_text(encoding="utf-8")
+
+
+def test_the_printed_service_command_says_it_replaces_another_installs(
+    monkeypatch, tmp_path, capsys
+):
+    import nymeria.service_install as si
+
+    _stub_llm(monkeypatch)
+    other = tmp_path / "dogfood"
+    monkeypatch.setattr(
+        si, "installed_artifact_path", lambda: _unit_for(tmp_path / "nymeria.service", other)
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "service",
+         "--root", str(tmp_path / "runtime"), "--non-interactive"]
+    )
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert rc == 0
+    assert f"runs another install now, at {other}" in out
+    assert "this command replaces it" in out
+
+
+def test_the_service_install_command_names_the_resolved_root_without_a_flag(
+    monkeypatch, tmp_path, capsys
+):
+    # E10: `_service_install_command` printed `--root {state.root}`, which is
+    # `--root None` whenever no --root flag was passed (an exported root).
+    import shlex
+
+    from nymeria import _runtime_paths
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "exported"
+    monkeypatch.setattr(_runtime_paths, "_LAUNCH_PROJECT_ROOT_ENV", str(root))
+    monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(root))
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "service",
+         "--non-interactive"]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert (root / "config.env").exists()
+    assert f"nymeria service install --root {shlex.quote(str(root.resolve()))}" in out
+    assert "--root None" not in out
+
+
+def test_local_start_hands_the_server_the_shell_environment_not_the_loaded_one(
+    monkeypatch, tmp_path
+):
+    # E9: the child got dict(os.environ), which holds the env files run.py
+    # loaded at boot: another install's on a `--root` run. Every key the new
+    # config does not set (a direct-provider install writes no LLM_BASE_URL)
+    # reached the server from there.
+    import nymeria.service_install as si
+
+    _stub_llm(monkeypatch)
+    monkeypatch.setenv("IT32_SHELL_SENTINEL", "from-shell")
+    for key in ("IT32_FILE_SENTINEL", "LLM_BASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    _loaded_from(
+        tmp_path / "launch",
+        "IT32_FILE_SENTINEL=from-file\nLLM_BASE_URL=http://launch-proxy:8317/v1\n",
+    )
+    calls: list[dict] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        finalize_mod.subprocess,
+        "run",
+        lambda cmd, *a, **kw: (calls.append(dict(kw.get("env") or {})), _Result())[1],
+    )
+    monkeypatch.setattr(si, "resolve_exec_argv", lambda *a, **k: ["nymeria", "slim"])
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "local", "--skip-llm-test",
+         "--root", str(root), "--start", "--non-interactive"]
+    )
+
+    assert rc == 0 and len(calls) == 1
+    env = calls[0]
+    assert env["NYMERIA_PROJECT_ROOT"] == str(root.resolve())
+    assert env["IT32_SHELL_SENTINEL"] == "from-shell"
+    assert "IT32_FILE_SENTINEL" not in env
+    assert "LLM_BASE_URL" not in env
 
 
 def test_hydrate_recovers_service_hosting(monkeypatch, tmp_path):
@@ -700,8 +869,7 @@ def test_hydrate_recovers_service_hosting(monkeypatch, tmp_path):
         )
         + "\n"
     )
-    fake_unit = tmp_path / "nymeria.service"
-    fake_unit.write_text("[Unit]\n")
+    fake_unit = _unit_for(tmp_path / "nymeria.service", root)
     monkeypatch.setattr(si, "installed_artifact_path", lambda: fake_unit)
     legacy = WizardState(root=root)
     assert hydrate_state_from_disk(legacy)
@@ -711,6 +879,19 @@ def test_hydrate_recovers_service_hosting(monkeypatch, tmp_path):
     plain = WizardState(root=root)
     assert hydrate_state_from_disk(plain)
     assert plain.hosting is HostingOption.LOCAL
+
+    # #101 entry 41: the one per-user unit may run ANOTHER install, and a unit
+    # whose root cannot be read back proves nothing: neither makes THIS
+    # marker-less install a service install.
+    for unit_text in (
+        _unit_for(tmp_path / "other.service", tmp_path / "dogfood").read_text(),
+        "[Unit]\n",
+    ):
+        fake_unit.write_text(unit_text, encoding="utf-8")
+        monkeypatch.setattr(si, "installed_artifact_path", lambda: fake_unit)
+        foreign = WizardState(root=root)
+        assert hydrate_state_from_disk(foreign)
+        assert foreign.hosting is HostingOption.LOCAL
 
 
 def test_finalize_default_does_not_start_a_process(monkeypatch, tmp_path, capsys):

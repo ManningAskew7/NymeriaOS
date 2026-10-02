@@ -358,6 +358,242 @@ def test_main_loads_the_deployment_env_before_parsing_args(monkeypatch):
         run.main()
 
 
+# ---------------------------------------------------------------------------
+# One root per process, chosen before any env file loads (#101 entry 6, #451)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["init", "--root", "/r/b"], (None, "/r/b")),
+        (["init", "--root=/r/b"], (None, "/r/b")),
+        (["--root", "/r/g", "init"], ("/r/g", None)),
+        (["--root=/r/g", "doctor"], ("/r/g", None)),
+        (["service", "install", "--root", "/r/s"], (None, "/r/s")),
+        (["service", "--root", "/r/s", "install"], (None, "/r/s")),
+        (["browser", "configure", "--root", "/r/c", "--token-stdin"], (None, "/r/c")),
+        (["-l", "DEBUG", "--root", "/r/g", "slim"], ("/r/g", None)),
+        (["--log-level=DEBUG", "--root", "/r/g", "cli"], ("/r/g", None)),
+        (["--root", "/r/g", "init", "--root", "/r/g"], ("/r/g", "/r/g")),
+        (["init", "--root", "/r/a", "--root", "/r/b"], (None, "/r/b")),  # last wins, as argparse
+        # Not a root flag of the scanned shape: the value of another option,
+        # an unscoped command's argument, after `--`, empty, or missing.
+        (["cli", "-m", "--root /r/x"], (None, None)),
+        (["cli", "--root", "/r/x"], (None, None)),
+        (["init", "--", "--root", "/r/x"], (None, None)),
+        (["-l", "--root", "init"], (None, None)),
+        (["init", "--root="], (None, None)),
+        (["init", "--root"], (None, None)),
+        (["--not-a-real-flag"], (None, None)),
+        ([], (None, None)),
+    ],
+)
+def test_the_root_scan_reads_only_the_two_full_spellings(argv, expected):
+    assert run._root_flags_from_argv(argv) == expected
+
+
+@pytest.fixture
+def _restore_root_selection(monkeypatch):
+    """main() selects the process root; put it back after the test."""
+    from nymeria import _runtime_paths
+
+    monkeypatch.setattr(run, "_project_root", run._project_root)
+    monkeypatch.setattr(_runtime_paths, "_SELECTED_PROJECT_ROOT", None)
+
+
+def _record_load(monkeypatch) -> dict[str, Any]:
+    from nymeria import _runtime_paths
+
+    seen: dict[str, Any] = {}
+
+    def _load() -> None:
+        seen["project_root"] = run._project_root
+        seen["env"] = os.environ.get("NYMERIA_PROJECT_ROOT")
+        seen["explicit"] = _runtime_paths.explicit_project_root()
+
+    monkeypatch.setattr(run, "_load_environment", _load)
+    return seen
+
+
+@pytest.mark.parametrize(
+    "argv,command",
+    [
+        (["init", "--root", "{root}"], "init"),
+        (["--root", "{root}", "init"], "init"),
+        (["--root={root}", "service", "status"], "service"),
+        (["browser", "status", "--root", "{root}"], "browser"),
+        (["--root", "{root}", "doctor"], "doctor"),
+    ],
+)
+def test_a_root_flag_is_the_process_root_before_any_env_file_loads(
+    monkeypatch, tmp_path, _restore_root_selection, argv, command
+):
+    root = tmp_path / "target"
+    seen = _record_load(monkeypatch)
+    dispatched: list[argparse.Namespace] = []
+    monkeypatch.setattr(run, "validate_config", lambda *a, **k: None)
+    monkeypatch.setattr(
+        run, run.COMMANDS[command].runner.__name__, lambda args: dispatched.append(args) or 0
+    )
+    monkeypatch.setattr(sys, "argv", ["run.py", *(a.format(root=root) for a in argv)])
+
+    with pytest.raises(SystemExit) if run.COMMANDS[command].exits else _no_raise():
+        run.main()
+
+    assert seen == {"project_root": root, "env": str(root), "explicit": root}
+    (args,) = dispatched
+    # Commands with their own --root get the global one: one meaning everywhere.
+    if hasattr(args, "root"):
+        assert Path(args.root).resolve() == root
+
+
+class _no_raise:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_without_a_root_flag_the_launch_root_stays(monkeypatch, _restore_root_selection):
+    from nymeria import _runtime_paths
+
+    seen = _record_load(monkeypatch)
+    before = (run._project_root, os.environ.get("NYMERIA_PROJECT_ROOT"))
+    monkeypatch.setattr(run, "run_doctor", lambda args: 0)
+    monkeypatch.setattr(sys, "argv", ["run.py", "doctor"])
+
+    with pytest.raises(SystemExit):
+        run.main()
+
+    assert (seen["project_root"], seen["env"]) == before
+    assert _runtime_paths._SELECTED_PROJECT_ROOT is None
+
+
+def test_two_different_roots_exit_2_before_anything_loads(
+    monkeypatch, tmp_path, capsys, _restore_root_selection
+):
+    monkeypatch.setattr(
+        run, "_load_environment", lambda: pytest.fail("nothing may load on a clash")
+    )
+    a, b = tmp_path / "a", tmp_path / "b"
+    monkeypatch.setattr(sys, "argv", ["run.py", "--root", str(a), "init", "--root", str(b)])
+
+    with pytest.raises(SystemExit) as exc:
+        run.main()
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert str(a) in err and str(b) in err
+
+
+def test_the_same_root_in_both_places_is_fine(monkeypatch, tmp_path, _restore_root_selection):
+    root = tmp_path / "r"
+    seen = _record_load(monkeypatch)
+    dispatched: list[argparse.Namespace] = []
+    monkeypatch.setattr(run, "run_init", lambda args: dispatched.append(args) or 0)
+    monkeypatch.setattr(
+        sys, "argv", ["run.py", "--root", str(root), "init", "--root", f"{root}/./"]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        run.main()
+
+    assert exc.value.code == 0
+    assert seen["project_root"] == root
+    assert len(dispatched) == 1
+
+
+@pytest.mark.parametrize("spelling", ["--roo", "--ro"])
+def test_an_abbreviated_root_flag_is_refused_after_parsing(
+    monkeypatch, tmp_path, capsys, _restore_root_selection, spelling
+):
+    # argparse maps `--roo` to --root, but the env files were already loaded
+    # from the root the scan saw (none): running would split the root.
+    seen = _record_load(monkeypatch)
+    monkeypatch.setattr(run, "run_init", lambda args: pytest.fail("must not dispatch"))
+    monkeypatch.setattr(sys, "argv", ["run.py", "init", spelling, str(tmp_path / "b")])
+
+    with pytest.raises(SystemExit) as exc:
+        run.main()
+
+    assert exc.value.code == 2
+    assert "write the root flag in full" in capsys.readouterr().err
+    assert seen["explicit"] != tmp_path / "b"
+
+
+_ROOT_PROBE = """
+import os, sys
+
+sys.path.insert(0, sys.argv[1])
+import run
+
+def probe(args):
+    from nymeria import _runtime_paths
+    from nymeria.config import settings
+    print("A", os.environ.get("IT32_A_SENTINEL", "<unset>"))
+    print("B", os.environ.get("IT32_B_SENTINEL", "<unset>"))
+    print("SETTINGS_ROOT", settings.PROJECT_ROOT)
+    print("EXPLICIT", _runtime_paths.explicit_project_root())
+    print("API_URL", settings.thin_client_api_url())
+    print("ARGS_ROOT", getattr(args, "root", "<none>"))
+    return 0
+
+run.run_init = run.run_doctor = run.run_cli = probe
+sys.argv = ["run.py", *sys.argv[2:]]
+run.main()
+"""
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["init", "--root", "{b}"],
+        ["--root", "{b}", "init"],
+        ["--root", "{b}", "doctor"],
+        ["--root", "{b}", "cli"],
+    ],
+)
+def test_a_root_flag_run_never_sees_the_launch_roots_config(tmp_path, argv):
+    """E2: a fresh interpreter launched at root A, told `--root B`, holds B's
+    env and none of A's. Before #101 entry 6 it loaded A's files first, which
+    is how a new install got A's vault key (#451) and a start-now server got
+    A's LLM route."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / ".env").write_text("IT32_A_SENTINEL=launch\nAPI_PORT=8111\n", encoding="utf-8")
+    (b / ".env").write_text("IT32_B_SENTINEL=target\nAPI_PORT=8222\n", encoding="utf-8")
+    repo_root = Path(run.__file__).resolve().parent
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("IT32_A_SENTINEL", "IT32_B_SENTINEL", "API_PORT", "NYMERIA_API_URL")
+    }
+    env["NYMERIA_PROJECT_ROOT"] = str(a)  # the launch root
+
+    result = subprocess.run(
+        [sys.executable, "-c", _ROOT_PROBE, str(repo_root), *(x.format(b=b) for x in argv)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        cwd=str(tmp_path),
+    )
+
+    detail = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr[-3000:]}"
+    assert result.returncode == 0, detail
+    lines = dict(line.split(" ", 1) for line in result.stdout.splitlines() if " " in line)
+    assert lines["A"] == "<unset>", detail
+    assert lines["B"] == "target", detail
+    assert lines["SETTINGS_ROOT"] == str(b.resolve()), detail
+    assert lines["EXPLICIT"] == str(b.resolve()), detail
+    assert lines["API_URL"] == "http://localhost:8222", detail
+    if argv[0] == "--root" and argv[2] == "init":
+        assert lines["ARGS_ROOT"] == str(b), detail  # copied into init's own flag
+
+
 def test_version_flag_prints_the_package_version_and_exits_zero(capsys):
     # #101 entry 37: `nymeria --version` was "unrecognized arguments".
     from nymeria import __version__

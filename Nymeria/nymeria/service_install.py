@@ -1045,6 +1045,48 @@ def installed_artifact_path(spec: ServiceSpec = BACKEND_SERVICE) -> Path | None:
     return path if path.exists() else None
 
 
+_SYSTEMD_ROOT_PREFIX = 'Environment="NYMERIA_PROJECT_ROOT='
+
+
+def _systemd_unescape(text: str) -> str:
+    """Invert ``_systemd_env_line``'s quoting: backslash escapes, then ``%%``."""
+    out: list[str] = []
+    chars = iter(text)
+    for char in chars:
+        out.append(next(chars, "") if char == "\\" else char)
+    return "".join(out).replace("%%", "%")
+
+
+def service_root_from_artifact(artifact: Path) -> Path | None:
+    """The project root an installed backend unit or plist runs, or None if unreadable.
+
+    Both are written by this module with the root in ``NYMERIA_PROJECT_ROOT``
+    (``build_systemd_unit``, ``build_launchd_plist``), so reading it back says
+    which install the ONE per-user service belongs to (#101 entry 41: a second
+    install was told to uninstall the first one's). None for anything this
+    module did not write that way (a hand-edited unit, a Windows shim, an
+    unreadable file): the caller then cannot tell, and must not guess.
+    """
+    try:
+        if artifact.suffix == ".plist":
+            import plistlib
+
+            payload = plistlib.loads(artifact.read_bytes())
+            env = payload.get("EnvironmentVariables") if isinstance(payload, dict) else None
+            raw = env.get("NYMERIA_PROJECT_ROOT") if isinstance(env, dict) else None
+        else:
+            raw = None
+            for line in artifact.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith(_SYSTEMD_ROOT_PREFIX) and line.endswith('"'):
+                    raw = _systemd_unescape(line[len(_SYSTEMD_ROOT_PREFIX):-1])
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(raw).expanduser().resolve()
+
+
 # --- CLI ----------------------------------------------------------------------
 
 
@@ -1174,5 +1216,6 @@ __all__ = [
     "service_cli",
     "service_manager",
     "service_path_env",
+    "service_root_from_artifact",
     "wait_for_backend_health",
 ]

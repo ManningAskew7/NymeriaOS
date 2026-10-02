@@ -70,6 +70,123 @@ def _load_environment() -> None:
     load_env_files_into_environ(_project_root, force=True)
 
 
+# One root per process, chosen before any env file loads (#101 entry 6, #451).
+# The commands whose own parser takes a `--root`; the global `--root` (before
+# the command) means the same thing for every command.
+_ROOT_FLAG = "--root"
+_ROOT_SCOPED_COMMANDS = frozenset({"init", "service", "browser"})
+# Top-level options that consume the next token as their value.
+_GLOBAL_VALUE_OPTIONS = frozenset({"--log-level", "-l"})
+
+
+def _root_flags_from_argv(argv: "list[str]") -> "tuple[Optional[str], Optional[str]]":
+    """``(global, per-command)`` ``--root`` values in ``argv``, by a plain string scan.
+
+    Runs before argparse, because the env files load before parsing (#294) and
+    the root decides which files those are. Only the two full spellings count
+    (``--root PATH``, ``--root=PATH``); an abbreviation argparse would accept
+    is caught after parsing (``_apply_root_flag``) instead of re-implemented
+    here. A repeated flag keeps its last value, as argparse does; an empty
+    value counts as absent, as the wizard treats it. Stops at ``--``.
+    """
+    global_root: Optional[str] = None
+    command_root: Optional[str] = None
+    command: Optional[str] = None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            break
+        if command is not None and command not in _ROOT_SCOPED_COMMANDS:
+            break
+        if token == _ROOT_FLAG or token.startswith(_ROOT_FLAG + "="):
+            if token == _ROOT_FLAG:
+                if index + 1 >= len(argv):
+                    break  # argparse reports the missing value
+                value, index = argv[index + 1], index + 2
+            else:
+                value, index = token[len(_ROOT_FLAG) + 1:], index + 1
+            if command is None:
+                global_root = value or None
+            else:
+                command_root = value or None
+            continue
+        if command is None:
+            if token in _GLOBAL_VALUE_OPTIONS:
+                index += 2
+                continue
+            if not token.startswith("-"):
+                command = token
+        index += 1
+    return global_root, command_root
+
+
+def _same_root(a: str, b: str) -> bool:
+    return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+
+
+def _select_root_from_argv(argv: "list[str]") -> Optional[Path]:
+    """Make a ``--root`` flag this process's root before anything loads. Exit 2 on a clash.
+
+    Sets the module root (what ``_load_environment`` reads) and, through
+    ``_runtime_paths.select_project_root``, ``NYMERIA_PROJECT_ROOT`` plus the
+    record that the user named it. So ``nymeria init --root B`` loads B's
+    files, exactly like ``NYMERIA_PROJECT_ROOT=B nymeria init``: the launch
+    root's config never enters the process. The root is deliberately NOT
+    added to ``sys.path`` (a config directory is not code).
+    """
+    global _project_root
+    global_root, command_root = _root_flags_from_argv(argv)
+    if global_root and command_root and not _same_root(global_root, command_root):
+        print(
+            f"nymeria: error: --root names two different roots: {global_root} "
+            f"(before the command) and {command_root} (after it). Pass one.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    chosen = global_root or command_root
+    if not chosen:
+        return None
+    from nymeria._runtime_paths import select_project_root
+
+    _project_root = select_project_root(chosen)
+    return _project_root
+
+
+def _apply_root_flag(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    selected: Optional[Path],
+) -> None:
+    """After parsing: route the global ``--root`` into the command, then verify the scan.
+
+    A command with its own ``--root`` (init, service, browser) gets the global
+    value, so the flag means one thing everywhere. Then the root argparse
+    parsed must be the one the pre-parse scan selected: argparse also accepts
+    abbreviations (``--roo``), and the env files were loaded from the scan's
+    root, so a mismatch would run one root's config against another. Refused
+    rather than guessed at.
+    """
+    global_root = getattr(args, "global_root", None) or None
+    command_root = getattr(args, "root", None) or None
+    if global_root and command_root and not _same_root(global_root, command_root):
+        parser.error(
+            f"--root names two different roots: {global_root} (before the "
+            f"command) and {command_root} (after it). Pass one."
+        )
+    if global_root and hasattr(args, "root") and not command_root:
+        args.root = global_root
+    parsed = global_root or command_root
+    parsed_root = Path(parsed).expanduser().resolve() if parsed else None
+    if parsed_root != selected:
+        parser.error(
+            "write the root flag in full, as --root PATH or --root=PATH: the "
+            "configuration is read before the arguments are parsed, so an "
+            "abbreviated or otherwise unrecognized spelling would run one "
+            "root's settings against another."
+        )
+
+
 def _pin_runtime_env(pins: "dict[str, Optional[str]]") -> None:
     """Apply a shape's env pins, and register them so a reload re-applies them.
 
@@ -1493,6 +1610,7 @@ Examples:
     python run.py mcp --http         # Start MCP server (HTTP mode)
     python run.py mcp --http -p 8001 # MCP HTTP mode on custom port
     python run.py service            # Run gateway in foreground
+    python run.py --root DIR doctor  # Any command, against the install at DIR
         """,
     )
     parser.add_argument(
@@ -1501,6 +1619,22 @@ Examples:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
         help="Logging level",
+    )
+    # One root per process (#101 entry 6): main() reads this flag before any
+    # env file loads, so `nymeria --root <dir> <command>` runs the command
+    # against that install alone, the portable spelling of
+    # `NYMERIA_PROJECT_ROOT=<dir> nymeria <command>`. init, service and browser
+    # take the same flag after the command too; it means the same thing.
+    parser.add_argument(
+        "--root",
+        dest="global_root",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Project root (where this install's config.env or .env and data "
+            "live) for this command, instead of NYMERIA_PROJECT_ROOT or "
+            "auto-discovery. Write it in full."
+        ),
     )
     # The first thing a tester or a bug report asks for (#101 entry 37).
     # argparse prints and exits during parse_args, before settings load or any
@@ -2140,13 +2274,17 @@ _FULL_VALIDATION_COMMANDS = frozenset(
 
 def main() -> None:
     """Main entry point."""
-    # First, before anything reads settings: every subcommand below, and every
+    # The root first: a --root flag decides WHICH env files load, so it is read
+    # (by a string scan, not argparse) before they are (#101 entry 6, #451).
+    selected_root = _select_root_from_argv(sys.argv[1:])
+    # Then, before anything reads settings: every subcommand below, and every
     # module they import, expects the deployment .env merged into os.environ.
     # Deliberately here rather than at import time (see _load_environment).
     _load_environment()
     _suppress_runtime_dependency_warnings()
     parser = build_parser()
     args = parser.parse_args()
+    _apply_root_flag(args, parser, selected_root)
     # Which code this process booted from, taken before the subcommand
     # imports the rest of the package (#101 entry 23b): `/status` compares it
     # with the code on disk now, and the server roles log it below.

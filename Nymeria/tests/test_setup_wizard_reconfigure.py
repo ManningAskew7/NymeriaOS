@@ -1011,11 +1011,12 @@ def test_a_finished_run_points_at_chat_apps(monkeypatch, tmp_path, capsys):
     root = tmp_path / "init"
     _first_run(monkeypatch, root, "--hosting", "local")
     out = " ".join(capsys.readouterr().out.split())
-    assert "Chat apps" in out and "nymeria telegram-bot" in out
+    # Root-pinned: the tmp root is not what a bare command resolves (#101 entry 6).
+    assert "Chat apps" in out and f"nymeria --root {root} telegram-bot" in out
     # Part of the CLOSING instructions (review): after the start command and
     # the doctor line, not above them where a chatty doctor scrolls it away.
     assert out.index("Chat apps") > out.index("Start Nymeria with")
-    assert out.index("Chat apps") > out.rindex("nymeria doctor")
+    assert out.index("Chat apps") > out.rindex(f"nymeria --root {root} doctor")
 
 
 def test_chat_apps_block_closes_a_start_now_but_precedes_a_foreground_one(
@@ -1398,3 +1399,216 @@ def test_a_fresh_run_before_the_hosting_pick_names_both_roots(monkeypatch, tmp_p
     out = " ".join(buf.getvalue().split())
     assert f"New install at {own}" in out
     assert str(checkout) not in out
+
+
+# --- #101 entry 6: printed commands reach the install they describe ----------
+
+
+def _closing_output(monkeypatch, capsys, root, *extra):
+    _first_run(monkeypatch, root, *extra)
+    return " ".join(capsys.readouterr().out.split())
+
+
+@pytest.mark.parametrize("launched", ["other export", "nothing exported"])
+@pytest.mark.parametrize(
+    "extra,commands",
+    [
+        (("--hosting", "local"), ("slim", "cli", "init", "doctor", "telegram-bot")),
+        (("--hosting", "local", "--next-action", "cli"), ("cli", "init", "doctor")),
+        (("--hosting", "service"), ("service status", "cli", "init", "doctor")),
+    ],
+)
+def test_closing_commands_name_the_root_a_bare_command_would_miss(
+    monkeypatch, tmp_path, capsys, launched, extra, commands
+):
+    # After `init --root B` the closing `nymeria slim` started the DEFAULT
+    # install: a bare command resolves the export or the checkout, not B.
+    import shlex
+
+    _launched_with_root(monkeypatch, tmp_path / "default" if launched == "other export" else None)
+    root = tmp_path / "my install"  # a space: the root must arrive quoted
+
+    out = _closing_output(monkeypatch, capsys, root, *extra)
+
+    pinned = f"nymeria --root {shlex.quote(str(root))}"
+    for command in commands:
+        assert f"{pinned} {command}" in out, command
+    for command in ("slim", "cli", "init", "doctor"):
+        assert f"`nymeria {command}`" not in out
+        assert f" nymeria {command} " not in f" {out} ".replace(pinned, "")
+
+
+def test_closing_commands_stay_bare_when_a_bare_command_finds_the_root(
+    monkeypatch, tmp_path, capsys
+):
+    root = tmp_path / "exported"
+    _launched_with_root(monkeypatch, root)
+
+    out = _closing_output(monkeypatch, capsys, root, "--hosting", "local")
+
+    for command in ("nymeria slim", "nymeria cli", "`nymeria init`", "`nymeria doctor`"):
+        assert command in out
+    assert "nymeria --root" not in out
+
+
+def test_printed_roots_are_quoted_for_the_shell_they_are_pasted_into():
+    posix = finalize_mod._shell_arg("/home/a user/it's", windows=False)
+    assert posix == "'/home/a user/it'\"'\"'s'"
+    assert finalize_mod._shell_arg(r"C:\Users\A User\nymeria", windows=True) == (
+        r'"C:\Users\A User\nymeria"'
+    )
+    assert finalize_mod._shell_arg(r"C:\plain", windows=True) == r"C:\plain"
+
+
+# --- #101 entry 6: a local config never lands beside .env.docker by accident -
+
+
+def _shared_root(tmp_path):
+    root = tmp_path / "shared"
+    root.mkdir()
+    (root / ".env.docker").write_text(
+        "LLM_MODEL=docker-model\nNYMERIA_SECRETS_KEY=docker-install-key\n", encoding="utf-8"
+    )
+    return root
+
+
+@pytest.mark.parametrize("hosting", ["local", "service"])
+@pytest.mark.parametrize("landed_by", ["export", "checkout default"])
+def test_a_local_config_is_refused_beside_a_docker_one_unless_root_names_it(
+    monkeypatch, tmp_path, capsys, hosting, landed_by
+):
+    import shlex
+
+    from nymeria.setup import environment as environment_mod
+
+    root = _shared_root(tmp_path)
+    if landed_by == "export":
+        _launched_with_root(monkeypatch, root)
+    else:
+        # An editable checkout with nothing exported: the checkout is the root.
+        monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: root)
+        _launched_with_root(monkeypatch, None)
+        monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(root))
+    calls = _stub_llm(monkeypatch)
+    before = (root / ".env.docker").read_bytes()
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-x", "--hosting", hosting, "--non-interactive"]
+    )
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert rc == 2
+    assert calls == []  # stopped before the LLM test
+    assert sorted(p.name for p in root.iterdir()) == [".env.docker"]  # nothing written
+    assert (root / ".env.docker").read_bytes() == before
+    assert "holds .env.docker" in out and "Nothing was written" in out
+    assert "loads .env.docker after the local config" in out
+    assert "nymeria --root <dir> init" in out  # remedy 1: its own root
+    assert "docker compose down" in out  # remedy 2: retire the Docker config
+    assert f"nymeria --root {shlex.quote(str(root))} init" in out  # write here anyway
+
+
+def test_naming_the_shared_root_with_root_writes_it_with_the_warning(
+    monkeypatch, tmp_path, capsys
+):
+    root = _shared_root(tmp_path)
+    _launched_with_root(monkeypatch, None)
+
+    _first_run(monkeypatch, root, "--hosting", "local")
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert (root / "config.env").exists() or (root / ".env").exists()
+    assert "also holds .env.docker" in out
+    assert "Nothing was written" not in out
+
+
+@pytest.mark.parametrize("answer,written", [("y", True), ("n", False), ("", False), (EOFError, False)])
+def test_the_interactive_wizard_asks_before_writing_beside_a_docker_config(
+    monkeypatch, tmp_path, answer, written
+):
+    import builtins
+
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.state import WizardState
+
+    root = _shared_root(tmp_path)
+    _launched_with_root(monkeypatch, root)
+    _stub_llm(monkeypatch)
+    asked: list[str] = []
+
+    def fake_input(*_a):
+        asked.append("asked")
+        if answer is EOFError:
+            raise EOFError
+        return answer
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+    # The other interactive prompts finalize can reach are not under test here.
+    monkeypatch.setattr(finalize_mod, "_maybe_install_local_rag", lambda *a, **k: None)
+    monkeypatch.setattr(finalize_mod, "_finalize_server_browser_guarded", lambda *a, **k: None)
+    state = WizardState(
+        hosting=HostingOption.LOCAL, provider="anthropic", model="claude-test-model",
+        api_key="sk-ant-x", skip_llm_test=True,
+    )
+    console, buf = _capture_console()
+
+    rc = finalize(state, console=console, non_interactive=False, overwrite_confirmed=True)
+
+    out = " ".join(buf.getvalue().split())
+    assert asked == ["asked"]
+    assert "Write the local config here anyway?" in out
+    local_files = [n for n in ("config.env", ".env") if (root / n).exists()]
+    if written:
+        assert rc == 0 and len(local_files) == 1
+        assert "also holds .env.docker" in out
+    else:
+        assert rc == 2 and local_files == []
+        assert "Nothing was written" in out
+
+
+def test_docker_hosting_at_a_checkout_is_not_refused(monkeypatch, tmp_path):
+    # E12: the Docker install's own config lives beside compose; a Docker run
+    # with no --root reconfigures it exactly as before.
+    checkout = _checkout_with_docker_config(monkeypatch, tmp_path)
+    _launched_with_root(monkeypatch, None)
+    monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(checkout))
+    _stub_llm(monkeypatch)
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model", "--api-key",
+         "sk-ant-x", "--hosting", "docker", "--non-interactive", "--skip-llm-test"]
+    )
+
+    assert rc == 0
+    assert "LLM_MODEL=claude-test-model" in (checkout / ".env.docker").read_text()
+    assert not (checkout / "config.env").exists() and not (checkout / ".env").exists()
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_the_review_screen_names_the_root_and_the_docker_config_beside_it(
+    monkeypatch, tmp_path, named
+):
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.review import _summary_markup
+
+    root = _shared_root(tmp_path)
+    _launched_with_root(monkeypatch, root)
+    state = WizardState(hosting=HostingOption.LOCAL, root=root if named else None)
+
+    markup = " ".join(_summary_markup(state).split())
+
+    assert str(root) in markup
+    assert "also holds .env.docker" in markup
+    if named:
+        assert "it is written anyway" in markup
+    else:
+        assert "finishing asks before writing here" in markup
+        assert "nymeria --root <dir> init" in markup
+
+    # Docker hosting there, or a local root without the file: no heads-up.
+    for clean in (
+        WizardState(hosting=HostingOption.DOCKER, root=root),
+        WizardState(hosting=HostingOption.LOCAL, root=tmp_path / "own"),
+    ):
+        assert ".env.docker" not in _summary_markup(clean)

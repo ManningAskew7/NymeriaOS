@@ -30,6 +30,7 @@ from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _capture_console,
     _env_line,
     _env_report,
+    _loaded_from,
     _no_checkout,
     _stub_llm,
 )
@@ -673,8 +674,39 @@ def test_finalize_full_stack_warns_on_shadowing_process_env(monkeypatch, tmp_pat
          "--non-interactive"]
     ) == 0
     out = capsys.readouterr().out
-    assert "the environment already defines POSTGRES_PASSWORD" in out
+    assert "your shell exports POSTGRES_PASSWORD" in " ".join(out.split())
     assert "unset POSTGRES_PASSWORD" in out
+
+
+def test_a_value_only_an_env_file_loaded_is_never_called_a_shell_export(
+    monkeypatch, tmp_path, capsys
+):
+    # #435 review PA-4: os.environ also holds the launch root's FILE values
+    # after run.py's boot load. Those never reach the user's shell (where the
+    # printed commands run) and the wizard's own compose calls drop them, so
+    # telling the user to unset them named something their shell never had.
+    _stub_llm(monkeypatch)
+    for key in ("POSTGRES_PASSWORD", "REDIS_PASSWORD", "NYMERIA_SECRETS_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("REDIS_PASSWORD", "shell-exported-value")
+    _loaded_from(
+        tmp_path / "launch",
+        "POSTGRES_PASSWORD=launch-file-value\nNYMERIA_SECRETS_KEY=launch-file-key\n",
+    )
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    assert setup_main(
+        ["--provider", "anthropic", "--model", "m", "--api-key", "sk-ant-x",
+         "--hosting", "docker", "--docker-stack", "full", "--root", str(root),
+         "--non-interactive"]
+    ) == 0
+    out = capsys.readouterr().out
+
+    assert "your shell exports REDIS_PASSWORD" in " ".join(out.split())
+    assert "unset REDIS_PASSWORD" in out
+    assert "POSTGRES_PASSWORD" not in out
+    assert "NYMERIA_SECRETS_KEY with" not in out and "unset NYMERIA_SECRETS_KEY" not in out
 
 
 def test_finalize_full_stack_no_shadow_warning_when_env_clean(monkeypatch, tmp_path, capsys):
@@ -693,7 +725,7 @@ def test_finalize_full_stack_no_shadow_warning_when_env_clean(monkeypatch, tmp_p
          "--non-interactive"]
     ) == 0
     out = capsys.readouterr().out
-    assert "the environment already defines" not in out
+    assert "your shell exports" not in " ".join(out.split())
 
 
 def test_wizard_pilot_start_now_docker_defaults_to_start_and_can_switch():

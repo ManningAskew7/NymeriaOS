@@ -44,6 +44,8 @@ __all__ = [
     "_env_line",
     "_no_checkout",
     "_cliproxy_first_run",
+    "_loaded_from",
+    "_unit_for",
 ]
 
 
@@ -435,3 +437,37 @@ def _cliproxy_first_run(monkeypatch, root, *, provider="claude", auth_provider=N
          "--hosting", "local", "--root", str(root),
          "--non-interactive", "--skip-llm-test"]
     ) == 0
+
+
+def _loaded_from(root, text: str) -> None:
+    """Load ``root``'s `.env` into this process the way run.py's boot load does.
+
+    Writes ``text`` as ``root/.env`` and runs the real
+    ``load_env_files_into_environ``, so ``os.environ`` holds the file's values
+    while ``launch_environment()`` still answers with what the "shell" had
+    before the load. The suite's hermeticity layers serve a load from a root
+    that is not the checkout, and conftest drops the load state and restores
+    ``os.environ`` before the next test.
+    """
+    from nymeria.config.settings import load_env_files_into_environ
+
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".env").write_text(text, encoding="utf-8")
+    load_env_files_into_environ(root, force=True)
+
+
+def _unit_for(path, root):
+    """Write the systemd user unit `service install` would write for ``root`` at ``path``."""
+    from pathlib import Path
+
+    from nymeria.service_install import build_systemd_unit
+
+    path.write_text(
+        build_systemd_unit(
+            exec_argv=["/usr/bin/python3", "/opt/x/run.py", "slim"],
+            root=Path(root),
+            path_env="/usr/bin:/bin",
+        ),
+        encoding="utf-8",
+    )
+    return path

@@ -301,6 +301,27 @@ def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _offline_service_units(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep this host's installed service units out of every test.
+
+    `service_install.installed_artifact_path` looks under the real home for
+    the per-user unit (systemd), plist (launchd) or shim. The wizard reads the
+    unit back to learn which install it runs (#101 entry 41), and its
+    start-now and closing output branch on the answer, so on a developer box
+    whose dogfood instance runs as `nymeria.service` a test would see ANOTHER
+    install's service and take a different path than on a clean host. Every
+    test therefore starts on a host with no unit installed; tests that need
+    one patch the function with a path to a unit they wrote (as before), and
+    the function's own tests call the real one, imported at module scope.
+    """
+    from nymeria import service_install as service_install_module
+
+    monkeypatch.setattr(
+        service_install_module, "installed_artifact_path", lambda *_a, **_k: None
+    )
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_custom_tool_retirements(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

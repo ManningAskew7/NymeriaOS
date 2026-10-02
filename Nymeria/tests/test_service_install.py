@@ -25,8 +25,10 @@ from nymeria.service_install import (
     SystemdUserService,
     build_launchd_plist,
     build_systemd_unit,
+    installed_artifact_path,
     resolve_exec_argv,
     service_manager,
+    service_root_from_artifact,
 )
 
 
@@ -575,8 +577,75 @@ def test_service_manager_unsupported_on_windows(monkeypatch):
 
 
 def test_installed_artifact_path_is_none_off_platform(monkeypatch):
+    # The real function, imported at module scope: conftest's
+    # `_offline_service_units` replaces the module attribute for every test.
     monkeypatch.setattr(sys, "platform", "win32")
-    assert si.installed_artifact_path() is None
+    assert installed_artifact_path() is None
+
+
+def test_installed_artifact_path_finds_the_unit_under_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert installed_artifact_path() is None
+    unit = tmp_path / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Unit]\n", encoding="utf-8")
+    assert installed_artifact_path() == unit
+
+
+# --- #101 entry 41: which install the one per-user unit runs ----------------
+
+
+@pytest.mark.parametrize(
+    "root",
+    [
+        "/srv/nymeria",
+        "/home/a user/my install",  # whitespace
+        "/tmp/100%/x",  # a systemd specifier character
+        '/tmp/q"uote\\back$slash;semi',  # quote, backslash, dollar, semicolon
+        "/tmp/café/rööt",  # non-ASCII
+    ],
+)
+def test_the_unit_and_plist_say_which_root_they_run(tmp_path, root):
+    unit = tmp_path / SYSTEMD_UNIT_NAME
+    unit.write_text(
+        build_systemd_unit(
+            exec_argv=["/usr/bin/python3", "run.py", "slim"],
+            root=Path(root),
+            path_env="/usr/bin",
+        ),
+        encoding="utf-8",
+    )
+    plist = tmp_path / f"{LAUNCHD_LABEL}.plist"
+    plist.write_bytes(
+        plistlib.dumps(build_launchd_plist(exec_argv=["x"], root=Path(root), path_env="/usr/bin"))
+    )
+
+    assert service_root_from_artifact(unit) == Path(root).resolve()
+    assert service_root_from_artifact(plist) == Path(root).resolve()
+
+
+@pytest.mark.parametrize(
+    "name,content",
+    [
+        ("nymeria.service", None),  # missing file
+        ("nymeria.service", "[Service]\nExecStart=/x slim\n"),  # no root line
+        ("nymeria.service", 'Environment="NYMERIA_PROJECT_ROOT="\n'),  # empty root
+        ("nymeria.service", 'Environment="NYMERIA_PROJECT_ROOT=/x\n'),  # unterminated
+        ("nymeria.service", b"\xff\xfe\x00garbage"),  # not UTF-8
+        ("com.nymeria.backend.plist", b"not a plist"),
+        ("com.nymeria.backend.plist", plistlib.dumps({"Label": "x"})),  # no env block
+        ("nymeria-browser.vbs", 'shell.Run """nymeria""", 0\n'),  # a shim: no root
+    ],
+)
+def test_a_unit_whose_root_cannot_be_read_back_says_none(tmp_path, name, content):
+    path = tmp_path / name
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    elif content is not None:
+        path.write_text(content, encoding="utf-8")
+
+    assert service_root_from_artifact(path) is None
 
 
 def test_service_cli_unavailable_prints_hints_and_fallback(monkeypatch, tmp_path, capsys):

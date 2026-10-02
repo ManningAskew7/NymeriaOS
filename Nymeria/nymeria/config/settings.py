@@ -527,6 +527,21 @@ def _runtime_settings_values() -> dict[str, str]:
     return {key: value for key, value in values.items() if value is not None}
 
 
+def launch_environment() -> dict[str, str]:
+    """A copy of the process environment from BEFORE the first env-file load.
+
+    What the shell (or the service unit, or compose) handed this process,
+    without anything the boot load merged in from a root's env files. Setup
+    code that hands an environment to ANOTHER install, or judges what the
+    user's shell exports, must start here rather than from ``os.environ``,
+    which holds the launch root's config (#101 entry 6, #451). Falls back to
+    the live environment when nothing has loaded yet (an entry point that
+    never went through ``run.py``, or a test).
+    """
+    with _env_load_lock:
+        return dict(_boot_environ if _boot_environ is not None else os.environ)
+
+
 def runtime_settings_baseline(key: str) -> Optional[str]:
     """The value ``key`` would hold in this process WITHOUT the runtime settings file.
 
