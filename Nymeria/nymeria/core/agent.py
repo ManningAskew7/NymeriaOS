@@ -1739,7 +1739,7 @@ class NymeriaAgent:
         Called by the LOCK HOLDER, once per turn start, BEFORE the graph
         lookup, so a cleared hold rebuilds this turn against the primary and
         ``prepare_astream_input`` folds the end note into this turn's prompt.
-        Never from ``_get_graph_for_user_shared``: mid-turn rebuilds pass
+        Never from ``get_graph_for_user_impl``: mid-turn rebuilds pass
         there, and a model must never change mid-turn. An offer is spent
         only on a streaming turn that can show it
         (``fallback_approvals.reclaim_offer_renders``: a human's turn from a
@@ -1765,6 +1765,37 @@ class NymeriaAgent:
         return settle_hold_at_turn_start(
             self, thread_id, user_id, offers=offers, resume=resume
         )
+
+    @staticmethod
+    def _reset_turn_fallback_state(graph: Any, thread_id: str) -> None:
+        """Start the turn on the graph's primary candidate (#459, D3).
+
+        A swap moves ``active_fallback_candidate_index`` (and the stream
+        processor's recovery stamps ``pending_fallback_note``) on the
+        ``LLMConfig`` baked into the CACHED graph. The durable truth is the
+        persisted hold: activation saves it and evicts the cached graph, so
+        the next turn rebuilds with the hold folded into the primary at index
+        0. A non-zero index at a turn start therefore only ever means a swap
+        whose hold did not persist (a hold of 0 seconds, or a failed save),
+        whose contract is "no cross-turn hold"; without this reset the thread
+        stayed on the fallback in memory until the graph left the cache.
+
+        Called by the lock holder right after the turn-start graph lookup in
+        ``chat()`` and ``astream()`` ONLY, never from the graph lookup: mid-turn
+        rebuilds (tool reload, sub-turn compaction) look the graph up too, and
+        a model must never change mid-turn.
+        """
+        llm_config = getattr(graph, "nymeria_llm_config", None)
+        if not isinstance(llm_config, LLMConfig):
+            return  # a graph without the stash (test stubs) has nothing to reset
+        if llm_config.active_fallback_candidate_index:
+            logger.info(
+                "Thread %s: a fallback swap from an earlier turn left no hold; "
+                "this turn starts on the primary",
+                thread_id,
+            )
+        llm_config.active_fallback_candidate_index = 0
+        llm_config.pending_fallback_note = None
 
     def _get_team_scoped_callable_threads(
         self,
@@ -2471,6 +2502,8 @@ class NymeriaAgent:
             graph = self._get_graph_for_user(
                 user_id, thread_id=thread_id
             )
+            # This turn starts on the graph's primary (#459): see the helper.
+            self._reset_turn_fallback_state(graph, thread_id)
 
             # Post-restart guard, mirroring astream: seed the tracker row from
             # checkpoint history BEFORE the turn adds messages, so the
@@ -3389,6 +3422,8 @@ class NymeriaAgent:
             graph = self._get_async_graph_for_user(
                 user_id, thread_id=thread_id
             )
+            # This turn starts on the graph's primary (#459): see the helper.
+            self._reset_turn_fallback_state(graph, thread_id)
 
             # Post-restart guard: seed the tracker row from checkpoint history
             # BEFORE the turn adds messages, so the end-of-turn slice bills

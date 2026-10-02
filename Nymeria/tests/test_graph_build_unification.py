@@ -12,7 +12,7 @@ import inspect
 import textwrap
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from nymeria.core.thread_config import ThreadConfig
@@ -456,18 +456,8 @@ def test_async_graph_cache_is_scoped_to_running_event_loop():
     agent._async_user_graphs = {}
     agent._graph_cache_lock = __import__("threading").Lock()
     agent._GRAPH_CACHE_MAX = 100
-    agent._base_system_prompt = "base"
     agent._get_memory_hash = MagicMock(return_value="hash")
     agent._build_full_system_prompt = MagicMock(return_value="full")
-    agent.profile_manager.get_profile.return_value = SimpleNamespace(
-        memories={},
-        personality_overrides={},
-        tool_preferences=SimpleNamespace(default_thread_tools=[]),
-    )
-    todo_list = MagicMock()
-    todo_list.get_active_todos_for_thread.return_value = []
-    agent.todo_manager = MagicMock()
-    agent.todo_manager.get_todos.return_value = todo_list
 
     first_graph = object()
     second_graph = object()
@@ -492,6 +482,108 @@ def test_async_graph_cache_is_scoped_to_running_event_loop():
     assert graph_one_again is first_graph
     assert graph_two is second_graph
     assert agent._build_async_graph_with_prompt.call_count == 2
+
+
+def _configless_lookup_agent():
+    """An agent whose user has nothing the pre-#459 shared-graph probe looked
+    for (no memories, personality overrides, TODOs or tool preferences) and
+    whose threads have no config file: before #459 every such lookup was
+    served one per-user graph built with no thread id and cached under
+    ``(user, "")``."""
+    agent = _make_agent()
+    agent._user_graphs = {}
+    agent._async_user_graphs = {}
+    agent._graph_cache_lock = __import__("threading").Lock()
+    agent._GRAPH_CACHE_MAX = 50
+    agent._base_system_prompt = "base"
+    agent._skills_fingerprint = MagicMock(return_value="")
+    agent._resolve_temporary_tools = MagicMock(return_value=set())
+    agent.accounts_repo.get_user_by_id = MagicMock(return_value=None)
+    agent.thread_config_manager.get_config.return_value = None
+    agent.profile_manager.get_profile.return_value = SimpleNamespace(
+        memories=[],
+        personality_overrides={},
+        tool_preferences=SimpleNamespace(default_thread_tools=None),
+    )
+    agent.todo_manager = cast(
+        Any,
+        SimpleNamespace(
+            get_todos=lambda user_id: SimpleNamespace(
+                get_active_todos_for_thread=lambda thread_id: [],
+                get_active_todos=lambda: [],
+            )
+        ),
+    )
+    builds: list[dict] = []
+
+    def build(system_prompt, user_id="default", thread_id=""):
+        graph = SimpleNamespace(
+            prompt=system_prompt, user_id=user_id, thread_id=thread_id
+        )
+        builds.append({"user_id": user_id, "thread_id": thread_id, "graph": graph})
+        return graph
+
+    agent._build_graph_with_prompt = build
+    agent._build_async_graph_with_prompt = build
+    return agent, builds
+
+
+def test_every_configless_thread_builds_and_caches_its_own_graph():
+    """#459: one graph per (user, thread); no lookup shares a graph across
+    threads or keys one under ``""``."""
+    agent, builds = _configless_lookup_agent()
+
+    graph_a = agent._get_graph_for_user("u1", thread_id="thread-a")
+    graph_b = agent._get_graph_for_user("u1", thread_id="thread-b")
+
+    assert [(b["user_id"], b["thread_id"]) for b in builds] == [
+        ("u1", "thread-a"),
+        ("u1", "thread-b"),
+    ]
+    assert graph_a is not graph_b
+    assert graph_a.prompt == "base"  # a config-less thread's prompt is the base
+    assert set(agent._user_graphs) == {("u1", "thread-a"), ("u1", "thread-b")}
+    # A repeat lookup is a hit on the thread's own entry.
+    assert agent._get_graph_for_user("u1", thread_id="thread-a") is graph_a
+    assert len(builds) == 2
+    assert all(key[1] for key in agent._user_graphs)
+    assert agent._async_user_graphs == {}
+
+
+def test_every_configless_thread_gets_its_own_async_graph_on_the_loop():
+    agent, builds = _configless_lookup_agent()
+
+    async def lookups():
+        loop_id = id(asyncio.get_running_loop())
+        first = agent._get_async_graph_for_user("u1", thread_id="thread-a")
+        second = agent._get_async_graph_for_user("u1", thread_id="thread-b")
+        again = agent._get_async_graph_for_user("u1", thread_id="thread-a")
+        return loop_id, first, second, again
+
+    loop_id, first, second, again = asyncio.run(lookups())
+
+    assert [b["thread_id"] for b in builds] == ["thread-a", "thread-b"]
+    assert first is not second and again is first
+    assert set(agent._async_user_graphs) == {
+        (loop_id, "u1", "thread-a"),
+        (loop_id, "u1", "thread-b"),
+    }
+    assert agent._user_graphs == {}
+
+
+def test_a_thread_level_invalidation_reaches_a_configless_threads_graph():
+    """The activation of a fallback hold evicts the thread's cached graph by
+    its thread id; a config-less thread's graph must be reachable that way
+    (the shared ``""`` entry never was)."""
+    agent, builds = _configless_lookup_agent()
+    first = agent._get_graph_for_user("u1", thread_id="thread-a")
+    other = agent._get_graph_for_user("u1", thread_id="thread-b")
+
+    agent.invalidate_thread_config_cache("thread-a")
+
+    assert agent._get_graph_for_user("u1", thread_id="thread-a") is not first
+    assert agent._get_graph_for_user("u1", thread_id="thread-b") is other
+    assert [b["thread_id"] for b in builds] == ["thread-a", "thread-b", "thread-a"]
 
 
 def test_graph_cache_hit_moves_entry_to_lru_tail():
@@ -723,20 +815,12 @@ def test_role_change_evicts_the_cached_graph_and_forces_a_rebuild():
     agent._user_graphs = {}
     agent._async_user_graphs = {}
     agent._GRAPH_CACHE_MAX = 50
-    agent._base_system_prompt = "sys"
     agent._build_full_system_prompt = MagicMock(return_value="sys")
     agent._skills_fingerprint = MagicMock(return_value="")
     agent._resolve_temporary_tools = MagicMock(return_value=set())
     agent.thread_config_manager.get_config.return_value = None
     agent.profile_manager.get_profile.return_value = MagicMock(
-        memories=[],
-        personality_overrides={},
         tool_preferences=MagicMock(default_thread_tools=[admin_only]),
-    )
-    agent.todo_manager = MagicMock()
-    agent.todo_manager.get_todos.return_value = MagicMock(
-        get_active_todos_for_thread=MagicMock(return_value=[]),
-        get_active_todos=MagicMock(return_value=[]),
     )
     agent._build_graph_with_prompt = MagicMock(side_effect=lambda *a, **k: object())
 

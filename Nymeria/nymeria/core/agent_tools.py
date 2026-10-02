@@ -128,7 +128,12 @@ def sync_agent_tools(agent: "NymeriaAgent") -> List[str]:
 
 
 def invalidate_thread_config_cache(agent: "NymeriaAgent", thread_id: str) -> None:
-    """Remove cached graphs for a specific thread after its config changes."""
+    """Remove cached graphs for a specific thread after its config changes.
+
+    Every thread's graph is cached under its own thread id (#459: no shared
+    config-less graph under ``""`` any more), so this reaches every graph a
+    thread's turns can be served from.
+    """
     with agent._graph_cache_lock:
         keys_to_remove = [k for k in agent._user_graphs if k[1] == thread_id]
         for k in keys_to_remove:

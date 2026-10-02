@@ -964,8 +964,20 @@ def get_graph_for_user_impl(
     ``agent._build_graph_with_prompt`` or
     ``agent._build_async_graph_with_prompt``.
 
-    The system prompt is source-invariant, so autonomous and interactive
-    turns share the same cached graph for a given (user_id, thread_id).
+    Every thread builds and caches its OWN graph under ``(user_id,
+    thread_id)`` (async: with the loop id). The system prompt is
+    source-invariant, so autonomous and interactive turns share that graph.
+
+    There is deliberately no shared graph for threads without a config
+    (#459). One used to be cached per user under the sentinel thread id
+    ``""``, built with no thread id: its baked ``LLMConfig`` carried no
+    fallback activation or consent callback and no prompt-cache key, and a
+    swap's candidate index and pending note lived on that one object, so a
+    swap on one config-less thread recorded no hold, asked no consent and
+    moved every config-less thread of the user onto the fallback. The
+    fallback state baked into a graph is per thread by construction now; the
+    turn start (``chat()``/``astream()``, never this lookup, which mid-turn
+    rebuilds also call) resets it, see ``NymeriaAgent._reset_turn_fallback_state``.
     """
     # Hot-load chokepoint: pick up raw on-disk edits to the custom-tool /
     # MCP stores before any cache-freshness decision, so an external edit
@@ -992,43 +1004,6 @@ def get_graph_for_user_impl(
     cached_graph = agent._get_cached_graph_entry(cache, cache_key, memory_hash)
     if cached_graph is not None:
         return cached_graph
-
-    profile = agent.profile_manager.get_profile(user_id)
-    todo_list = agent.todo_manager.get_todos(user_id)
-    has_memories = profile.memories or profile.personality_overrides
-    has_todos = bool(
-        todo_list.get_active_todos_for_thread(thread_id) if thread_id
-        else todo_list.get_active_todos()
-    )
-    # "Customized" means the list differs from the stock fresh-install default:
-    # since 2026-08-30 the lazy profile migration materializes the list for
-    # every profile, so a bare is-not-None test would be always-True and this
-    # no-customization fast path would be dead for the very users it serves.
-    from ..tools import fresh_default_thread_tool_names
-
-    has_tool_prefs = (
-        profile.tool_preferences.default_thread_tools is not None
-        and profile.tool_preferences.default_thread_tools
-        != fresh_default_thread_tool_names()
-    )
-    has_thread_config = bool(
-        thread_id and agent.thread_config_manager.get_config(thread_id)
-    )
-
-    if not has_memories and not has_todos and not has_tool_prefs and not has_thread_config:
-        # No-customization path: cannot reuse the default graph because
-        # it was built without a user_id at startup, so its callable tool
-        # list contains every user's callables (cross-user leak). Build a
-        # per-user graph and cache under the sentinel thread_id "".
-        no_cust_key = build_cache_key(user_id, "")
-        cached_graph = agent._get_cached_graph_entry(
-            cache, no_cust_key, memory_hash
-        )
-        if cached_graph is not None:
-            return cached_graph
-        graph = build_fn(agent._base_system_prompt, user_id=user_id)
-        agent._store_cached_graph_entry(cache, no_cust_key, memory_hash, graph)
-        return graph
 
     logger.debug(f"Building new graph for user {user_id}, thread {thread_id} (context or tools changed)")
     full_prompt = agent._build_full_system_prompt(user_id, thread_id=thread_id)
