@@ -1,6 +1,7 @@
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { registerIdentityReloadHook } from './config.svelte';
+import { refreshAvailableModels } from './availableModels.svelte';
 import type {
   Credential,
   CredentialBinding,
@@ -70,6 +71,8 @@ function createCredentialsStore() {
       const credential = await api.createCredential(request);
       if (!current(generation)) return null;
       credentials = [credential, ...credentials.filter((c) => c.id !== credential.id)];
+      // A provider key may have changed what the model pickers can list (#453).
+      refreshAvailableModels();
       return credential;
     } catch (e) {
       if (current(generation)) error = humanizeErrorText(e, { action: 'create', resource: 'the credential' });
@@ -87,6 +90,7 @@ function createCredentialsStore() {
       const credential = await api.updateCredential(credentialId, request);
       if (!current(generation)) return null;
       credentials = credentials.map((c) => c.id === credentialId ? credential : c);
+      refreshAvailableModels();
       return credential;
     } catch (e) {
       if (current(generation)) error = humanizeErrorText(e, { action: 'update', resource: 'the credential' });
@@ -104,6 +108,7 @@ function createCredentialsStore() {
       await api.deleteCredential(credentialId);
       if (!current(generation)) return false;
       credentials = credentials.map((c) => c.id === credentialId ? { ...c, status: 'disabled' } : c);
+      refreshAvailableModels();
       return true;
     } catch (e) {
       if (current(generation)) error = humanizeErrorText(e, { action: 'disable', resource: 'the credential' });

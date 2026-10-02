@@ -18,7 +18,7 @@
     supportedEffortSet,
   } from '$lib/utils/reasoningEffort';
   import { buildMobileProviderGroups } from '$lib/utils/providerGroups';
-  import { keepAvailableModelsLoaded } from '$lib/stores/availableModels.svelte';
+  import { keepAvailableModelsLoaded, refreshAvailableModels } from '$lib/stores/availableModels.svelte';
   import { getThemeList, getThemePreviewColors, type ThemeName } from '$lib/themes';
   import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, LLMProviderSpec, ProviderRoute } from '$lib/types';
   import Icon from './Icon.svelte';
@@ -225,9 +225,11 @@
 
   // The provider's live model list (GET /models/available). This panel
   // stays mounted (LeftPanel), so it asks nothing while closed; an ungated
-  // effect used to ask in the background for the app's lifetime (#453).
+  // effect used to ask in the background for the app's lifetime (#453). It
+  // also waits for GET /settings to seed the form, so an open never probes
+  // the form's hard-coded default provider first.
   const availableModelsState = keepAvailableModelsLoaded(() =>
-    open ? { provider: llmProvider, baseUrl: llmBaseUrl } : null
+    open && serverSettings ? { provider: llmProvider, baseUrl: llmBaseUrl } : null
   );
 
   $effect(() => {
@@ -484,6 +486,8 @@
         ? 'Saved! Restart server for some changes.'
         : 'Settings saved and applied!';
       serverSettingsStore.refresh();
+      // The backend lists models by its saved provider config.
+      refreshAvailableModels();
     } catch (e) {
       testStatus = 'error';
       testMessage = humanizeErrorText(e, { action: 'save', resource: 'settings' });

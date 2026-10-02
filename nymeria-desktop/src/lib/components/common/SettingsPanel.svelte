@@ -51,7 +51,7 @@
   import SegmentedTabs from './SegmentedTabs.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
-  import { keepAvailableModelsLoaded } from '$lib/stores/availableModels.svelte';
+  import { keepAvailableModelsLoaded, refreshAvailableModels } from '$lib/stores/availableModels.svelte';
   import {
     DEFAULT_CLIPROXY_BASE_URL,
     DEFAULT_LOCAL_BASE_URL,
@@ -547,11 +547,14 @@
 
   // The provider's live model list (GET /models/available); the static
   // model options are only a fallback. This panel is mounted only while
-  // Global Settings is open, so a closed panel never asks (#453).
-  const availableModelsState = keepAvailableModelsLoaded(() => ({
-    provider: fromDisplayProvider(displayProvider).provider,
-    baseUrl: llmBaseUrl,
-  }));
+  // Global Settings is open, so a closed panel never asks (#453), and it
+  // asks nothing until GET /settings has seeded the form, so an open never
+  // probes the form's hard-coded default provider first.
+  const availableModelsState = keepAvailableModelsLoaded(() =>
+    serverSettings
+      ? { provider: fromDisplayProvider(displayProvider).provider, baseUrl: llmBaseUrl }
+      : null
+  );
 
   $effect(() => {
     if (hasRouteChoice(llmProvider, providerCatalog)) {
@@ -1284,6 +1287,8 @@
       const snapshot = valuesForTab(tab);
       if (snapshot) baselines = { ...baselines, [tab]: snapshot };
       serverSettingsStore.refresh();
+      // The backend lists models by its saved provider config.
+      if (tab === 'llm') refreshAvailableModels();
       return true;
     } catch (e) {
       testStatus = 'error';
@@ -1339,6 +1344,8 @@
   }
 
   async function handleProviderSetupSaved() {
+    // The wizard may have saved a key: the model picker asks again.
+    refreshAvailableModels();
     await loadServerSettings();
     serverSettingsStore.refresh();
     testStatus = 'success';

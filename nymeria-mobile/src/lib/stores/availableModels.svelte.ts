@@ -13,14 +13,20 @@
  * inputs and the connection generation, never the list it writes, and each
  * picker remembers its last ask by `provider|baseUrl` key:
  * - a non-empty answer latches until the key changes, the connection
- *   switches or the panel remounts;
+ *   switches, a refresh or the panel remounts;
  * - an empty or failed one is retried at most once per retry window
- *   (`utils/retryWindow.ts`, shared with the models store, #445);
+ *   (`utils/retryWindow.ts`, shared with the models store, #445). The
+ *   endpoint caches nothing, so for the pickers the window is a client-side
+ *   rate limit, and a save that can change the answer (a provider settings
+ *   or credential save) calls `refreshAvailableModels`, which re-asks every
+ *   open picker at once;
  * - a new key asks at once (a provider change, or a return to the previous
- *   provider), and so does a connection switch, which also drops the
- *   previous backend's list at once;
- * - inputs of null mean the panel is closed: nothing is asked, so a panel
- *   that stays mounted (mobile Settings) never asks in the background.
+ *   provider) and drops the previous key's list, so it is never selectable
+ *   under the new provider; a connection switch does both too;
+ * - inputs of null mean the panel is closed (or a Settings form not yet
+ *   seeded): nothing is asked, so a panel that stays mounted (mobile
+ *   Settings) never asks in the background, though a switch still drops
+ *   the previous backend's list at once.
  *
  * Shared byte-for-byte by desktop and mobile (drift gate EXACT_MATCH).
  */
@@ -46,6 +52,7 @@ export interface AvailableModelsInputs {
 interface Ask {
   key: string;
   generation: number;
+  refresh: number;
   /** When the answer landed; null while it is in flight. */
   answeredAt: number | null;
   count: number;
@@ -59,6 +66,20 @@ registerIdentityReloadHook(() => {
   generation += 1;
 });
 
+// Bumped by `refreshAvailableModels`. Reactive too, so an open picker
+// re-asks at once, even a latched key.
+let refreshes = $state(0);
+
+/**
+ * Re-ask every picker once: call after a save that can change what the
+ * backend lists for a provider (a provider settings save, a credential
+ * saved or disabled). An open picker asks at once and keeps its list on
+ * screen until the answer lands; a closed one asks when it next opens.
+ */
+export function refreshAvailableModels(): void {
+  refreshes += 1;
+}
+
 // Each picker's last ask, by its state. Plain, so no effect tracks it.
 const asks = new WeakMap<AvailableModelsState, Ask>();
 
@@ -70,17 +91,19 @@ async function load(state: AvailableModelsState, provider: string, baseUrl: stri
     state.loading = false;
     return;
   }
+  const refresh = refreshes;
   const key = `${provider}|${baseUrl}`;
   const last = asks.get(state);
-  if (last && last.key === key && last.generation === started) {
+  if (last && last.key === key && last.generation === started && last.refresh === refresh) {
     if (last.answeredAt === null) return; // in flight
     if (last.count > 0) return; // a non-empty list latches
     if (insideRetryWindow(last.answeredAt)) return; // empty or failed: once per window
   }
-  // A list from before a switch is the previous backend's: drop it now.
-  if (last && last.generation !== started) state.models = [];
+  // A list from before a switch, or for another provider or base URL, is
+  // not this key's: drop it now. A refresh keeps it until the answer lands.
+  if (last && (last.generation !== started || last.key !== key)) state.models = [];
 
-  const ask: Ask = { key, generation: started, answeredAt: null, count: 0 };
+  const ask: Ask = { key, generation: started, refresh, answeredAt: null, count: 0 };
   asks.set(state, ask);
   state.loading = true;
   let models: AvailableModel[] = [];
@@ -101,9 +124,22 @@ async function load(state: AvailableModelsState, provider: string, baseUrl: stri
 }
 
 /**
+ * Inputs of null ask nothing, but a connection switch still drops the
+ * previous backend's list at once: a Settings panel's inputs go null on a
+ * switch until GET /settings reseeds its form.
+ */
+function dropAfterSwitch(state: AvailableModelsState): void {
+  const last = asks.get(state);
+  if (!last || last.generation === generation) return;
+  asks.delete(state);
+  state.models = [];
+  state.loading = false;
+}
+
+/**
  * Create a picker's state and the effect that keeps it loaded. Call once
  * during component initialization. `inputs` is read inside the effect:
- * return null while the panel is closed.
+ * return null while the panel is closed or its form is not seeded yet.
  */
 export function keepAvailableModelsLoaded(
   inputs: () => AvailableModelsInputs | null
@@ -112,6 +148,7 @@ export function keepAvailableModelsLoaded(
   $effect(() => {
     const next = inputs();
     if (next) void load(state, next.provider, next.baseUrl ?? '');
+    else dropAfterSwitch(state);
   });
   return state;
 }

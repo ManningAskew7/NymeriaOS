@@ -249,10 +249,13 @@
 
   // The effective provider's live model list (GET /models/available). This
   // panel stays mounted while a thread is open, so it asks nothing while
-  // closed (#453).
-  const availableModelsState = keepAvailableModelsLoaded(() =>
-    open ? { provider: getEffectiveProvider(), baseUrl: llmBaseUrl } : null
-  );
+  // closed (#453). The base URL rides along only where the provider takes
+  // one, as on desktop's Model tab.
+  const availableModelsState = keepAvailableModelsLoaded(() => {
+    if (!open) return null;
+    const provider = getEffectiveProvider();
+    return { provider, baseUrl: supportsApiMode(provider) ? llmBaseUrl : '' };
+  });
 
   $effect(() => {
     if (open) {

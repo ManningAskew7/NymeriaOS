@@ -6,7 +6,7 @@ import { RETRY_AFTER_MS, insideRetryWindow } from './retryWindow';
 describe('insideRetryWindow', () => {
   const T0 = 1_700_000_000_000;
 
-  it('is the backend failure-cache TTL, 60 s', () => {
+  it("is 60 s: the OpenRouter catalog's backend failure-cache TTL, a client-side rate limit for the pickers", () => {
     expect(RETRY_AFTER_MS).toBe(60_000);
   });
 
