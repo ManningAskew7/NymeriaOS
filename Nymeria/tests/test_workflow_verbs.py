@@ -1212,8 +1212,9 @@ async def test_threads_configure_team_by_name_fans_out(tmp_path, monkeypatch):
     assert tc.callable_team_name is None
     assert agent._saved  # persisted
     # Team changes take the cross-thread fan-out, not the single-thread path:
-    # every owned thread plus the "" sentinel.
-    assert set(agent._invalidated) == {"t-9", "t-other", ""}
+    # every owned thread (no "" sentinel since #459: each graph has its own
+    # thread id).
+    assert set(agent._invalidated) == {"t-9", "t-other"}
 
 
 async def test_threads_configure_team_none_unteams(tmp_path, monkeypatch):
