@@ -1080,7 +1080,7 @@ def local_install_beside_docker(root: Path) -> bool:
 
     The co-location guard is for landing beside a `.env.docker` by accident;
     reconfiguring an install that already lives there (the Source-track
-    layout, #503) is not one, so it proceeds with the post-write warning.
+    layout, #477) is not one, so it proceeds with the post-write warning.
     """
     return any((root / name).exists() for name in ("config.env", ".env"))
 

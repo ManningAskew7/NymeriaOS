@@ -1622,7 +1622,7 @@ def test_a_local_install_already_beside_a_docker_config_reconfigures_without_roo
     monkeypatch, tmp_path, capsys, hosting, local_file
 ):
     # F2: the guard is for landing beside .env.docker by ACCIDENT. A local
-    # install already placed there (the Source-track layout, #503) is a
+    # install already placed there (the Source-track layout, #477) is a
     # reconfigure: it proceeds, headless with no --root, and still gets the
     # post-write warning. A fresh write there stays refused (the test above).
     root = _shared_root(tmp_path)
