@@ -14,7 +14,8 @@ each gate here exists for one concrete hazard:
                     session mid-task means the tree holds half-finished edits,
                     and a restart would boot them. Any MODIFIED tracked file
                     under the configured paths skips the whole tick; untracked
-                    files never block.
+                    files never block. A failing `git status` proves nothing
+                    clean: it skips the tick too, loudly.
   escalation gate   A commit range touching dependency or image inputs
                     (requirements*, pyproject, Dockerfile*, docker-compose*)
                     must not be half-deployed: restarting bind-mounted code
@@ -70,10 +71,13 @@ each gate here exists for one concrete hazard:
                     moved, tracked files dirtied, or package files changed
                     during the restart), and a match the checkout no longer
                     backs, is "unverified" instead: no marker, and the next
-                    clean tick restarts and verifies. Only once per commit:
-                    a second unverified restart of the same commit means
-                    something keeps changing the checkout during boots, and
-                    it is failed and held like any other failure.
+                    clean tick restarts and verifies. Only once per commit
+                    for changed files: a second unverified restart of the
+                    same commit because tracked or package files changed
+                    means something keeps changing the checkout during
+                    boots, and it is failed and held like any other failure.
+                    A commit landing mid-boot (or git failing mid-update)
+                    never counts toward that.
 
 State: one marker file per target (last deployed commit) plus once-per-commit
 escalation, failure and unverified stamps, under --state-dir. A missing marker
@@ -202,7 +206,10 @@ def run_command(
     proc = subprocess.run(
         argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=600
     )
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+    # rstrip, not strip: leading whitespace is data (`git status
+    # --porcelain` writes an unstaged edit as " M path", and a stripped
+    # first line loses its first status column).
+    return proc.returncode, (proc.stdout + proc.stderr).rstrip()
 
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
@@ -299,17 +306,31 @@ def repo_state(repo: str, runner: Callable = run_command) -> dict[str, Any]:
     return state
 
 
+class GitStatusFailed(Exception):
+    """`git status` exited non-zero: nothing proves the guarded tree clean.
+    The message is git's first output line."""
+
+
 def dirty_tracked_paths(
     repo: str, clean_paths: list[str], runner: Callable = run_command
 ) -> list[str]:
-    """Tracked files with index or worktree changes under the guarded paths."""
-    _, out = git(repo, "status", "--porcelain", "--", *clean_paths, runner=runner)
+    """Tracked files with index or worktree changes under the guarded paths.
+
+    Raises GitStatusFailed when git fails. Only porcelain-shaped lines
+    (``XY path``) are read: the runner merges stderr into the output, and a
+    ``warning:`` (an unreadable untracked directory, say) or ``fatal:`` line
+    read as a path would hold the tick as "busy", or turn a verified restart
+    into an unverified one.
+    """
+    rc, out = git(repo, "status", "--porcelain", "--", *clean_paths, runner=runner)
+    if rc != 0:
+        first = next((x.strip() for x in out.splitlines() if x.strip()), "")
+        raise GitStatusFailed(first or f"rc={rc}")
     dirty = []
     for line in out.splitlines():
-        if not line.strip():
-            continue
-        status = line[:2]
-        if status == "??":
+        if len(line) < 4 or line[2] != " ":
+            continue  # not porcelain: git's own stderr
+        if line[:2] == "??":
             continue  # untracked never blocks
         dirty.append(line[3:].strip())
     return dirty
@@ -795,8 +816,9 @@ def transient_cause(
     files_before: Optional[str],
     runner: Callable = run_command,
     fingerprint: Callable = checkout_fingerprint,
-) -> Optional[str]:
-    """Why the checkout no longer backs what the target booted, or None.
+) -> tuple[Optional[str], bool]:
+    """(cause, counted): why the checkout no longer backs what the target
+    booted, or (None, False), and whether that counts toward the cap.
 
     The host digest and the desired commit were taken BEFORE the restart; a
     parallel session committing, editing a tracked file or adding one to the
@@ -806,20 +828,32 @@ def transient_cause(
     occurrence: a held target needs a human), and a match it explains is
     not proof the target runs the desired commit's code, so it is never
     called verified. When in doubt this says unverified (the cost is one
-    extra restart next tick; a second for the same commit is held).
+    extra restart next tick).
+
+    Only the checkout's CONTENT changing under the desired commit (a tracked
+    file modified, files under the package changed) is counted: that is
+    what can recur at every boot of one commit, and a second one is held.
+    A commit landing (HEAD moved) is the ordinary case and the next tick
+    deploys that commit; an unreadable HEAD or a failed `git status` is git
+    mid-update, and if it lasts, the next tick's own gates skip before any
+    restart. Counting those would hold a target with the wrong remedy.
     """
     repo = config["repo"]
     rc, head = git(repo, "rev-parse", "HEAD", runner=runner)
     if rc != 0:
-        return "HEAD became unreadable"
+        return "HEAD became unreadable", False
     if head != desired:
-        return f"HEAD moved to {head[:12]}"
+        return f"HEAD moved to {head[:12]}", False
     clean_paths = config.get("clean_paths", DEFAULT_CLEAN_PATHS)
-    if dirty_tracked_paths(repo, clean_paths, runner=runner):
-        return "tracked files were modified"
+    try:
+        dirty = dirty_tracked_paths(repo, clean_paths, runner=runner)
+    except GitStatusFailed as exc:
+        return f"git status failed ({exc})", False
+    if dirty:
+        return "tracked files were modified", True
     if files_before is not None and host_files(config, fingerprint)[0] != files_before:
-        return "files under the package changed"
-    return None
+        return "files under the package changed", True
+    return None, False
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +957,18 @@ def sync(
             }
         return summary
 
-    dirty = dirty_tracked_paths(repo, clean_paths, runner=runner)
+    try:
+        dirty = dirty_tracked_paths(repo, clean_paths, runner=runner)
+    except GitStatusFailed as exc:
+        # Nothing proves the tree clean. Loud like an unresolvable HEAD:
+        # if it lasts, every tick skips.
+        summary["repo"]["status_error"] = str(exc)
+        for target in config["targets"]:
+            summary["targets"][target["name"]] = {
+                "action": "skipped",
+                "detail": f"git status failed: {exc}",
+            }
+        return summary
     if dirty:
         for target in config["targets"]:
             summary["targets"][target["name"]] = {
@@ -1080,34 +1125,37 @@ def sync(
         # Whatever the target answered, it is evidence about the checkout
         # as it stood before the restart: if that moved since, neither a
         # match nor a mismatch says what the desired commit runs like.
-        cause = None
         if booted is not None:
-            cause = transient_cause(
+            cause, counted = transient_cause(
                 config, desired, files_before, runner=runner, fingerprint=fingerprint
             )
-        if cause:
-            facts = identity_facts(booted or Identity(), desired, files_before)
-            if read_state_file(unverified_stamp) != desired:
-                write_state_file(unverified_stamp, desired)
-                summary["targets"][name] = {
-                    "action": "unverified",
-                    "detail": (
-                        f"{marker[:12]} -> {desired[:12]} not confirmed: "
-                        f"{cause} during the restart ({facts}); not held: "
-                        "the next clean tick restarts and verifies"
-                    ),
-                }
-                continue
-            # The second unverified restart of this commit: whatever keeps
-            # changing the checkout during boots will do it again, and an
-            # exit-0 restart every 5 minutes is invisible. Hold it.
-            unverified_stamp.unlink(missing_ok=True)
-            outcome, detail = "failed", (
-                f"{cause} during a second restart for {desired[:12]}: "
-                "something keeps changing the checkout while the target "
-                "boots (files written into the package?); stop it, restart, "
-                f"then --mark-deployed ({facts})"
-            )
+            if cause:
+                facts = identity_facts(booted, desired, files_before)
+                if not counted or read_state_file(unverified_stamp) != desired:
+                    # An uncounted cause (a commit landing, git mid-update)
+                    # neither arms nor trips the cap: the stamp stays as is.
+                    if counted:
+                        write_state_file(unverified_stamp, desired)
+                    summary["targets"][name] = {
+                        "action": "unverified",
+                        "detail": (
+                            f"{marker[:12]} -> {desired[:12]} not confirmed: "
+                            f"{cause} during the restart ({facts}); not held: "
+                            "the next clean tick restarts and verifies"
+                        ),
+                    }
+                    continue
+                # The second counted unverified restart of this commit:
+                # whatever keeps changing the checkout during boots will do
+                # it again, and an exit-0 restart every 5 minutes is
+                # invisible. Hold it.
+                unverified_stamp.unlink(missing_ok=True)
+                outcome, detail = "failed", (
+                    f"{cause} during a second restart for {desired[:12]}: "
+                    "something keeps changing the checkout while the target "
+                    "boots (files written into the package?); stop it, "
+                    f"restart, then --mark-deployed ({facts})"
+                )
         if outcome == "ok":
             write_state_file(marker_file, desired)
             escalation_stamp_path(state_dir, name).unlink(missing_ok=True)
@@ -1355,6 +1403,12 @@ def main(
     if repo_info.get("head_error"):
         print(
             f"deploy_sync: cannot resolve HEAD: {repo_info['head_error']}",
+            file=sys.stderr,
+        )
+        failed = True
+    if repo_info.get("status_error"):
+        print(
+            f"deploy_sync: git status failed: {repo_info['status_error']}",
             file=sys.stderr,
         )
         failed = True

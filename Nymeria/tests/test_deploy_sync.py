@@ -5,12 +5,14 @@ LIVE deployments, so these tests assert observable outcomes: which commands
 ran (pull, restart argv), what the marker files say afterwards, and what
 the summary reports; never internal call counts for their own sake. The
 git/HTTP/sleep seams are injected fakes; nothing here touches a real repo,
-socket, or service.
+socket, or service (one test drives the production runner over a throwaway
+repository it builds under tmp_path).
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import urllib.error
 from pathlib import Path
 
@@ -52,6 +54,7 @@ class FakeWorld:
         self.origin = SHA_OLD
         self.merge_base: str | None = SHA_OLD
         self.status_out = ""
+        self.status_rc = 0
         # Range -> changed file names; a value of None makes `git diff`
         # FAIL for that range (unknown/rewritten commit).
         self.diff_names: dict[tuple[str, str], list[str] | None] = {}
@@ -89,7 +92,7 @@ class FakeRunner:
                     return 1, "no merge base"
                 return 0, w.merge_base
             if sub[0] == "status":
-                return 0, w.status_out
+                return w.status_rc, w.status_out
             if sub[0] == "diff":
                 names = w.diff_names.get((sub[2], sub[3]), [])
                 if names is None:
@@ -1167,34 +1170,46 @@ def _lose_head(world):
     world.head_rc = 1  # a ref being rewritten, a lock file mid-update
 
 
+GIT_STATUS_FATAL = "fatal: index file corrupt"
+
+
+def _fail_git_status(world):
+    world.status_rc, world.status_out = 128, GIT_STATUS_FATAL
+
+
 def _unverified_stamp(world, name):
     path = world.state_dir / f"{name}.unverified"
     return path.read_text(encoding="utf-8").strip() if path.exists() else None
 
 
 @pytest.mark.parametrize(
-    "during_restart, booted, cause",
+    "during_restart, booted, cause, counted",
     [
         (_move_head, {"code_version": SHA_NEW, "code_fingerprint": FILES_OTHER},
-         f"HEAD moved to {SHA_NEW[:12]}"),
+         f"HEAD moved to {SHA_NEW[:12]}", False),
         (_dirty_tree, {"code_version": SHA_LOCAL, "code_fingerprint": FILES_OTHER},
-         "tracked files were modified"),
+         "tracked files were modified", True),
         (_add_package_file, {"code_version": SHA_LOCAL, "code_fingerprint": FILES_OTHER},
-         "files under the package changed"),
+         "files under the package changed", True),
         (_lose_head, {"code_version": SHA_THIRD, "code_fingerprint": FILES_HOST},
-         "HEAD became unreadable"),
+         "HEAD became unreadable", False),
+        (_fail_git_status, {"code_version": SHA_LOCAL, "code_fingerprint": FILES_HOST},
+         f"git status failed ({GIT_STATUS_FATAL})", False),
     ],
-    ids=["head-moved", "tree-dirtied", "package-file-added", "head-unreadable"],
+    ids=["head-moved", "tree-dirtied", "package-file-added", "head-unreadable",
+         "git-status-failed"],
 )
 def test_a_mismatch_the_checkout_explains_is_unverified_and_retried(
-    world, tmp_path, capsys, during_restart, booted, cause
+    world, tmp_path, capsys, during_restart, booted, cause, counted
 ):
     """V7: a parallel session committing or editing while the target boots
     makes it load newer files than the pre-restart digest: a real but
     self-healing mismatch. No marker, no failure stamp, exit 0; the next
     clean tick restarts and verifies. The line LEADS with what the checkout
     did, then the facts, never the after-restart wiring guesses (a lost
-    bind mount, another tree) that would send a reader the wrong way."""
+    bind mount, another tree) that would send a reader the wrong way. Only
+    changed files arm the cap (the ``.unverified`` count): a commit landing
+    or git failing mid-update never does (delta review D1, D2)."""
     _local_commit(world)
     world.on_restart["restart-slim"] = lambda: during_restart(world)
     world.http.routes["http://slim/status/turns"] = _phased(
@@ -1217,12 +1232,12 @@ def test_a_mismatch_the_checkout_explains_is_unverified_and_retried(
     assert "slim" not in err
     assert marker(world, "slim") == SHA_OLD
     assert _stamp(world, "slim") is None
-    assert _unverified_stamp(world, "slim") == SHA_LOCAL
+    assert _unverified_stamp(world, "slim") == (SHA_LOCAL if counted else None)
 
     # Next tick: the tree is clean again and the target reports exactly
     # what the checkout holds now.
     world.on_restart.clear()
-    world.status_out = ""
+    world.status_rc, world.status_out = 0, ""
     world.head_rc = 0
     world.http.routes["http://slim/status/turns"] = _idle(
         code_version=world.head, code_fingerprint=world.fingerprint.value
@@ -1300,6 +1315,161 @@ def test_an_unverified_count_is_per_commit(world, tmp_path, capsys):
     assert summary["targets"]["slim"]["action"] == "unverified"
     assert _unverified_stamp(world, "slim") == SHA_LOCAL
     assert _stamp(world, "slim") is None
+
+
+@pytest.mark.parametrize(
+    "second_cause, cause",
+    [
+        (_move_head, f"HEAD moved to {SHA_NEW[:12]}"),
+        (_lose_head, "HEAD became unreadable"),
+        (_fail_git_status, f"git status failed ({GIT_STATUS_FATAL})"),
+    ],
+    ids=["head-moved", "head-unreadable", "git-status-failed"],
+)
+def test_a_commit_landing_during_the_second_restart_is_never_held(
+    world, tmp_path, capsys, second_cause, cause
+):
+    """Delta review D1: the cap is for something rewriting the package at
+    every boot. A commit landing during the second restart of a commit
+    (or git failing mid-update) is not that: it stays `unverified`, exit
+    0, and the next tick deploys whatever HEAD now is. Holding it named
+    the wrong remedy for a target that needed nothing."""
+    _local_commit(world)
+
+    def turns():
+        if ("restart-slim",) not in world.runner.commands():
+            return _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST)
+        # It boots whatever the checkout holds when it starts.
+        return _idle(code_version=world.head, code_fingerprint=world.fingerprint.value)
+
+    world.http.routes["http://slim/status/turns"] = turns
+    # Tick 1: files under the package change mid-boot, which counts.
+    world.on_restart["restart-slim"] = lambda: _add_package_file(world)
+    rc, _, _ = _run_main(world, tmp_path, capsys)
+    assert rc == 0
+    assert _unverified_stamp(world, "slim") == SHA_LOCAL
+
+    # Tick 2, the same commit again: this time a commit lands mid-boot.
+    world.on_restart["restart-slim"] = lambda: second_cause(world)
+    rc, out, err = _run_main(world, tmp_path, capsys)
+
+    assert rc == 0, err
+    line = next(x for x in out.splitlines() if x.startswith("deploy_sync: slim: "))
+    assert line.startswith(
+        f"deploy_sync: slim: unverified ({SHA_OLD[:12]} -> {SHA_LOCAL[:12]} "
+        f"not confirmed: {cause} during the restart ("
+    )
+    assert "not held" in line
+    assert "slim" not in err
+    assert _stamp(world, "slim") is None
+    assert marker(world, "slim") == SHA_OLD
+
+    # Tick 3: the checkout settled; the target restarts and verifies
+    # whatever HEAD is now.
+    world.on_restart.clear()
+    world.status_rc, world.status_out, world.head_rc = 0, "", 0
+    summary = run_sync(world)
+    assert summary["targets"]["slim"]["action"] == "restarted"
+    assert summary["targets"]["slim"]["detail"].endswith("verified commit+files")
+    assert marker(world, "slim") == world.head
+    assert _unverified_stamp(world, "slim") is None
+
+
+GIT_WARNING = (
+    "warning: could not open directory 'Nymeria/nymeria/locked/': "
+    "Permission denied"
+)
+
+
+def test_git_noise_is_never_a_modified_tracked_file(world):
+    """Delta review D2: the runner merges stderr into the output, and git
+    prints this warning with exit 0 for an untracked directory it cannot
+    read. Read as a path, it held every tick as "working tree busy" and,
+    in the post-restart re-check, turned a verified restart unverified."""
+    _local_commit(world)
+    world.status_out = f"?? Nymeria/nymeria/scratch.py\n{GIT_WARNING}"
+    world.http.routes["http://slim/status/turns"] = _phased(
+        world, "slim",
+        _idle(code_version=SHA_OLD, code_fingerprint=FILES_HOST),
+        _idle(code_version=SHA_LOCAL, code_fingerprint=FILES_HOST),
+    )
+
+    summary = run_sync(world)
+
+    slim = summary["targets"]["slim"]
+    assert slim["action"] == "restarted"
+    assert slim["detail"] == f"{SHA_OLD[:12]} -> {SHA_LOCAL[:12]}, verified commit+files"
+    assert marker(world, "slim") == SHA_LOCAL
+    assert _unverified_stamp(world, "slim") is None
+
+
+def test_a_failing_git_status_skips_the_tick_loudly(world, tmp_path, capsys):
+    """Delta review D2: a non-zero `git status` proves nothing clean. Its
+    fatal line is neither a dirty path (the old reading: "1 modified tracked
+    file") nor, once noise is filtered, an empty and therefore clean tree:
+    the tick skips, says why, and fails the run like an unresolvable HEAD."""
+    _local_commit(world)
+    world.status_rc = 128
+    world.status_out = "fatal: detected dubious ownership in repository at '/repo'"
+
+    rc, out, err = _run_main(world, tmp_path, capsys)
+
+    assert rc == 1
+    assert (
+        "deploy_sync: git status failed: fatal: detected dubious ownership "
+        "in repository at '/repo'"
+    ) in err
+    for name in ("slim", "docker"):
+        assert (
+            f"deploy_sync: {name}: skipped (git status failed: fatal: detected "
+            "dubious ownership"
+        ) in out
+        assert marker(world, name) == SHA_OLD
+    assert not any(c[0].startswith("restart-") for c in world.runner.commands())
+
+
+def test_the_real_runner_reads_porcelain_not_git_noise(tmp_path, monkeypatch):
+    """Delta review D2 through the production runner and a real git: an
+    unstaged edit on the FIRST status line keeps its status column (the
+    runner once stripped the whole output, turning " M path" into "M path"),
+    the warning git writes for an unreadable untracked directory is not a
+    path, and a failing git raises rather than reading clean."""
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))  # no global config or hooks
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = tmp_path / "repo"
+    pkg = repo / "Nymeria" / "nymeria"
+    pkg.mkdir(parents=True)
+    (pkg / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (pkg / "b.py").write_text("b = 1\n", encoding="utf-8")
+
+    def git(*args):
+        rc, out = deploy_sync.run_command(["git", "-C", str(repo), *args])
+        assert rc == 0, out
+
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+        "commit", "-q", "--no-verify", "-m", "init")
+    (pkg / "a.py").write_text("a = 2\n", encoding="utf-8")  # " M", first line
+    (pkg / "c.py").write_text("c = 1\n", encoding="utf-8")  # untracked
+    locked = pkg / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        rc, raw = deploy_sync.git(str(repo), "status", "--porcelain", "--", "Nymeria")
+        assert rc == 0
+        if os.geteuid() != 0:  # root reads it, so git has nothing to warn about
+            assert "warning: could not open directory" in raw
+        assert deploy_sync.dirty_tracked_paths(str(repo), ["Nymeria"]) == [
+            "Nymeria/nymeria/a.py"
+        ]
+    finally:
+        locked.chmod(0o755)
+
+    with pytest.raises(deploy_sync.GitStatusFailed, match=r"^fatal: "):
+        deploy_sync.dirty_tracked_paths(str(tmp_path / "missing"), ["Nymeria"])
 
 
 @pytest.mark.parametrize(
