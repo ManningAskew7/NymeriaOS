@@ -895,3 +895,39 @@ def test_resolve_platform_user_other_detail_404_raises():
     client = _client_with_404(json_body={"detail": "Not Found"})
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(client.resolve_platform_user("discord", "42"))
+
+
+def test_chat_stream_declares_reclaim_offer_rendering_only_when_asked(monkeypatch):
+    """#439: ``supports_reclaim_offers`` reaches the /chat body only when the
+    caller declares it (the CLI); the bots and every other caller send no
+    such field, so their turns never spend a hold's one revert offer by
+    accident."""
+    bodies: list[dict[str, Any]] = []
+
+    class RecordingClient(ScriptedAsyncClient):
+        def stream(self, method: str, url: str, **kwargs) -> FakeStreamContext:
+            bodies.append(kwargs.get("json") or {})
+            return super().stream(method, url, **kwargs)
+
+    _patch_scripted_client(
+        monkeypatch, [FakeResponse(lines=_CHAT_LINES), FakeResponse(lines=_CHAT_LINES)]
+    )
+    monkeypatch.setattr(api_client.httpx, "AsyncClient", RecordingClient)
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="nym_x")
+        try:
+            async for _event in client.chat_stream(
+                message="hi", thread_id="t1", user_id="u1"
+            ):
+                pass
+            async for _event in client.chat_stream(
+                message="hi", thread_id="t1", user_id="u1", supports_reclaim_offers=True
+            ):
+                pass
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert "supports_reclaim_offers" not in bodies[0]
+    assert bodies[1]["supports_reclaim_offers"] is True

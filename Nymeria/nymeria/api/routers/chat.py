@@ -1092,6 +1092,13 @@ def create_chat_router(
                 publish_agent_stream_chunk=publish_agent_stream_chunk_fn,
                 create_autonomous_notification=create_autonomous_notification_fn,
                 should_notify_autonomous=should_notify_autonomous_fn,
+                # Only a declaring client may spend a fallback hold's one
+                # reclaim offer (#439); the bots qualify by turn origin.
+                astream_overrides=(
+                    {"_reclaim_offer_surface": True}
+                    if request.supports_reclaim_offers
+                    else {}
+                ),
             )
             sink = AsyncTurnSink()
             start_turn(agent, spec, sink, turn_slot)

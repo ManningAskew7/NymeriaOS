@@ -562,7 +562,9 @@ async def _await_parked_decision(
     )
     if not approved:
         return {"action": "fail"}
-    decision: Dict[str, Any] = {"action": "swap"}
+    # A human chose this hold: recorded on it (``hold_origin``), so the
+    # primary reclaim (#439) offers the trip back instead of ending it.
+    decision: Dict[str, Any] = {"action": "swap", "hold_origin": "user"}
     if hold_permanent:
         decision["hold_permanent"] = True
     elif hold_seconds is not None:
@@ -690,22 +692,72 @@ def make_fallback_decision_callback(
     return decide
 
 
-def reclaim_action(*, switch_mode: Optional[str], permanent: bool) -> str:
+def reclaim_action(
+    *, switch_mode: Optional[str], permanent: bool, origin: Optional[str] = None
+) -> str:
     """What a healthy primary does to a live hold (#439): "end" or "offer".
 
-    The return trip belongs to the same consent layer as the swap, keyed on
-    the thread's EFFECTIVE ``fallback_switch_mode`` (the knob that governed
-    the swap). "auto" (the default) ends a TIMED hold: nobody chose it, so
-    the degradation should last no longer than the outage. "ask" reads as
-    "ask me about model switches", the trip back included, and a permanent
-    hold is always a human's explicit choice: both keep the hold and get ONE
-    offer to revert. A reclaim never parks a turn (parking a turn START for
-    good news is worse than the hold it would end; the existing Revert
-    affordances already answer "switch back?").
+    The return trip belongs to the same consent layer as the swap. A hold a
+    human CHOSE keeps that choice: a permanent hold (only a human can pick
+    one) and a hold recorded with ``origin`` "user" (approved at an
+    ask-mode prompt) are never auto-ended, whatever the switch mode says
+    later; they keep the hold and get ONE offer to revert. A hold recorded
+    "automatic" (auto mode, an unanswered prompt, a turn that could not
+    park) ends: nobody chose it, so the degradation should last no longer
+    than the outage. A hold with no recorded origin (made before the field
+    existed) follows the thread's EFFECTIVE ``fallback_switch_mode``: "auto"
+    ends it, "ask" offers. A reclaim never parks a turn (parking a turn
+    START for good news is worse than the hold it would end; the existing
+    Revert affordances already answer "switch back?").
     """
-    if permanent:
+    if permanent or origin == "user":
         return "offer"
+    if origin == "automatic":
+        return "end"
     return "end" if str(switch_mode or "auto").lower() == "auto" else "offer"
+
+
+#: Chat platforms whose bots render a ``fallback_hold_reclaimed`` offer: every
+#: bot that consumes the turn stream through ``sse_consumer.dispatch_event``
+#: (Telegram and Discord with a Revert button, the rest as a plain notice
+#: naming ``/fallback revert``). Twitch is absent: its handler discards text.
+RECLAIM_OFFER_BOT_PLATFORMS = frozenset(
+    {"telegram", "discord", "slack", "whatsapp", "teams"}
+)
+
+
+def reclaim_offer_renders(
+    thread_id: str,
+    *,
+    is_autonomous: bool,
+    holder_kind: Optional[str],
+    declared: bool = False,
+) -> bool:
+    """Whether THIS turn can show a reclaim offer to the user (#439).
+
+    Gated like the consent park: only a turn a human drives (not
+    autonomous, holder kind "user") qualifies, and only on a surface that
+    renders the event: a chat bot (the turn-origin registry, as for the
+    park) or a client that declared it on the request
+    (``ChatRequest.supports_reclaim_offers``: the CLI today, the GUIs once
+    #468 renders it). Every other turn (desktop and mobile until #468,
+    autonomous, callable, MCP) neither probes for an offer nor spends it, so
+    the one offer stays pending. A registry fault reads as "cannot render":
+    a pending offer costs nothing, a spent invisible one costs the offer.
+    """
+    if is_autonomous or holder_kind != "user":
+        return False
+    if declared:
+        return True
+    try:
+        from .bot_reactions import get_turn_origin
+
+        origin = get_turn_origin(thread_id)
+    except Exception:  # noqa: BLE001
+        return False
+    if origin is None:
+        return False
+    return str(origin.get("platform") or "").lower() in RECLAIM_OFFER_BOT_PLATFORMS
 
 
 __all__ = [
@@ -729,6 +781,8 @@ __all__ = [
     "make_fallback_decision_callback",
     "public_entry",
     "publish_resolved_event",
+    "RECLAIM_OFFER_BOT_PLATFORMS",
     "reclaim_action",
+    "reclaim_offer_renders",
     "sweep_stale_records",
 ]

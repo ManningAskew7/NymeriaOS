@@ -596,6 +596,9 @@ def _astream_kwargs(
         "message": message,
         "thread_id": thread_id,
         "user_id": user_id,
+        # The CLI renders a fallback-hold reclaim offer (#439), so its turns
+        # may spend one (the API transport sends supports_reclaim_offers).
+        "_reclaim_offer_surface": True,
     }
     if attachments is not None:
         kwargs["attachments"] = copy.deepcopy(list(attachments))

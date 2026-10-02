@@ -592,8 +592,9 @@ parks exactly like a GUI turn instead of auto-swapping.
   with the same Revert button.
 - When the primary model answers again (`fallback_hold_reclaimed`, see
   `LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS`), an ended hold posts a plain
-  notice; an `ask`-mode or permanent hold that stays posts the one-time
-  revert offer with the same Revert button.
+  notice; a hold the user chose (approved or permanent) stays and the
+  one-time revert offer, with the same Revert button, arrives on the next
+  message the user sends (never on an autonomous turn).
 - The `/fallback` slash-command group (status, revert, approvals, approve,
   deny) forwards to the backend command service (`FallbackCog`).
 

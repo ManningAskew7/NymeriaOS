@@ -890,7 +890,6 @@ def test_the_in_process_field_whitelist_is_a_subset_of_the_patch_schema():
     assert unknown == set()
 
 
-
 # -- /fallback status carries the primary-reclaim line (#439, D7) -------------------
 
 
@@ -987,4 +986,108 @@ def test_the_reclaim_line_renders_the_last_verdict_from_the_payload():
     assert (
         "Reclaim: next check at the first turn after 2026-10-01 15:00 UTC "
         "(last: rate_limited at 2026-10-01 14:00 UTC)."
+    ) in result.markdown.splitlines()
+
+
+@pytest.mark.parametrize(
+    "reclaim, line",
+    [
+        (
+            {"state": "stopped"},
+            "Reclaim: stopped for this hold (the primary rejected the probe "
+            "request itself).",
+        ),
+        ({"state": "checking"}, "Reclaim: checking the primary now."),
+        (
+            {"state": "recovered", "action": "end"},
+            "Reclaim: the primary answered a probe; the hold ends at the next "
+            "turn start.",
+        ),
+        (
+            {"state": "offer_pending", "action": "offer"},
+            "Reclaim: the primary answered a probe; the hold stays and the offer "
+            "to switch back waits for a turn from a chat bot or the CLI "
+            "(revert: /fallback revert).",
+        ),
+        (
+            {"state": "expired"},
+            "Reclaim: the hold expired; it ends at the next turn start.",
+        ),
+        (
+            {"state": "off"},
+            "Reclaim: off (LLM_FALLBACK_RECLAIM_INTERVAL_SECONDS is 0).",
+        ),
+        (
+            {
+                "state": "scheduled",
+                "action": "offer",
+                "next_check_at": "2026-10-01T15:00:00+00:00",
+            },
+            "Reclaim: next check at the first turn after 2026-10-01 15:00 UTC in "
+            "a turn from a chat bot or the CLI.",
+        ),
+    ],
+)
+def test_every_reclaim_state_renders_its_own_line(reclaim, line):
+    from test_command_service import FakeCommandApi, _status_ctx
+
+    api = FakeCommandApi()
+    api.thread_config = {
+        "active_llm_fallback": {
+            "provider": HELD_PROVIDER,
+            "model": HELD_MODEL,
+            "source_model": GLOBAL_MODEL,
+            "reason": "provider_server_error",
+            "expires_at": (utc_now() + timedelta(hours=1)).isoformat(),
+        },
+        "fallback_reclaim": reclaim,
+    }
+
+    result = run(CommandService().execute(_status_ctx(), "/fallback status", api=api))
+
+    reclaim_lines = [
+        text for text in result.markdown.splitlines() if text.startswith("Reclaim:")
+    ]
+    assert reclaim_lines == [line]
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_fallback_status_shows_a_pending_offer_end_to_end(harness, shape):
+    """The derived block reaches /fallback status through the real
+    thread-config payload on BOTH command shapes: a legacy hold (no recorded
+    origin) on a thread whose OWN switch mode is "ask", with a recorded
+    healthy verdict, reads as a pending offer (not "recovered"), since no
+    turn that can show it has run. Both doors judge the verdict against the
+    agent's settings and the thread's own route and mode (the in-process
+    door once read the process-global settings, so it never matched)."""
+    from nymeria.core import fallback_reclaim
+
+    hold = _hold()
+    harness.seed(
+        llm_config=ThreadLLMConfig(model=NEW_MODEL, fallback_switch_mode="ask"),
+        active_llm_fallback=hold,
+    )
+    route = ("anthropic", NEW_MODEL, "", "", "", "")
+    with fallback_reclaim._LOCK:
+        fallback_reclaim._THREADS[THREAD] = fallback_reclaim._ThreadState(
+            hold_key=fallback_reclaim.hold_key(hold),
+            identity=fallback_reclaim._configured_fingerprint(
+                harness.saved().llm_config, harness.agent.settings
+            ),
+            route_key=route,
+        )
+        fallback_reclaim._ROUTES[route] = fallback_reclaim._RouteState(
+            last_verdict="healthy",
+            verdict_at=utc_now(),
+            verdict_sent_at=utc_now(),
+        )
+    try:
+        result, _api = harness.command(shape, "/fallback status")
+    finally:
+        fallback_reclaim.reset_reclaim_state_for_tests()
+
+    assert (
+        "Reclaim: the primary answered a probe; the hold stays and the offer to "
+        "switch back waits for a turn from a chat bot or the CLI (revert: "
+        "/fallback revert)."
     ) in result.markdown.splitlines()

@@ -283,6 +283,7 @@ def test_api_transport_stream_chat_normalizes_sse_events_and_options() -> None:
                 "is_self_invoke": True,
                 "trigger_override": "manual-test",
                 "force_unsupported_attachments": True,
+                "supports_reclaim_offers": True,
             },
         )
     ]

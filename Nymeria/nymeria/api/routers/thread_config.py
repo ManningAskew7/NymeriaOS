@@ -76,7 +76,10 @@ def _config_response(
 
             settings = get_settings()
         result["fallback_reclaim"] = reclaim_status(
-            config.thread_id, config.active_llm_fallback, settings
+            config.thread_id,
+            config.active_llm_fallback,
+            settings,
+            llm_config=config.llm_config,
         )
     # callable_team_name is deprecated on the config (backlog #100): clients
     # keep receiving it, DERIVED from the team entity store, falling back to

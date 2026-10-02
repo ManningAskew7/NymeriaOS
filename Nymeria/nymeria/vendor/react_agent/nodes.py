@@ -675,6 +675,13 @@ def llm_error_status_code(exc: BaseException) -> Optional[int]:
     return _extract_status_code(exc)
 
 
+def llm_error_text(exc: BaseException) -> str:
+    """Public alias of the flattened, lowercased error text over an
+    exception chain (messages, reprs, ``code``/``type``/``body``, response
+    error parts) that the marker checks above match against."""
+    return _llm_exception_text(exc)
+
+
 def _llm_retry_payload(
     llm_config: Optional[LLMConfig],
     candidate_index: int,
@@ -919,14 +926,18 @@ def llm_fallback_hold_overrides(
 ) -> Optional[dict[str, Any]]:
     """The hold fields of a consent decision, shaped for the activation payload.
 
-    Permanent wins over a timed hold. Returns None when the decision carries
-    no hold choice (public: the core stream processor shares this merge).
+    Permanent wins over a timed hold. ``hold_origin`` ("user" on a human's
+    approval) rides along so the persisted hold records who chose it (the
+    primary reclaim reads it). Returns None when the decision carries no
+    hold field (public: the core stream processor shares this merge).
     """
     overrides: dict[str, Any] = {}
     if decision.get("hold_permanent"):
         overrides["hold_permanent"] = True
     elif decision.get("hold_seconds") is not None:
         overrides["hold_seconds"] = decision["hold_seconds"]
+    if decision.get("hold_origin"):
+        overrides["hold_origin"] = decision["hold_origin"]
     return overrides or None
 
 

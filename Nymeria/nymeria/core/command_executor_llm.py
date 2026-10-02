@@ -97,6 +97,9 @@ _TIER_BADGES = {
 _TIER_ORDER = ("native", "gateway", "unverified")
 # Width of a provider's note preview in the /provider list table.
 _NOTE_PREVIEW_CHARS = 80
+# Where a fallback hold's one reclaim offer can be shown (#439,
+# ``fallback_approvals.reclaim_offer_renders``); the GUIs join with #468.
+_RECLAIM_OFFER_SURFACES = "a turn from a chat bot or the CLI"
 
 # Claude models DO serve through the proxy's OpenAI-compatible path (the
 # proxy translates), but only the anthropic provider path carries the
@@ -537,8 +540,14 @@ class LLMCommandsMixin:
             return "Reclaim: checking the primary now."
         if state == "recovered":
             return (
-                "Reclaim: the primary answered a probe; this applies at the "
+                "Reclaim: the primary answered a probe; the hold ends at the "
                 "next turn start."
+            )
+        if state == "offer_pending":
+            return (
+                "Reclaim: the primary answered a probe; the hold stays and the "
+                f"offer to switch back waits for {_RECLAIM_OFFER_SURFACES} "
+                f"({revert})."
             )
         if state == "expired":
             return "Reclaim: the hold expired; it ends at the next turn start."
@@ -546,6 +555,9 @@ class LLMCommandsMixin:
             "Reclaim: next check at the first turn after "
             f"{at(reclaim.get('next_check_at'))}"
         )
+        if reclaim.get("action") == "offer":
+            # Offer holds are only checked where the offer can be shown.
+            line += f" in {_RECLAIM_OFFER_SURFACES}"
         verdict = reclaim.get("last_verdict")
         if verdict:
             line += f" (last: {verdict} at {at(reclaim.get('last_checked_at'))})"

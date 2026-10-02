@@ -340,7 +340,9 @@ async def test_gate_approve_returns_swap_with_chosen_hold():
         record_id, approved=True, resolved_by="u1", hold_permanent=True
     )
     result = await task
-    assert result == {"action": "swap", "hold_permanent": True}
+    # A human approved: the decision records it (``hold_origin``), so the
+    # primary reclaim (#439) never auto-ends this hold.
+    assert result == {"action": "swap", "hold_origin": "user", "hold_permanent": True}
     # The waiter deleted its durable record on exit.
     assert list_pending() == []
 
@@ -532,6 +534,10 @@ class TestVendoredHelpers:
         assert nodes_module._payload_with_hold(
             payload, {"action": "swap", "hold_permanent": True, "hold_seconds": 600}
         ) == {"to_model": "m", "hold_permanent": True}
+        # A human's approval rides into the activation payload (#439).
+        assert nodes_module._payload_with_hold(
+            payload, {"action": "swap", "hold_origin": "user", "hold_seconds": 600}
+        ) == {"to_model": "m", "hold_seconds": 600, "hold_origin": "user"}
 
     def test_sync_bridge_runs_async_callback(self):
         decisions = []

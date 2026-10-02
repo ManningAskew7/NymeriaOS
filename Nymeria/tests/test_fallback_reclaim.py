@@ -19,9 +19,15 @@ permanent holds get one offer), hold-on-hold, probe_invalid, non-blocking
 turns, revert-wins, no mid-turn reclaim, the probe's CLIProxy shape, the
 expired-hold eviction (D5, proven red on the unfixed code first), status.
 
-Edges named and skipped: a provider factory that ignores request_timeout
-(the stale in-flight replacement is a 120s wall-clock path; covered by
-reading, not by a test); a restart resetting route state (in-memory by
+Review fixes pinned here too: the hold's recorded origin decides the
+policy (legacy holds follow the mode), an offer is spent only on a turn that
+can show it (and is never probed for elsewhere), single flight without joins,
+verdict freshness by probe SEND time, a hung probe discarded, a changed
+configured route probed afresh, ``/resume`` evicting an expired hold, an
+exhausted output budget reading healthy, and our own faults never reading as
+a provider verdict.
+
+Edges named and skipped: a restart resetting route state (in-memory by
 design); the agent reaching the reclaim (there is no tool or command to
 reach it with; ``/fallback revert`` agent-blocking is pinned in
 test_command_service).
@@ -31,9 +37,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import concurrent.futures
 import json
 import threading
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +48,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from nymeria.core import bot_reactions
 from nymeria.core import fallback_reclaim as reclaim
 from nymeria.core.agent_history import format_conversation_history
 from nymeria.core.agent_llm_config import (
@@ -50,7 +57,7 @@ from nymeria.core.agent_llm_config import (
     release_fallback_for_config_write,
 )
 from nymeria.core.event_bus import agent_stream_chunk_to_autonomous_event_data
-from nymeria.core.fallback_approvals import reclaim_action
+from nymeria.core.fallback_approvals import reclaim_action, reclaim_offer_renders
 from nymeria.core.pending_prompt_queue import (
     InMemoryPendingPromptQueue,
     reset_pending_queue_for_tests,
@@ -74,6 +81,7 @@ PRIMARY_PROVIDER = "anthropic"
 PRIMARY_MODEL = "claude-sonnet-4-6"  # _Settings' global model
 HELD_PROVIDER = "anthropic"
 HELD_MODEL = "claude-haiku-4-5-20251001"
+OTHER_MODEL = "claude-opus-4-1"
 RECOVERED_NOTE = (
     "[System info]: The fallback hold on this thread ended because the primary "
     "model is answering again; the thread is back on its primary model "
@@ -99,6 +107,7 @@ def _hold(
     source_model: str = PRIMARY_MODEL,
     offered: bool = False,
     activated_at: Any = None,
+    origin: str | None = None,
 ) -> ActiveLLMFallback:
     now = utc_now()
     activated = activated_at if activated_at is not None else now - age
@@ -113,6 +122,7 @@ def _hold(
         reason=reason,
         http_status=502,
         reclaim_offered_at=(now - timedelta(minutes=1)) if offered else None,
+        hold_origin=origin,
     )
 
 
@@ -278,7 +288,18 @@ class _Turn:
             }
         )
 
-    def astream(self, message: str = "hello") -> list[dict[str, Any]]:
+    def astream(
+        self,
+        message: str = "hello",
+        *,
+        offer_surface: bool = False,
+        source: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One streaming turn. ``offer_surface`` is the client declaration
+        (``ChatRequest.supports_reclaim_offers``, as the CLI sends it); a
+        bare turn is a desktop or mobile one (no declaration, no bot
+        origin)."""
+
         async def events():
             yield {
                 "event": "on_chat_model_end",
@@ -299,7 +320,11 @@ class _Turn:
                 chunks = [
                     chunk
                     async for chunk in self.agent.astream(
-                        message, thread_id=THREAD, user_id="owner"
+                        message,
+                        thread_id=THREAD,
+                        user_id="owner",
+                        source=source,
+                        _reclaim_offer_surface=offer_surface,
                     )
                 ]
                 from nymeria.core.embedding_jobs import (
@@ -343,6 +368,19 @@ class _Turn:
 
 def _reclaims(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in events if e.get("type") == "fallback_hold_reclaimed"]
+
+
+@contextmanager
+def _origin(platform: str, thread_id: str = THREAD):
+    """A chat-bot turn: the chat route stamps the turn-origin registry from
+    the request's ``platform_origin`` before the turn starts."""
+    bot_reactions.set_turn_origin(
+        thread_id, platform=platform, channel_id="c1", message_id="m1"
+    )
+    try:
+        yield
+    finally:
+        bot_reactions.clear_turn_origin(thread_id)
 
 
 # -- D5: an expired hold no longer drives one more turn ------------------------
@@ -499,32 +537,73 @@ def test_a_sync_turn_probes_and_a_later_sync_turn_ends_the_hold(
     assert seen["note"]["text"] == RECOVERED_NOTE
 
 
-def test_a_resume_turn_never_settles_the_hold(tmp_path, probe, inline):
-    """A resume adds no prompt, so an end note would have nowhere to ride:
-    the settle skips it entirely (the hold stays exactly as it was)."""
-    turn = _Turn(tmp_path)
-    turn.seed(active_llm_fallback=_hold())
-    turn.astream()  # healthy verdict recorded
+def _resume(turn: _Turn) -> list[dict[str, Any]]:
+    """A ``/resume`` re-drive: no prompt, the graph re-entered as is."""
 
     async def resume() -> list[dict[str, Any]]:
         set_pending_queue(InMemoryPendingPromptQueue())
         try:
-            turn.agent._get_async_graph_for_user = lambda *a, **k: _FakeAsyncGraph(
-                lambda: iter(())
-            )
+
+            def lookup(*args: Any, **kwargs: Any) -> _FakeAsyncGraph:
+                turn._record_lookup()
+                return _FakeAsyncGraph(lambda: iter(()))
+
+            turn.agent._get_async_graph_for_user = lookup
             return [
                 chunk
                 async for chunk in turn.agent.astream(
-                    "", thread_id=THREAD, user_id="owner", _resume_halted_turn=True
+                    "",
+                    thread_id=THREAD,
+                    user_id="owner",
+                    _resume_halted_turn=True,
+                    _reclaim_offer_surface=True,
                 )
             ]
         finally:
             reset_pending_queue_for_tests()
 
-    events = asyncio.run(resume())
+    return asyncio.run(resume())
+
+
+def test_a_resume_turn_never_applies_or_probes_a_live_hold(tmp_path, probe, inline):
+    """A resume adds no prompt, so an end note would have nowhere to ride:
+    a LIVE hold stays exactly as it was (no reclaim applied, no probe)."""
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold())
+    turn.astream()  # healthy verdict recorded
+
+    events = _resume(turn)
 
     assert _reclaims(events) == []
     assert turn.hold() is not None
+    assert turn.at_lookup[-1]["model"] == (HELD_PROVIDER, HELD_MODEL)
+    assert probe.count == 1
+
+
+def test_a_resume_turn_evicts_an_expired_hold_and_the_note_waits(tmp_path, probe, inline):
+    """An EXPIRED hold is evicted at a resume too (red before the review
+    fix: the resumed turn ran the held model): the resumed graph builds on
+    the primary, and the end note stays latched for the next prompted turn
+    (a resume has no prompt to carry it)."""
+    turn = _Turn(tmp_path)
+    turn.seed(
+        active_llm_fallback=_hold(
+            age=timedelta(minutes=65), remaining=timedelta(minutes=-5)
+        )
+    )
+
+    _resume(turn)
+
+    seen = turn.at_lookup[0]
+    assert seen["hold"] is None
+    assert seen["model"] == (PRIMARY_PROVIDER, PRIMARY_MODEL)
+    assert seen["note"]["reason"] == "expired"
+    assert probe.count == 0
+    # The next prompted turn carries the note, once.
+    turn.astream()
+    assert "[System info]: The fallback hold on this thread expired" in turn.prompt()
+    turn.astream()
+    assert "[System info]" not in turn.prompt()
 
 
 # -- 3 and 4: an unhealthy or undue probe changes nothing -------------------------
@@ -594,8 +673,9 @@ def test_quota_and_auth_failures_jump_straight_to_the_cap(
 
 def test_a_healthy_probe_resets_the_ladder(tmp_path, probe, inline, clock):
     turn = _Turn(tmp_path)
-    # Ask mode keeps the hold through a healthy verdict (an offer), so the
-    # route keeps being exercised by OTHER threads after it.
+    # This thread's healthy verdict is never applied here (no later settle on
+    # it). OTHER threads keep exercising the route; their holds form AFTER
+    # that verdict, so it proves nothing for them and they probe when due.
     turn.seed(active_llm_fallback=_hold(remaining=timedelta(hours=30)))
     probe.outcome = ConnectError("down")
     turn.settle()  # t=0, failure 1 -> due at 20 min
@@ -605,17 +685,28 @@ def test_a_healthy_probe_resets_the_ladder(tmp_path, probe, inline, clock):
     assert probe.count == 2
     probe.outcome = ConnectError("down again")
     other = "reclaim-other"
-    turn.seed(other, active_llm_fallback=_hold(remaining=timedelta(hours=30)))
-    clock.advance(minutes=10)
-    turn.settle(other)  # t=30: due (interval after the healthy probe)
+    turn.seed(
+        other,
+        active_llm_fallback=_hold(
+            activated_at=clock.now + timedelta(minutes=1), remaining=timedelta(hours=30)
+        ),
+    )
+    clock.advance(minutes=11)
+    turn.settle(other)  # t=31: due since t=30, other's hold is 10 min old
     assert probe.count == 3
-    # One failure after a reset backs off 2x the interval again, not 4x.
+    # One failure after a reset backs off 2x the interval again, not 4x:
+    # due at t=51.
+    turn.seed(
+        "reclaim-third",
+        active_llm_fallback=_hold(
+            activated_at=clock.now - timedelta(minutes=9), remaining=timedelta(hours=30)
+        ),
+    )
     clock.advance(minutes=19)
-    turn.seed("reclaim-third", active_llm_fallback=_hold(remaining=timedelta(hours=30)))
-    turn.settle("reclaim-third")
+    turn.settle("reclaim-third")  # t=50
     assert probe.count == 3
     clock.advance(minutes=2)
-    turn.settle("reclaim-third")
+    turn.settle("reclaim-third")  # t=52
     assert probe.count == 4
 
 
@@ -656,17 +747,10 @@ def test_transport_health_reasons_and_legacy_holds_are_probed(
 # -- 5 and 6: one probe per route, shared verdicts, credentials kept apart ---------
 
 
-def test_concurrent_checks_on_one_route_share_one_probe(
-    tmp_path, probe, spawned, monkeypatch
-):
-    joined = threading.Semaphore(0)
-
-    class _WatchedFuture(concurrent.futures.Future):
-        def result(self, timeout=None):
-            joined.release()
-            return super().result(timeout)
-
-    monkeypatch.setattr(reclaim, "_FUTURE_FACTORY", _WatchedFuture)
+def test_concurrent_checks_on_one_route_share_one_probe(tmp_path, probe, spawned):
+    """Single flight per route, no joins: a thread whose route already has a
+    probe in flight starts none and does not wait on it; it reads the
+    route's verdict at its next turn start."""
     turn = _Turn(tmp_path)
     threads = [f"reclaim-n{i}" for i in range(4)]
     for thread_id in threads:
@@ -676,15 +760,18 @@ def test_concurrent_checks_on_one_route_share_one_probe(
     turn.settle(threads[0])
     assert probe.started.wait(5)
     for thread_id in threads[1:]:
-        turn.settle(thread_id)
-    for _ in threads[1:]:
-        assert joined.acquire(timeout=5), "a check probed instead of joining"
+        assert turn.settle(thread_id) is None
+    for check in spawned[1:]:
+        check.join(2)
+        assert not check.is_alive(), "a check waited on another thread's probe"
+    assert probe.count == 1
+    # Still in flight: a second turn start on a waiting thread sends nothing.
+    assert turn.settle(threads[1]) is None
     probe.gate.set()
-    for thread in spawned:
-        thread.join(5)
+    spawned[0].join(5)
 
     assert probe.count == 1
-    # Every thread got the one verdict: each ends at its next turn start.
+    # Every thread reads the one verdict: each ends at its next turn start.
     for thread_id in threads:
         event = turn.settle(thread_id)
         assert event is not None and event["outcome"] == "ended", thread_id
@@ -750,6 +837,180 @@ def test_a_healthy_route_verdict_older_than_the_hold_is_never_reused(
     assert turn.hold("reclaim-c") is not None
 
 
+def test_a_probe_sent_before_the_hold_formed_is_never_reused(
+    tmp_path, probe, spawned, clock
+):
+    """Freshness is judged by when the probe was SENT, not when it finished:
+    a probe in flight while another thread's hold formed predates that
+    hold's failure even though its verdict lands after it (red before the
+    review fix, which judged by completion time)."""
+    turn = _Turn(tmp_path)
+    turn.seed("reclaim-a", active_llm_fallback=_hold(activated_at=clock.now - timedelta(minutes=30)))
+    probe.gate = threading.Event()
+    turn.settle("reclaim-a")  # probe sent at t=0
+    assert probe.started.wait(5)
+    turn.seed("reclaim-b", active_llm_fallback=_hold(activated_at=clock.now + timedelta(seconds=1)))
+    clock.advance(seconds=5)
+    probe.gate.set()  # healthy, finished at t=5: after b formed
+    for check in spawned:
+        check.join(5)
+
+    clock.advance(seconds=597)  # b is 601 s old; the route is due at 605 s
+    assert turn.settle("reclaim-b") is None
+    for check in spawned:
+        check.join(5)
+    assert turn.settle("reclaim-b") is None
+    assert turn.hold("reclaim-b") is not None
+    assert probe.count == 1
+    status = _status("reclaim-b", turn.held("reclaim-b"), turn.agent.settings)
+    assert (status["state"], status["last_verdict"]) == ("scheduled", None)
+
+    clock.advance(seconds=5)  # due: b gets its own probe
+    turn.settle("reclaim-b")
+    for check in spawned:
+        check.join(5)
+    assert probe.count == 2
+    assert turn.reclaimed("reclaim-b")["outcome"] == "ended"
+
+
+def test_a_hung_probe_is_discarded_and_never_leaves_status_checking(
+    tmp_path, probe, spawned, clock
+):
+    """A probe whose factory ignores the request timeout hangs: past the
+    timeout plus a margin it is discarded, the status stops saying
+    "checking", and a later turn start probes again (red before the review
+    fix: the owning thread stayed "checking" until restart)."""
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold())
+    probe.gate = threading.Event()
+    try:
+        turn.settle()
+        assert probe.started.wait(5)
+        assert _status(THREAD, turn.held(), turn.agent.settings)["state"] == "checking"
+        clock.advance(seconds=reclaim.PROBE_TIMEOUT_SECONDS)
+        assert turn.settle() is None  # still within the margin: no second probe
+        assert probe.count == 1
+
+        clock.advance(seconds=reclaim._INFLIGHT_STALE_SECONDS - reclaim.PROBE_TIMEOUT_SECONDS + 1)
+        assert _status(THREAD, turn.held(), turn.agent.settings)["state"] == "scheduled"
+        turn.settle()
+        for _ in range(100):
+            if probe.count == 2:
+                break
+            threading.Event().wait(0.02)
+        assert probe.count == 2
+    finally:
+        probe.gate.set()
+        for check in spawned:
+            check.join(5)
+    # Both probes finish healthy; the route's verdict applies as usual.
+    assert turn.reclaimed()["outcome"] == "ended"
+
+
+class _Scripted:
+    """``create_llm`` fake answering the n-th probe with ``steps[n]``: an
+    optional gate it blocks on, then its outcome ("ok" or an exception)."""
+
+    def __init__(self, steps: list[tuple[threading.Event | None, Any]]) -> None:
+        self.steps = steps
+        self.started = [threading.Event() for _ in steps]
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def create_llm(self, cfg: Any) -> Any:
+        with self._lock:
+            index = self.calls
+            self.calls += 1
+        gate, outcome = self.steps[index]
+
+        def invoke(messages: Any) -> AIMessage:
+            self.started[index].set()
+            if gate is not None:
+                assert gate.wait(10), "probe gate never released"
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return AIMessage(content="ok")
+
+        return SimpleNamespace(invoke=invoke)
+
+
+def _start(target: Any) -> threading.Thread:
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_a_discarded_probe_answering_late_never_overwrites_the_newer_verdict(
+    tmp_path, monkeypatch, clock
+):
+    """A hung probe that answers healthy only AFTER a newer probe (sent
+    later) found the primary down is the older evidence: the newer verdict
+    stands and no turn start reclaims on the late answer."""
+    gate = threading.Event()
+    scripted = _Scripted([(gate, "ok"), (None, _StatusError(503))])
+    monkeypatch.setattr(providers_module, "create_llm", scripted.create_llm)
+    pending: list[Any] = []
+    monkeypatch.setattr(reclaim, "_spawn", pending.append)
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold())
+    try:
+        turn.settle()
+        hung = _start(pending.pop())
+        assert scripted.started[0].wait(5)
+        clock.advance(seconds=reclaim._INFLIGHT_STALE_SECONDS + 1)
+        turn.settle()
+        _start(pending.pop()).join(5)  # the newer probe: 503
+        assert scripted.calls == 2
+    finally:
+        gate.set()
+    hung.join(5)
+    assert not hung.is_alive()
+
+    assert _status(THREAD, turn.held(), turn.agent.settings)["last_verdict"] == (
+        "provider_server_error"
+    )
+    assert turn.settle() is None
+    assert turn.hold() is not None
+    assert pending == []  # the route backs off: nothing new to check
+
+
+def test_a_discarded_check_finishing_late_leaves_the_newer_check_in_charge(
+    tmp_path, monkeypatch, clock
+):
+    """A hung check that finishes after the thread started a newer one never
+    clears the newer one's flag: the status keeps saying "checking" and no
+    turn start applies or starts anything around it until the newer check
+    is done."""
+    gate = threading.Event()
+    scripted = _Scripted([(gate, "ok")])
+    monkeypatch.setattr(providers_module, "create_llm", scripted.create_llm)
+    pending: list[Any] = []
+    monkeypatch.setattr(reclaim, "_spawn", pending.append)
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold())
+    try:
+        turn.settle()
+        hung = _start(pending.pop())
+        assert scripted.started[0].wait(5)
+        clock.advance(seconds=reclaim._INFLIGHT_STALE_SECONDS + 1)
+        turn.settle()
+        newer = pending.pop()  # registered, not yet running
+    finally:
+        gate.set()
+    hung.join(5)
+    assert not hung.is_alive()
+
+    assert _status(THREAD, turn.held(), turn.agent.settings)["state"] == "checking"
+    assert turn.settle() is None
+    assert pending == []
+
+    _start(newer).join(5)
+    # The late answer was fresh evidence: the newer check had nothing to
+    # probe, and the next turn start acts on it.
+    assert scripted.calls == 1
+    assert turn.reclaimed()["outcome"] == "ended"
+
+
 def test_different_credentials_are_different_routes(tmp_path, probe, inline):
     turn = _Turn(tmp_path)
     for thread_id, key in (("reclaim-k1", "sk-user-one"), ("reclaim-k2", "sk-user-two")):
@@ -769,25 +1030,68 @@ def test_different_credentials_are_different_routes(tmp_path, probe, inline):
     assert turn.hold("reclaim-k2") is not None
 
 
-# -- 7: ask mode and permanent holds are offered once, never ended ------------------
+def test_a_changed_configured_route_is_probed_afresh_never_reclaimed_on_the_old_verdict(
+    tmp_path, probe, inline
+):
+    """A healthy verdict is about the route that was probed. When the
+    configured route moves before the next turn (an operator's global
+    ``/model``, which never touches a hold), that verdict proves nothing
+    about the new primary: no reclaim onto a never-probed model, and a fresh
+    probe of the new route instead (the configured-route fingerprint)."""
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold())
+    turn.astream()  # the configured primary answers
+    assert [c.model for c in probe.configs] == [PRIMARY_MODEL]
+
+    def status() -> dict[str, Any]:
+        tc = turn.agent.thread_config_manager.get_config(THREAD)
+        return _status(THREAD, turn.hold(), turn.agent.settings, tc.llm_config)
+
+    assert status()["state"] == "recovered"
+
+    turn.agent.settings.llm_model = OTHER_MODEL
+    # /fallback status agrees: the healthy verdict was about the old route.
+    assert (status()["state"], status()["last_verdict"]) == ("scheduled", None)
+    events = turn.astream()
+
+    assert _reclaims(events) == []
+    assert turn.hold() is not None
+    assert turn.at_lookup[-1]["model"] == (HELD_PROVIDER, HELD_MODEL)
+    assert [c.model for c in probe.configs] == [PRIMARY_MODEL, OTHER_MODEL]
+
+    # The new route's own verdict applies at the next turn start.
+    events = turn.astream()
+    assert [(e["outcome"], e["to_model"]) for e in _reclaims(events)] == [
+        ("ended", OTHER_MODEL)
+    ]
+    assert turn.at_lookup[-1]["model"] == (PRIMARY_PROVIDER, OTHER_MODEL)
+
+
+# -- 7: holds a human chose (and legacy ask-mode holds) are offered once ------------
 
 
 @pytest.mark.parametrize(
-    "mode, permanent",
-    [("ask", False), ("auto", True), ("ask", True)],
+    "mode, permanent, origin",
+    [
+        ("ask", False, None),  # legacy hold: follows the ask mode
+        ("auto", True, None),  # permanent: only a human picks one
+        ("ask", True, None),
+        ("auto", False, "user"),  # approved at an ask prompt, mode since moved
+        ("auto", True, "user"),
+    ],
 )
-def test_ask_mode_and_permanent_holds_get_one_offer_and_keep_the_hold(
-    tmp_path, probe, inline, mode, permanent
+def test_holds_a_human_chose_get_one_offer_and_keep_the_hold(
+    tmp_path, probe, inline, mode, permanent, origin
 ):
     turn = _Turn(tmp_path)
-    seeded = _hold(remaining=None if permanent else timedelta(minutes=60))
+    seeded = _hold(remaining=None if permanent else timedelta(minutes=60), origin=origin)
     turn.seed(
         llm_config=ThreadLLMConfig(fallback_switch_mode=mode),
         active_llm_fallback=seeded,
     )
-    turn.astream()  # probe
+    turn.astream(offer_surface=True)  # probe
 
-    events = turn.astream()
+    events = turn.astream(offer_surface=True)
 
     offers = _reclaims(events)
     assert len(offers) == 1
@@ -808,7 +1112,7 @@ def test_ask_mode_and_permanent_holds_get_one_offer_and_keep_the_hold(
     assert hold.activated_at == seeded.activated_at
 
     # Never probed or offered again.
-    events = turn.astream()
+    events = turn.astream(offer_surface=True)
     assert _reclaims(events) == []
     assert probe.count == 1
 
@@ -824,30 +1128,201 @@ def test_ask_mode_and_permanent_holds_get_one_offer_and_keep_the_hold(
     assert "was manually reverted" in turn.prompt()
 
 
-def test_a_sync_turn_defers_the_offer_to_the_next_streaming_turn(
+def test_an_automatic_hold_ends_even_on_an_ask_mode_thread(tmp_path, probe, inline):
+    """The recorded origin decides (review fix): nobody chose an automatic
+    hold (an unanswered prompt, a turn that could not park), so it ends
+    when the primary answers, even on an ask-mode thread. Red before the
+    fix, which keyed on the mode alone and offered it."""
+    turn = _Turn(tmp_path)
+    turn.seed(
+        llm_config=ThreadLLMConfig(fallback_switch_mode="ask"),
+        active_llm_fallback=_hold(origin="automatic"),
+    )
+    turn.astream()  # probe (an end needs no surface that can show an offer)
+
+    events = turn.astream()
+
+    assert [e["outcome"] for e in _reclaims(events)] == ["ended"]
+    assert turn.hold() is None
+    assert turn.prompt().endswith(RECOVERED_NOTE)
+
+
+def test_a_turn_that_cannot_show_an_offer_neither_probes_for_it_nor_spends_it(
     tmp_path, probe, inline
+):
+    """A desktop or mobile turn (no declaration, no bot origin) cannot show
+    the offer until #468: it neither probes for one (a verdict nobody can
+    see only goes stale) nor stamps it. Red before the review fix: the
+    second turn spent the one offer invisibly."""
+    turn = _Turn(tmp_path)
+    turn.seed(
+        llm_config=ThreadLLMConfig(fallback_switch_mode="ask"),
+        active_llm_fallback=_hold(),
+    )
+    for _ in range(2):
+        assert _reclaims(turn.astream()) == []
+    assert probe.count == 0
+    assert turn.held().reclaim_offered_at is None
+
+
+@pytest.mark.parametrize("platform", ["telegram", "discord", "slack", "whatsapp", "teams"])
+def test_a_pending_offer_waits_for_a_bot_turn_that_can_show_it(
+    tmp_path, probe, inline, platform
 ):
     turn = _Turn(tmp_path)
     turn.seed(
         llm_config=ThreadLLMConfig(fallback_switch_mode="ask"),
         active_llm_fallback=_hold(),
     )
-    turn.chat()  # probe
-    turn.chat()  # healthy, but chat() cannot show an offer
+    with _origin(platform):
+        turn.astream()  # a bot turn probes
+    assert probe.count == 1
+    # A desktop turn and an autonomous turn on the bot's thread: nothing spent.
+    assert _reclaims(turn.astream()) == []
+    with _origin(platform):
+        assert _reclaims(turn.astream(source="trigger")) == []
+    assert turn.held().reclaim_offered_at is None
+    status = _status(THREAD, turn.held(), turn.agent.settings, turn.config().llm_config)
+    assert (status["state"], status["action"]) == ("offer_pending", "offer")
+
+    with _origin(platform):
+        events = turn.astream()
+
+    assert [e["outcome"] for e in _reclaims(events)] == ["offered"]
+    assert turn.held().reclaim_offered_at is not None
+    assert probe.count == 1
+
+
+def test_a_sync_turn_never_probes_for_or_spends_an_offer(tmp_path, probe, inline):
+    """chat() cannot stream an offer: on an offer hold it sends no probe
+    (red before the review fix, which re-probed every cap for an offer it
+    could never deliver) and never stamps one a CLI turn recorded."""
+    turn = _Turn(tmp_path)
+    turn.seed(
+        llm_config=ThreadLLMConfig(fallback_switch_mode="ask"),
+        active_llm_fallback=_hold(),
+    )
+    turn.chat()
+    with _origin("telegram"):  # a bot's /chat/sync fallback: still no stream
+        turn.chat()
+    assert probe.count == 0
+
+    turn.astream(offer_surface=True)  # the CLI probes
+    assert probe.count == 1
+    turn.chat()  # ready, but a sync turn cannot show it
     assert turn.held().reclaim_offered_at is None
 
-    events = turn.astream()
+    events = turn.astream(offer_surface=True)
 
     assert [e["outcome"] for e in _reclaims(events)] == ["offered"]
     assert turn.held().reclaim_offered_at is not None
 
 
+def test_an_offer_racing_a_revert_is_never_stamped_or_streamed(
+    tmp_path, probe, inline, monkeypatch
+):
+    """The offer path re-reads before stamping: a revert landing between the
+    settle's read and the stamp wins (no event, nothing stamped, the
+    revert's own note stands)."""
+    turn = _Turn(tmp_path)
+    turn.seed(
+        llm_config=ThreadLLMConfig(fallback_switch_mode="ask"),
+        active_llm_fallback=_hold(),
+    )
+    turn.settle()  # healthy verdict recorded
+    manager = turn.agent.thread_config_manager
+    real_get = manager.get_config
+    stale = real_get(THREAD).model_copy(deep=True)  # what the settle reads
+    reverted = real_get(THREAD)
+    release_fallback_for_config_write(
+        reverted, before_llm=None, settings=turn.agent.settings, revert=True
+    )
+    manager.save_config(reverted)
+    reads = iter([stale])
+    monkeypatch.setattr(
+        manager, "get_config", lambda thread_id: next(reads, None) or real_get(thread_id)
+    )
+
+    assert turn.settle() is None
+    tc = turn.config()
+    assert tc.active_llm_fallback is None
+    assert "reverted" in str(tc.pending_fallback_note)
+
+
 def test_reclaim_action_policy():
+    # Legacy holds (no recorded origin) follow the mode.
     assert reclaim_action(switch_mode="auto", permanent=False) == "end"
     assert reclaim_action(switch_mode=None, permanent=False) == "end"
     assert reclaim_action(switch_mode="ask", permanent=False) == "offer"
+    # Permanent: always a human's choice.
     assert reclaim_action(switch_mode="auto", permanent=True) == "offer"
     assert reclaim_action(switch_mode="ask", permanent=True) == "offer"
+    assert reclaim_action(switch_mode="auto", permanent=True, origin="automatic") == "offer"
+    # The recorded origin wins over the current mode.
+    assert reclaim_action(switch_mode="auto", permanent=False, origin="user") == "offer"
+    assert reclaim_action(switch_mode="ask", permanent=False, origin="user") == "offer"
+    assert reclaim_action(switch_mode="ask", permanent=False, origin="automatic") == "end"
+    assert reclaim_action(switch_mode="auto", permanent=False, origin="automatic") == "end"
+
+
+def test_offer_surfaces_are_gated_like_the_consent_park(monkeypatch):
+    def offers(**kwargs: Any) -> bool:
+        return reclaim_offer_renders(THREAD, **kwargs)
+
+    human = {"is_autonomous": False, "holder_kind": "user"}
+    # No origin, no declaration: a GUI turn.
+    assert offers(**human) is False
+    assert offers(**human, declared=True) is True
+    for platform, expected in (
+        ("telegram", True),
+        ("discord", True),
+        ("slack", True),
+        ("whatsapp", True),
+        ("teams", True),
+        ("twitch", False),  # its handler discards text
+        ("somethingnew", False),
+    ):
+        with _origin(platform):
+            assert offers(**human) is expected, platform
+            # Never on a turn no human drives, declared or not.
+            assert offers(is_autonomous=True, holder_kind="user", declared=True) is False
+            assert offers(is_autonomous=False, holder_kind="callable") is False
+            assert offers(is_autonomous=False, holder_kind="mcp", declared=True) is False
+
+    def boom(thread_id: str) -> Any:
+        raise RuntimeError("registry exploded")
+
+    monkeypatch.setattr(bot_reactions, "get_turn_origin", boom)
+    assert offers(**human) is False  # a fault cannot spend the offer
+
+
+def test_a_consented_hold_records_its_origin(tmp_path):
+    """The origin rides the consent decision into the persisted hold through
+    the same merge every switch site uses (``llm_fallback_hold_overrides``):
+    "user" for an approval (a permanent pick included), "automatic" for an
+    auto swap or an unanswered prompt."""
+    from nymeria.core.agent_llm_config import activate_temporary_llm_fallback
+    from nymeria.vendor.react_agent import nodes
+
+    payload = {
+        "from_provider": PRIMARY_PROVIDER,
+        "from_model": PRIMARY_MODEL,
+        "to_provider": HELD_PROVIDER,
+        "to_model": HELD_MODEL,
+        "reason": "provider_server_error",
+    }
+    cases = [
+        ({"action": "swap", "hold_origin": "user", "hold_seconds": 600}, "user"),
+        ({"action": "swap", "hold_origin": "user", "hold_permanent": True}, "user"),
+        ({"action": "swap", "hold_origin": "user"}, "user"),
+        ({"action": "swap"}, "automatic"),  # an ask prompt that timed out
+        ({"action": "auto"}, "automatic"),
+    ]
+    for decision, origin in cases:
+        turn = _Turn(tmp_path / origin / str(len(decision)))
+        merged = nodes._payload_with_hold(payload, decision)
+        activate_temporary_llm_fallback(turn.agent, THREAD, merged)
+        assert turn.held().hold_origin == origin, decision
 
 
 # -- 9 and 11: hold-on-hold, probe_invalid ------------------------------------------
@@ -1080,7 +1555,7 @@ def test_the_probe_config_is_tiny_and_bare(tmp_path, probe, inline):
     assert sent.max_tokens == 64
     assert sent.extended_thinking is False
     assert sent.reasoning_effort == "off"
-    assert sent.request_timeout == 10
+    assert sent.request_timeout == 30
     assert sent.stream_max_retries == 0
     assert sent.fallbacks == []
     assert sent.fallback_activation_callback is None
@@ -1089,15 +1564,46 @@ def test_the_probe_config_is_tiny_and_bare(tmp_path, probe, inline):
     assert sent.custom_llm is None
 
 
-def test_an_always_thinking_claude_gets_room_to_answer():
-    from nymeria.vendor.react_agent.config import LLMConfig
+@pytest.mark.parametrize(
+    "model, max_tokens, thinking, effort",
+    [
+        # Always-on thinking (no "off" tier): adaptive at the lowest effort,
+        # with room for it plus the answer (the factory's thinking warning
+        # threshold). A ceiling, not a charge.
+        ("claude-opus-5-5", 2048, {"type": "adaptive", "display": "summarized"}, "low"),
+        # Thinking can be off: a bare 64-token answer.
+        (PRIMARY_MODEL, 64, None, None),
+    ],
+)
+def test_the_real_claude_probe_request_sizes_its_budget(
+    tmp_path, inline, monkeypatch, model, max_tokens, thinking, effort
+):
+    """Built by the REAL factory through the turn-start check, the request
+    object the SDK would send (not just the config)."""
+    real_create_llm = providers_module.create_llm
+    payloads: list[dict[str, Any]] = []
 
-    cfg = reclaim.probe_config(
-        LLMConfig(provider="anthropic", model="claude-opus-5-5", api_key="k")
-    )
+    def spy(cfg: Any) -> Any:
+        llm = real_create_llm(cfg)
 
-    assert cfg.max_tokens == 2048
-    assert cfg.extended_thinking is False
+        def invoke(messages: Any) -> AIMessage:
+            payloads.append(getattr(llm, "_get_request_payload")(messages))
+            return AIMessage(content="ok")
+
+        return SimpleNamespace(invoke=invoke)
+
+    monkeypatch.setattr(providers_module, "create_llm", spy)
+    turn = _Turn(tmp_path, llm_model=model, llm_base_url="http://cli-proxy-api:8317")
+    turn.seed(active_llm_fallback=_hold())
+
+    turn.astream()
+
+    (payload,) = payloads
+    assert payload["model"] == model
+    assert payload["max_tokens"] == max_tokens
+    assert payload.get("thinking") == thinking
+    assert (payload.get("output_config") or {}).get("effort") == effort
+    assert payload["system"][0] == CLIPROXY_BILLING_SYSTEM_BLOCK
 
 
 def test_a_cliproxy_probe_carries_the_treatment_and_no_cache_control(
@@ -1200,6 +1706,11 @@ def test_the_event_is_mirrored_for_autonomous_turns():
     )
 
 
+def _caused_by(exc: BaseException, cause: BaseException) -> BaseException:
+    exc.__cause__ = cause
+    return exc
+
+
 @pytest.mark.parametrize(
     "exc, verdict",
     [
@@ -1212,15 +1723,230 @@ def test_the_event_is_mirrored_for_autonomous_turns():
         (_StatusError(404), "retryable_http_error"),
         (ConnectError("refused"), "transport_error"),
         (ConnectError("timed out"), "timeout"),
-        (ValueError("Unknown provider: x"), "transient_provider_error"),
+        # langchain raises ValueError for a provider's error payload: a
+        # provider answer, so it stays in the provider taxonomy.
+        (ValueError("response error: upstream failed"), "transient_provider_error"),
+        # Our own faults (no HTTP status): never a provider verdict.
+        (TypeError("create() got an unexpected keyword argument 'x'"), "probe_error"),
+        (AttributeError("'NoneType' object has no attribute 'content'"), "probe_error"),
+        (KeyError("choices"), "probe_error"),
+        # ...but a client fault while handling a provider's 503 still carries
+        # that answer: the HTTP status in the chain decides.
+        (_caused_by(KeyError("error"), _StatusError(503)), "provider_server_error"),
     ],
 )
 def test_probe_failures_classify_in_the_hold_taxonomy(exc, verdict):
     assert reclaim.classify_probe_failure(exc) == verdict
 
 
-def _status(thread_id: str, hold: Any, settings: Any) -> dict[str, Any]:
-    status = reclaim.reclaim_status(thread_id, hold, settings)
+def _sdk_error(cls: Any, status: int, message: str, body: Any = None) -> Any:
+    import httpx
+
+    request = httpx.Request("POST", "http://upstream.invalid/v1/x")
+    return cls(
+        message,
+        response=httpx.Response(status, request=request),
+        body=body if body is not None else {"error": {"message": message}},
+    )
+
+
+class _Reworded(Exception):
+    """An SDK release that rewords the error keeps its class name."""
+
+
+_Reworded.__name__ = "LengthFinishReasonError"
+
+
+def _budget_errors() -> list[Any]:
+    import anthropic
+    import openai
+    from google.genai import errors as genai_errors
+    from openai.types.chat import ChatCompletion
+
+    return [
+        pytest.param(
+            openai.LengthFinishReasonError(
+                completion=ChatCompletion.model_construct(usage=None)
+            ),
+            id="openai-chat-finish-length",
+        ),
+        pytest.param(
+            _Reworded("the completion stopped early"),
+            id="openai-chat-length-error-class-reworded",
+        ),
+        pytest.param(
+            ValueError("Could not parse response content as the length limit was reached"),
+            id="openai-chat-length-message-wrapped",
+        ),
+        pytest.param(
+            ValueError("Incomplete response returned, reason: max_output_tokens"),
+            id="openai-responses-incomplete-client",
+        ),
+        pytest.param(
+            _sdk_error(
+                openai.BadRequestError,
+                400,
+                "Incomplete response returned, reason: max_output_tokens",
+            ),
+            id="openai-responses-incomplete-gateway-400",
+        ),
+        pytest.param(
+            _sdk_error(
+                openai.InternalServerError,
+                502,
+                "upstream response not completed",
+                body={
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                },
+            ),
+            id="openai-responses-incomplete-relayed-body",
+        ),
+        pytest.param(
+            _sdk_error(
+                anthropic.InternalServerError,
+                500,
+                "upstream ended the message early",
+                body={
+                    "type": "error",
+                    "error": {"type": "api_error", "message": "stop_reason: max_tokens"},
+                },
+            ),
+            id="anthropic-stop-reason-max-tokens",
+        ),
+        pytest.param(
+            genai_errors.ServerError(
+                500,
+                {
+                    "error": {
+                        "code": 500,
+                        "message": "Model output ended with finish_reason MAX_TOKENS",
+                        "status": "INTERNAL",
+                    }
+                },
+            ),
+            id="gemini-finish-reason-max-tokens",
+        ),
+    ]
+
+
+def _primary_config() -> Any:
+    from nymeria.vendor.react_agent.config import LLMConfig
+
+    return LLMConfig(provider="openai", model="gpt-5.5", api_key="k")
+
+
+@pytest.mark.parametrize("exc", _budget_errors())
+def test_an_exhausted_output_budget_reads_healthy(probe, exc):
+    """A reasoning model can spend the tiny probe budget on reasoning alone:
+    the route GENERATED, so the verdict is healthy, never a failure that
+    would back the route off forever (red before the review fix)."""
+    probe.outcome = exc
+
+    assert reclaim.run_probe(_primary_config()) == "healthy"
+
+
+def _rejected_budgets() -> list[Any]:
+    import anthropic
+    import openai
+
+    return [
+        pytest.param(
+            _sdk_error(
+                anthropic.BadRequestError,
+                400,
+                "max_tokens must be greater than thinking.budget_tokens",
+            ),
+            id="anthropic-budget-rejected",
+        ),
+        pytest.param(
+            _sdk_error(
+                openai.BadRequestError,
+                400,
+                "max_tokens is too large: 9999999. This model supports at most 128000",
+            ),
+            id="openai-max-tokens-rejected",
+        ),
+    ]
+
+
+@pytest.mark.parametrize("exc", _rejected_budgets())
+def test_a_rejected_budget_is_not_an_exhausted_one(probe, exc):
+    """The negative space: a request REJECTED over its max_tokens generated
+    nothing, so it stays probe_invalid, never healthy."""
+    probe.outcome = exc
+
+    assert reclaim.run_probe(_primary_config()) == "probe_invalid"
+
+
+def test_an_exhausted_budget_ends_the_hold_at_the_next_turn(tmp_path, probe, inline):
+    import openai
+    from openai.types.chat import ChatCompletion
+
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold())
+    probe.outcome = openai.LengthFinishReasonError(
+        completion=ChatCompletion.model_construct(usage=None)
+    )
+    turn.astream()
+
+    events = turn.astream()
+
+    assert [e["outcome"] for e in _reclaims(events)] == ["ended"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TypeError("create() got an unexpected keyword argument 'x'"),
+        AttributeError("'NoneType' object has no attribute 'content'"),
+    ],
+)
+def test_our_own_fault_is_a_probe_error_logged_with_its_traceback(probe, caplog, exc):
+    probe.outcome = exc
+
+    with caplog.at_level("WARNING", logger="nymeria.core.fallback_reclaim"):
+        assert reclaim.run_probe(_primary_config()) == "probe_error"
+
+    (record,) = [r for r in caplog.records if r.name == "nymeria.core.fallback_reclaim"]
+    assert record.levelname == "WARNING"
+    assert "not a provider verdict" in record.getMessage()
+    assert record.exc_info is not None and record.exc_info[1] is exc
+
+
+def test_a_client_that_cannot_be_built_is_a_probe_error(monkeypatch, caplog):
+    sent: list[Any] = []
+
+    def broken(cfg: Any) -> Any:
+        sent.append(cfg)
+        raise ValueError("Unknown provider: nope")
+
+    monkeypatch.setattr(providers_module, "create_llm", broken)
+
+    with caplog.at_level("WARNING", logger="nymeria.core.fallback_reclaim"):
+        assert reclaim.run_probe(_primary_config()) == "probe_error"
+
+    assert len(sent) == 1
+    assert any("building the probe client failed" in r.getMessage() for r in caplog.records)
+
+
+def test_a_probe_error_backs_off_to_the_cap_and_never_reclaims(
+    tmp_path, probe, inline, clock
+):
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold(remaining=timedelta(hours=30)))
+    probe.outcome = TypeError("create() got an unexpected keyword argument 'x'")
+
+    assert _probe_times(turn, clock, probe, minutes=121) == [0, 60, 120]
+    assert turn.hold() is not None
+    status = _status(THREAD, turn.held(), turn.agent.settings)
+    assert (status["state"], status["last_verdict"]) == ("scheduled", "probe_error")
+
+
+def _status(
+    thread_id: str, hold: Any, settings: Any, llm_config: Any = None
+) -> dict[str, Any]:
+    status = reclaim.reclaim_status(thread_id, hold, settings, llm_config=llm_config)
     assert status is not None
     return status
 
@@ -1252,7 +1978,67 @@ def test_reclaim_status_states(tmp_path, probe, inline, clock):
     probe.outcome = "ok"
     clock.advance(hours=1, seconds=1)
     turn.settle()
-    assert _status(THREAD, turn.hold(), settings)["state"] == "recovered"
+    status = _status(THREAD, turn.hold(), settings)
+    assert (status["state"], status["action"]) == ("recovered", "end")
+
+    expired = _hold(age=timedelta(minutes=65), remaining=timedelta(minutes=-5))
+    assert _status(THREAD, expired, settings)["state"] == "expired"
+
+
+def test_reclaim_status_reports_stopped_checking_and_another_threads_backoff(
+    tmp_path, probe, spawned, clock
+):
+    turn = _Turn(tmp_path)
+    settings = turn.agent.settings
+    # stopped: the primary rejected the probe itself.
+    turn.seed("reclaim-s", active_llm_fallback=_hold())
+    probe.outcome = _StatusError(400)
+    turn.settle("reclaim-s")
+    for check in spawned:
+        check.join(5)
+    status = _status("reclaim-s", turn.held("reclaim-s"), settings)
+    assert (status["state"], status["last_verdict"]) == ("stopped", "probe_invalid")
+
+    # checking: a probe in flight on this thread's route.
+    reclaim.reset_reclaim_state_for_tests()
+    probe.outcome = _StatusError(503)
+    probe.gate = threading.Event()
+    turn.seed("reclaim-c", active_llm_fallback=_hold(remaining=timedelta(hours=30)))
+    turn.settle("reclaim-c")
+    assert probe.started.wait(5)
+    assert _status("reclaim-c", turn.held("reclaim-c"), settings)["state"] == "checking"
+    probe.gate.set()
+    for check in spawned:
+        check.join(5)
+
+    # A thread on the same route reads the route's backoff, not its own
+    # first-check time: the route failed at t=0 and is due at t=20 min.
+    turn.seed(
+        "reclaim-d",
+        active_llm_fallback=_hold(
+            activated_at=clock.now - timedelta(minutes=12), remaining=timedelta(hours=30)
+        ),
+    )
+    turn.settle("reclaim-d")  # learns its route; the route is not due
+    for check in spawned:
+        check.join(5)
+    status = _status("reclaim-d", turn.held("reclaim-d"), settings)
+    assert status["state"] == "scheduled"
+    assert status["next_check_at"] == (clock.now + timedelta(minutes=20)).isoformat()
+    assert probe.count == 2
+
+    # checking, too, while ANOTHER thread's probe is in flight on the route
+    # (reclaim-d runs no check of its own and reads that probe's verdict).
+    clock.advance(minutes=20)
+    probe.gate = threading.Event()
+    probe.started.clear()
+    turn.settle("reclaim-c")
+    assert probe.started.wait(5)
+    assert _status("reclaim-d", turn.held("reclaim-d"), settings)["state"] == "checking"
+    probe.gate.set()
+    for check in spawned:
+        check.join(5)
+    assert probe.count == 3
 
 
 def test_a_settle_fault_leaves_the_turn_on_its_hold(tmp_path, monkeypatch):
@@ -1272,16 +2058,15 @@ def test_a_settle_fault_leaves_the_turn_on_its_hold(tmp_path, monkeypatch):
 # -- the API executor shape: the /chat route relays the event -------------------------
 
 
-def test_the_chat_route_relays_the_event_and_mirrors_it(tmp_path, probe, inline):
+def _post_chat(turn: _Turn, body: dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
+    """POST /chat through the real router against the turn's agent; returns
+    the relayed SSE events and the publish recorder."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     from nymeria.api.routers.chat import create_chat_router
     from test_api_chat_publish_gating import _PublishRecorder, _sse_events
 
-    turn = _Turn(tmp_path)
-    turn.seed(active_llm_fallback=_hold())
-    turn.astream()  # probe: healthy verdict recorded
     agent = turn.agent
     agent.thread_metadata_manager = SimpleNamespace(auto_title=lambda *a, **k: None)
     agent.accounts_repo = SimpleNamespace(get_thread_owner=lambda thread_id: None)
@@ -1307,19 +2092,49 @@ def test_the_chat_route_relays_the_event_and_mirrors_it(tmp_path, probe, inline)
     app.include_router(router)
     set_pending_queue(InMemoryPendingPromptQueue())
     try:
-        with TestClient(app).stream(
-            "POST",
-            "/chat",
-            json={"message": "wake", "thread_id": THREAD, "is_self_invoke": True},
-        ) as response:
-            body = "".join(response.iter_text())
+        with TestClient(app).stream("POST", "/chat", json=body) as response:
+            text = "".join(response.iter_text())
     finally:
         reset_pending_queue_for_tests()
+    return _sse_events(text), recorder
 
-    relayed = [e for e in _sse_events(body) if e.get("type") == "fallback_hold_reclaimed"]
+
+def test_the_chat_route_relays_the_event_and_mirrors_it(tmp_path, probe, inline):
+    turn = _Turn(tmp_path)
+    turn.seed(active_llm_fallback=_hold())
+    turn.astream()  # probe: healthy verdict recorded
+
+    events, recorder = _post_chat(
+        turn, {"message": "wake", "thread_id": THREAD, "is_self_invoke": True}
+    )
+
+    relayed = [e for e in events if e.get("type") == "fallback_hold_reclaimed"]
     assert [e["outcome"] for e in relayed] == ["ended"]
     mirrored = [
         c for c in recorder.stream_chunks if c.get("type") == "fallback_hold_reclaimed"
     ]
     assert [c["outcome"] for c in mirrored] == ["ended"]
     assert turn.hold() is None
+
+
+def test_only_a_declaring_chat_client_spends_an_offer(tmp_path, probe, inline):
+    """``supports_reclaim_offers`` on the /chat request is the client's
+    declaration (the CLI sends it); a plain request (a desktop or mobile
+    client) leaves the offer pending."""
+    turn = _Turn(tmp_path)
+    turn.seed(
+        llm_config=ThreadLLMConfig(fallback_switch_mode="ask"),
+        active_llm_fallback=_hold(),
+    )
+    turn.astream(offer_surface=True)  # probe: healthy verdict recorded
+
+    plain, _recorder = _post_chat(turn, {"message": "hi", "thread_id": THREAD})
+    assert [e for e in plain if e.get("type") == "fallback_hold_reclaimed"] == []
+    assert turn.held().reclaim_offered_at is None
+
+    declared, _recorder = _post_chat(
+        turn, {"message": "hi", "thread_id": THREAD, "supports_reclaim_offers": True}
+    )
+    relayed = [e for e in declared if e.get("type") == "fallback_hold_reclaimed"]
+    assert [e["outcome"] for e in relayed] == ["offered"]
+    assert turn.held().reclaim_offered_at is not None

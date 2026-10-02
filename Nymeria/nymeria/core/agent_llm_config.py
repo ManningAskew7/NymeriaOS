@@ -652,8 +652,16 @@ def activate_temporary_llm_fallback(
     ``llm_fallback_hold_seconds`` default. A permanent hold persists an
     ``ActiveLLMFallback`` with ``expires_at=None``; a non-positive,
     non-permanent hold persists nothing (no cross-turn hold).
+
+    The hold's ``hold_origin`` is "user" when the payload carries a human's
+    approval (``hold_origin`` from the consent decision, or a permanent
+    hold, which only a human can pick) and "automatic" otherwise (#439: the
+    primary reclaim never auto-ends a hold a human chose).
     """
     permanent = bool(payload.get("hold_permanent"))
+    hold_origin = (
+        "user" if permanent or payload.get("hold_origin") == "user" else "automatic"
+    )
     if not permanent:
         raw_hold = payload.get("hold_seconds")
         if raw_hold is None:
@@ -698,6 +706,7 @@ def activate_temporary_llm_fallback(
         openai_api_mode=payload.get("to_openai_api_mode"),
         reason=payload.get("reason"),
         http_status=payload.get("http_status"),
+        hold_origin=hold_origin,
     )
     if not host.thread_config_manager.save_config(tc):
         logger.warning("Failed to activate LLM fallback for thread %s", thread_id)

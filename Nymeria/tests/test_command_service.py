@@ -6792,6 +6792,43 @@ def test_read_only_thread_doors_do_not_claim_an_unowned_thread() -> None:
     assert repo.claims == [], f"a read claimed ownership: {repo.claims}"
 
 
+def test_the_in_process_thread_config_door_derives_like_the_rest_door() -> None:
+    """The in-process GET thread-config door builds the payload from the same
+    inputs as the REST route, the agent and the caller: a renamed team shows
+    its CURRENT name for that caller, not the stale stored one (and the
+    derived fallback_reclaim block reads the agent's settings, covered end to
+    end in test_fallback_hold_release.py)."""
+    from nymeria.core.thread_config import ThreadConfig
+
+    repo = _FakeAccountsRepo()
+    repo.owners["t-1"] = "alice"
+    lookups: list[tuple[str, str]] = []
+
+    def resolve_team_name(user_id: str, team_id: str) -> str:
+        lookups.append((user_id, team_id))
+        return "Ops (renamed)"
+
+    agent = SimpleNamespace(
+        accounts_repo=repo,
+        thread_config_manager=SimpleNamespace(
+            get_config=lambda tid: ThreadConfig(
+                thread_id=tid,
+                callable_team_id="team-1",
+                callable_team_name="Ops (stale)",
+            )
+        ),
+        team_manager=SimpleNamespace(resolve_team_name=resolve_team_name),
+    )
+    client = CommandBackendClient(
+        agent, user=_CommandBackendUser(id="alice", role="user")
+    )
+
+    payload = run(client.get_thread_config("t-1"))
+
+    assert payload["callable_team_name"] == "Ops (renamed)"
+    assert lookups == [("alice", "team-1")]
+
+
 def test_write_thread_doors_still_claim_on_first_touch() -> None:
     """The other half: TOFU claiming is the ownership mechanism for writes.
 

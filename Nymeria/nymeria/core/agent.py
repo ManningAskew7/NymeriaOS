@@ -1722,7 +1722,15 @@ class NymeriaAgent:
         return clear_expired_llm_fallback_if_idle(self, thread_id)
 
     def _settle_fallback_hold_at_turn_start(
-        self, thread_id: str, user_id: str, *, streaming: bool
+        self,
+        thread_id: str,
+        user_id: str,
+        *,
+        streaming: bool,
+        is_autonomous: bool,
+        source: Optional[str],
+        offer_surface: bool = False,
+        resume: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """The turn-start seam for a fallback hold (#439): evict an expired
         hold, apply a recorded primary-reclaim verdict (returns the
@@ -1732,11 +1740,30 @@ class NymeriaAgent:
         lookup, so a cleared hold rebuilds this turn against the primary and
         ``prepare_astream_input`` folds the end note into this turn's prompt.
         Never from ``_get_graph_for_user_shared``: mid-turn rebuilds pass
-        there, and a model must never change mid-turn. ``streaming=False``
-        (``chat()``) defers an offer to the next streaming turn. Never raises.
+        there, and a model must never change mid-turn. An offer is spent
+        only on a streaming turn that can show it
+        (``fallback_approvals.reclaim_offer_renders``: a human's turn from a
+        chat bot or a client that declared it, ``offer_surface``); ``chat()``
+        never spends one. ``resume`` (a ``/resume`` re-drive) only evicts an
+        expired hold. Never raises.
         """
+        from .fallback_approvals import reclaim_offer_renders
         from .fallback_reclaim import settle_hold_at_turn_start
-        return settle_hold_at_turn_start(self, thread_id, user_id, offers=streaming)
+
+        offers = False
+        if streaming and not resume:
+            try:
+                offers = reclaim_offer_renders(
+                    thread_id,
+                    is_autonomous=is_autonomous,
+                    holder_kind=source,
+                    declared=offer_surface,
+                )
+            except Exception:  # noqa: BLE001 - a fault means "cannot show it"
+                offers = False
+        return settle_hold_at_turn_start(
+            self, thread_id, user_id, offers=offers, resume=resume
+        )
 
     def _get_team_scoped_callable_threads(
         self,
@@ -2427,12 +2454,17 @@ class NymeriaAgent:
             )
 
             # Fallback hold at the turn start (#439), BEFORE the graph lookup
-            # (see the astream twin). Not on a resume: it adds no prompt, so
-            # an end note would have nowhere to ride.
-            if not _resume_halted_turn:
-                self._settle_fallback_hold_at_turn_start(
-                    thread_id, user_id, streaming=False
-                )
+            # (see the astream twin). A sync turn never spends a reclaim
+            # offer (it cannot show one); a resume only evicts an expired
+            # hold (its end note rides the next prompted turn).
+            self._settle_fallback_hold_at_turn_start(
+                thread_id,
+                user_id,
+                streaming=False,
+                is_autonomous=is_autonomous_source,
+                source=source,
+                resume=_resume_halted_turn,
+            )
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             graph = self._get_graph_for_user(
@@ -2984,6 +3016,7 @@ class NymeriaAgent:
         _resume_halted_turn: bool = False,
         _thread_epoch: Optional[int] = None,
         _turn_user_message_id: Optional[str] = None,
+        _reclaim_offer_surface: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
@@ -3030,6 +3063,11 @@ class NymeriaAgent:
                 live-attach viewers can anchor hydrated history (which
                 exposes the id as ``message_id``) to the turn start.
                 Ignored on resume turns (no message is added).
+            _reclaim_offer_surface: True when the CLIENT declared that it
+                renders a ``fallback_hold_reclaimed`` offer
+                (``ChatRequest.supports_reclaim_offers``; the CLI's
+                transports set it). With the chat-bot turn origin, the only
+                way a turn may spend a hold's one revert offer (#439).
 
         Yields:
             Same event types as stream(), plus the queue-related
@@ -3316,15 +3354,20 @@ class NymeriaAgent:
             # Fallback hold at the turn start (#439): AFTER _on_turn_started
             # (the turn stream buffer tees what is yielded here) and BEFORE
             # the graph lookup, so an ended hold builds this turn against
-            # the primary and its end note rides this turn's prompt. Not on
-            # a resume: it adds no prompt, so a note would have nowhere to
-            # ride.
-            if not _resume_halted_turn:
-                reclaim_event = self._settle_fallback_hold_at_turn_start(
-                    thread_id, user_id, streaming=True
-                )
-                if reclaim_event:
-                    yield reclaim_event
+            # the primary and its end note rides this turn's prompt. A
+            # resume only evicts an expired hold (no prompt for the note,
+            # which rides the next prompted turn).
+            reclaim_event = self._settle_fallback_hold_at_turn_start(
+                thread_id,
+                user_id,
+                streaming=True,
+                is_autonomous=is_autonomous_source,
+                source=source,
+                offer_surface=_reclaim_offer_surface,
+                resume=_resume_halted_turn,
+            )
+            if reclaim_event:
+                yield reclaim_event
 
             _stream_start = time.monotonic()
             # Guards the error path against re-recording a turn the success

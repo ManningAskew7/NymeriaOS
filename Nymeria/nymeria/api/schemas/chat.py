@@ -156,6 +156,16 @@ class ChatRequest(BaseModel):
             "otherwise emit duplicates."
         ),
     )
+    supports_reclaim_offers: bool = Field(
+        default=False,
+        description=(
+            "Declares that THIS client renders a fallback_hold_reclaimed "
+            "OFFER (a held thread's primary answers again and the hold "
+            "stays with a once-only revert offer). Only a human's turn from "
+            "a chat bot or a declaring client spends the offer; every other "
+            "turn leaves it pending. The CLI sets it."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):

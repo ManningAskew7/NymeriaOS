@@ -261,6 +261,7 @@ def test_stream_chat_normalizes_local_astream_events() -> None:
             "force_unsupported_attachments": True,
             "_is_self_invoke": True,
             "_trigger_override": "manual-test",
+            "_reclaim_offer_surface": True,
         }
     ]
 

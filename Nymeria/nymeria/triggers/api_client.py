@@ -364,6 +364,7 @@ class NymeriaAPIClient:
         trigger_id: Optional[str] = None,
         trigger_name: Optional[str] = None,
         platform_origin: Optional[Dict[str, Any]] = None,
+        supports_reclaim_offers: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat events via SSE (POST /chat).
 
@@ -391,6 +392,11 @@ class NymeriaAPIClient:
         the worker is the sole publisher with stable task IDs. Pass
         False from worker-owned ticker/trigger relays; leave None to
         accept the API default (True).
+
+        ``supports_reclaim_offers`` declares that THIS caller renders a
+        ``fallback_hold_reclaimed`` offer (#439); without it (and without a
+        chat-bot ``platform_origin``) a turn never spends a hold's one revert
+        offer. The CLI sets it.
 
         Autonomous self-invoke calls switch to a no-read-timeout pool so
         a queued prompt waiting on a busy thread can drain whenever the
@@ -424,6 +430,8 @@ class NymeriaAPIClient:
             body["platform_origin"] = platform_origin
         if publish_autonomous_events is not None:
             body["publish_autonomous_events"] = publish_autonomous_events
+        if supports_reclaim_offers:
+            body["supports_reclaim_offers"] = True
         stream_timeout = _SSE_TIMEOUT if is_self_invoke else _CHAT_TIMEOUT
         yielded = False
         retried = False

@@ -1082,7 +1082,6 @@ def test_a_thread_that_names_no_destination_is_untouched(thread_base_url):
     assert getattr(tc, "rejected_llm_base_url", None) is None
 
 
-
 # --- the primary-reclaim probe route (#439) ----------------------------------
 
 

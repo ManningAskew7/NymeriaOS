@@ -857,7 +857,6 @@ def test_discord_interactive_handler_sends_swap_notice():
     ]
 
 
-
 # ---------------------------------------------------------------------------
 # Primary reclaim notices (fallback_hold_reclaimed, #439)
 # ---------------------------------------------------------------------------

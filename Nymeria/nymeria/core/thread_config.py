@@ -114,10 +114,18 @@ class ActiveLLMFallback(BaseModel):
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     reason: Optional[str] = None
     http_status: Optional[int] = None
+    # Who chose this hold (#439 review): "user" when a human approved the
+    # swap at an ask-mode prompt (any hold they picked, permanent included),
+    # "automatic" when no human did (auto mode, an unanswered prompt, a turn
+    # that could not park). The primary reclaim never auto-ends a "user"
+    # hold; None is a hold recorded before the field existed (the reclaim
+    # then follows the thread's current switch mode).
+    hold_origin: Optional[Literal["user", "automatic"]] = None
     # Primary reclaim (#439): when the configured primary answered a probe
-    # while this hold stayed (ask mode, or a permanent hold), the user was
-    # offered the revert once, at this time. A stamped hold is never probed
-    # or offered again; a new hold starts unstamped.
+    # while this hold stayed (a user-chosen hold, ask mode on a legacy hold,
+    # or a permanent hold), the user was offered the revert once, at this
+    # time. A stamped hold is never probed or offered again; a new hold
+    # starts unstamped.
     reclaim_offered_at: Optional[datetime] = None
 
     @field_validator("activated_at", "expires_at", "reclaim_offered_at")

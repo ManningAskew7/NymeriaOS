@@ -1726,7 +1726,10 @@ class CommandBackendClient:
 
         tc = self.agent.thread_config_manager.get_config(thread_id)
         if tc:
-            return _config_response(tc)
+            # Same inputs as the REST door: the agent's settings (the derived
+            # fallback_reclaim block keys on the configured route) and the
+            # caller (callable_team_name derivation).
+            return _config_response(tc, agent=self.agent, user_id=self.user.id)
         return _default_thread_config_response(thread_id)
 
     async def get_thread_notepad(self, thread_id: str, user_id: Optional[str] = None) -> dict:

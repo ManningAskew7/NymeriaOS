@@ -288,6 +288,8 @@ class APIAgentClient:
                 force_unsupported_attachments=bool(
                     options.get("force_unsupported_attachments", False)
                 ),
+                # The CLI renders a fallback-hold reclaim offer (#439).
+                supports_reclaim_offers=True,
             ):
                 turn_id, last_seq = _track_turn_cursor(raw_event, turn_id, last_seq)
                 event_type = raw_event.get("type")
