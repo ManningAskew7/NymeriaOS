@@ -89,6 +89,12 @@ Then it constructs the FastAPI app with `slim_mode=True`, which:
 | `--no-mcp` | off | Skip mounting `/mcp` (debug only) |
 | `--no-watchdog` | off | Skip the watchdog ticker sub-loop (sets `NYMERIA_WATCHDOG_DISABLED`; debug only) |
 
+More than one install on a host (a second slim install, or one beside a
+Docker install): give each its own root and address it with the global flag
+before the command, `nymeria --root <dir> slim` (any command takes it). See
+"One root holds one install" under API Server and Paths in
+[configuration.md](../configuration.md).
+
 ## On/off local operation
 
 The default slim behavior is still server-like: if a scheduled TODO became

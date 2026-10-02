@@ -421,10 +421,12 @@ def test_finalize_local_start_spawns_smoke_thread_and_stops_it(monkeypatch, tmp_
         lambda **kw: pytest.fail("local foreground start must not health-poll"),
     )
     worker_dirs: list = []
+    doctor_commands: list = []
     stopped = threading.Event()
 
-    def fake_worker(data_dir, stop, base_url="http://localhost:8000"):
+    def fake_worker(data_dir, stop, base_url="http://localhost:8000", *, doctor_command=None):
         worker_dirs.append(data_dir)
+        doctor_commands.append(doctor_command)
         if stop.wait(5.0):
             stopped.set()
 
@@ -441,6 +443,8 @@ def test_finalize_local_start_spawns_smoke_thread_and_stops_it(monkeypatch, tmp_
     # the server exited.
     assert len(calls) == 1
     assert worker_dirs == [root / "data"]
+    # The [smoke] failure line names the doctor for THIS root (P1, #101 entry 6).
+    assert doctor_commands == [f"nymeria --root {root} doctor"]
     assert stopped.wait(2.0)
 
 
@@ -486,6 +490,24 @@ def test_local_smoke_worker_fires_after_health_and_token(monkeypatch, tmp_path, 
     out = capsys.readouterr().out
     assert smoked == ["nym_local_x"]
     assert out.strip() == "[smoke] chat smoke test passed: the model answered"
+
+
+def test_the_smoke_failure_line_names_the_doctor_it_was_given(monkeypatch, tmp_path, capsys):
+    import threading
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "SLIM_SERVICE_TOKEN.txt").write_text("nym_local_x", "utf-8")
+    monkeypatch.setattr(finalize_mod, "_smoke_health_ok", lambda url: True)
+    monkeypatch.setattr(finalize_mod, "run_chat_smoke_test", lambda **kw: (False, "boom"))
+
+    finalize_mod._local_smoke_worker(
+        data_dir, threading.Event(), doctor_command="nymeria --root /srv/b doctor"
+    )
+
+    out = capsys.readouterr().out.strip()
+    assert out.startswith("[smoke] chat smoke test FAILED: boom")
+    assert "check `nymeria --root /srv/b doctor`" in out
 
 
 def test_local_smoke_worker_exits_silently_on_stop(monkeypatch, tmp_path, capsys):
@@ -638,7 +660,7 @@ def test_finalize_service_print_path_has_real_commands(monkeypatch, tmp_path, ca
     assert "nymeria service install" in out
     assert "--root" in out
     assert f"nymeria --root {root} service status" in out  # root-pinned
-    assert "nymeria service uninstall" in out
+    assert f"nymeria --root {root} service uninstall" in out
     # The hosting choice round-trips via the wizard-only marker.
     assert "NYMERIA_HOSTING=service" in (root / "config.env").read_text()
 
@@ -665,7 +687,7 @@ def test_finalize_warns_about_stale_service_artifact(monkeypatch, tmp_path, caps
     assert rc == 0
     # Switching away from SERVICE never tears the unit down silently; the
     # summary must say it is still installed and how to remove it.
-    assert "nymeria service uninstall" in out
+    assert f"nymeria --root {root} service uninstall" in " ".join(out.split())
 
 
 def test_another_installs_service_is_named_and_never_called_stale(monkeypatch, tmp_path, capsys):
@@ -695,12 +717,13 @@ def test_a_service_unit_whose_root_cannot_be_read_is_never_called_stale(
     unit.write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
     monkeypatch.setattr(si, "installed_artifact_path", lambda: unit)
 
-    rc = _local_run(monkeypatch, tmp_path / "runtime")
+    root = tmp_path / "runtime"
+    rc = _local_run(monkeypatch, root)
     out = " ".join(capsys.readouterr().out.split())
 
     assert rc == 0
     assert "which install it runs could not be read" in out
-    assert "nymeria service status" in out
+    assert f"`nymeria --root {root} service status`" in out
     assert "service uninstall" not in out
 
 
@@ -759,6 +782,10 @@ def test_the_printed_service_command_says_it_replaces_another_installs(
     assert rc == 0
     assert f"runs another install now, at {other}" in out
     assert "this command replaces it" in out
+    # H5: no "Remove it with ... service uninstall" right after naming ANOTHER
+    # install's service: "it" reads as that service, and run before the
+    # install, the command would take that install down.
+    assert "service uninstall" not in out
 
 
 def test_the_service_install_command_names_the_resolved_root_without_a_flag(

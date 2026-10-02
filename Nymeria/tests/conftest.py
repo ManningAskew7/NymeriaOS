@@ -313,6 +313,9 @@ def _offline_service_units(monkeypatch: pytest.MonkeyPatch) -> None:
     test therefore starts on a host with no unit installed; tests that need
     one patch the function with a path to a unit they wrote (as before), and
     the function's own tests call the real one, imported at module scope.
+    It covers the server browser's rig units too (`_browser_service_for`
+    reads the same function), so a future rig test that writes a real unit
+    under a fake home sees "not installed" unless it patches this back.
     """
     from nymeria import service_install as service_install_module
 

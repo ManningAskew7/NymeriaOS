@@ -709,6 +709,86 @@ def test_a_value_only_an_env_file_loaded_is_never_called_a_shell_export(
     assert "NYMERIA_SECRETS_KEY with" not in out and "unset NYMERIA_SECRETS_KEY" not in out
 
 
+def _hash12(value: str | None) -> str | None:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] if value else None
+
+
+def _full_stack_start(monkeypatch, root, *, token: str = "nym_bootstrap_aaa111"):
+    """Run a full-stack `--start` into ``root``; return (rc, subprocess calls)."""
+    calls: list[tuple[list[str], dict]] = []
+
+    class _Result:
+        def __init__(self, stdout=""):
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((cmd, dict(kwargs.get("env") or {})))
+        if "cat" in cmd:
+            return _Result(stdout=f"Token: {token}\n")
+        return _Result()
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-x", "--hosting", "docker", "--docker-stack", "full",
+         "--root", str(root), "--start", "--non-interactive", "--skip-llm-test"]
+    )
+    return rc, calls
+
+
+def test_the_wizards_compose_calls_run_on_the_written_key_over_a_shell_export(
+    monkeypatch, tmp_path, capsys
+):
+    # It32 K2: docker-compose.yml interpolates ${NYMERIA_SECRETS_KEY}, and
+    # compose reads the process environment before --env-file, so a shell
+    # export of ANOTHER key would start the stack on it while .env.docker holds
+    # the install's own (a split vault). The wizard's own compose calls pin the
+    # written key; keys are compared by hash and never printed.
+    from cryptography.fernet import Fernet
+
+    _stub_llm(monkeypatch)
+    shell_key = Fernet.generate_key().decode()
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", shell_key)
+    _loaded_from(tmp_path / "launch", "IT32_UNRELATED=1\n")
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    rc, calls = _full_stack_start(monkeypatch, root)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    written = _env_line((root / ".env.docker").read_text(encoding="utf-8"), "NYMERIA_SECRETS_KEY")
+    assert written and _hash12(written) != _hash12(shell_key)  # a new root mints its own
+    compose = [env for cmd, env in calls if cmd[:2] == ["docker", "compose"]]
+    assert compose  # the up, the token readback
+    assert {_hash12(env.get("NYMERIA_SECRETS_KEY")) for env in compose} == {_hash12(written)}
+    assert written not in out and shell_key not in out  # never a key value
+
+
+def test_the_docker_start_now_handoff_names_the_root_to_rerun_setup_in(
+    monkeypatch, tmp_path, capsys
+):
+    # P1: after `init --root B --start`, "Re-run setup anytime with `nymeria
+    # init`" reached the default install; it names B.
+    import shlex
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "my checkout"
+    root.mkdir()
+
+    rc, _calls = _full_stack_start(monkeypatch, root)
+    flat = " ".join(capsys.readouterr().out.split())
+
+    assert rc == 0
+    assert "nym_bootstrap_aaa111" in flat  # the readback path, not the fallback
+    assert f"Re-run setup anytime with `nymeria --root {shlex.quote(str(root))} init`" in flat
+
+
 def test_finalize_full_stack_no_shadow_warning_when_env_clean(monkeypatch, tmp_path, capsys):
     _stub_llm(monkeypatch)
     root = tmp_path / "checkout"

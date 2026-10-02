@@ -206,6 +206,11 @@ class WizardState:
     # environment, so `--env-file` supplies this run's values (finalize's
     # `_compose_env`).
     stale_compose_env_keys: frozenset[str] = frozenset()
+    # The NYMERIA_SECRETS_KEY that config holds, set with the line above:
+    # every compose call after the write pins it, because the full stack
+    # interpolates the key and compose reads a shell export before
+    # `--env-file` (It32 K2). Never printed, never in a repr.
+    compose_secrets_key: str | None = field(default=None, repr=False)
 
     def resolved_api_port(self) -> int:
         """The chosen API port with the default applied."""

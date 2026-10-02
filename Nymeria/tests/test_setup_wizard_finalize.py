@@ -1179,9 +1179,12 @@ def test_noninteractive_local_provider_without_key(monkeypatch, tmp_path):
 # --- #451, #101 entry 6: one install, one vault key ---------------------------
 #
 # The key decides who can decrypt an install's credential vault, so it comes
-# from the TARGET root's own config or is minted fresh, never from the process
-# environment, which holds whatever the LAUNCH root's env files put there.
-# `_loaded_from` stands in for run.py's boot load of the launch root.
+# from the TARGET root's own files, from a key the SHELL exported that the
+# root's install has been running on, or is minted fresh; never from the
+# process environment, which also holds whatever the LAUNCH root's env files
+# put there. `_loaded_from` stands in for run.py's boot load of the launch
+# root (what was set before it is the "shell"). Keys are compared by hash so a
+# failing assert never prints one.
 
 
 def _key_args(root, *extra):
@@ -1196,35 +1199,60 @@ def _written_key(path) -> str | None:
     return _read_secrets_key(path.read_text(encoding="utf-8"))
 
 
+def _key_hash(key: str | None) -> str | None:
+    import hashlib
+
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] if key else None
+
+
+def _new_key() -> str:
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key().decode()
+
+
+def _assert_real_key(key: str | None) -> None:
+    from cryptography.fernet import Fernet
+
+    assert key is not None
+    Fernet(key.encode("ascii"))  # a real key, not a placeholder (raises otherwise)
+
+
+def _shell_exports_key(monkeypatch, tmp_path) -> str:
+    """The shell exports NYMERIA_SECRETS_KEY; the boot load then captures it."""
+    shell_key = _new_key()
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", shell_key)
+    _loaded_from(tmp_path / "launch", "IT32_UNRELATED=1\n")
+    return shell_key
+
+
+_SHELL_NOTICE = "Your shell exports NYMERIA_SECRETS_KEY"
+
+
 @pytest.mark.parametrize("hosting,filename", [("local", "config.env"), ("docker", ".env.docker")])
 def test_a_new_root_never_takes_the_launch_roots_vault_key(
     monkeypatch, tmp_path, capsys, hosting, filename
 ):
     import os
 
-    from cryptography.fernet import Fernet
-
     _stub_llm(monkeypatch)
     monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
-    launch_key = Fernet.generate_key().decode()
+    launch_key = _new_key()
     _loaded_from(tmp_path / "launch", f"NYMERIA_SECRETS_KEY={launch_key}\n")
-    assert os.environ["NYMERIA_SECRETS_KEY"] == launch_key  # the bleed source is live
+    # The bleed source is live: the launch root's FILE put a key in os.environ.
+    assert _key_hash(os.environ.get("NYMERIA_SECRETS_KEY")) == _key_hash(launch_key)
     root = tmp_path / "new"
 
     assert setup_main(_key_args(root, "--hosting", hosting)) == 0
 
     key = _written_key(root / filename)
-    assert key is not None and key != launch_key
-    Fernet(key.encode("ascii"))  # a real key, not a placeholder
+    _assert_real_key(key)
+    assert _key_hash(key) != _key_hash(launch_key)
     # The key came from a FILE, not the shell: no "your shell exports" notice.
-    assert "Your shell exports NYMERIA_SECRETS_KEY" not in " ".join(
-        capsys.readouterr().out.split()
-    )
+    assert _SHELL_NOTICE not in " ".join(capsys.readouterr().out.split())
 
 
 def test_a_reconfigure_keeps_its_own_key_whatever_the_process_holds(monkeypatch, tmp_path):
-    from cryptography.fernet import Fernet
-
     _stub_llm(monkeypatch)
     monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
     root = tmp_path / "install"
@@ -1232,11 +1260,35 @@ def test_a_reconfigure_keeps_its_own_key_whatever_the_process_holds(monkeypatch,
     own_key = _written_key(root / "config.env")
     assert own_key is not None
 
-    _loaded_from(tmp_path / "launch", f"NYMERIA_SECRETS_KEY={Fernet.generate_key().decode()}\n")
+    _loaded_from(tmp_path / "launch", f"NYMERIA_SECRETS_KEY={_new_key()}\n")
     assert setup_main(_key_args(root, "--model", "other-model")) == 0  # merge
-    assert _written_key(root / "config.env") == own_key
+    assert _key_hash(_written_key(root / "config.env")) == _key_hash(own_key)
     assert setup_main(_key_args(root, "--force")) == 0  # fresh write
-    assert _written_key(root / "config.env") == own_key
+    assert _key_hash(_written_key(root / "config.env")) == _key_hash(own_key)
+
+
+@pytest.mark.parametrize("hosting,filename", [("local", "config.env"), ("docker", ".env.docker")])
+def test_a_key_in_the_roots_own_file_wins_over_a_shell_export(
+    monkeypatch, tmp_path, capsys, hosting, filename
+):
+    # K1 step 1: the install's own key is what it has always run on (the file
+    # wins at boot); a different export changes nothing and is not adopted.
+    _stub_llm(monkeypatch)
+    root = tmp_path / "install"
+    root.mkdir()
+    own_key = _new_key()
+    (root / filename).write_text(
+        f"LLM_MODEL=old-model\nNYMERIA_SECRETS_KEY={own_key}\n", encoding="utf-8"
+    )
+    shell_key = _shell_exports_key(monkeypatch, tmp_path)
+
+    assert setup_main(_key_args(root, "--hosting", hosting)) == 0
+    assert setup_main(_key_args(root, "--hosting", hosting, "--force")) == 0
+
+    assert _key_hash(_written_key(root / filename)) == _key_hash(own_key)
+    out = capsys.readouterr().out
+    assert _SHELL_NOTICE not in " ".join(out.split())
+    assert own_key not in out and shell_key not in out
 
 
 def test_a_hosting_switch_inside_one_root_keeps_its_vault_key(monkeypatch, tmp_path):
@@ -1251,52 +1303,135 @@ def test_a_hosting_switch_inside_one_root_keeps_its_vault_key(monkeypatch, tmp_p
     assert setup_main(_key_args(root, "--hosting", "docker")) == 0
 
     assert local_key is not None
-    assert _written_key(root / ".env.docker") == local_key
+    assert _key_hash(_written_key(root / ".env.docker")) == _key_hash(local_key)
 
 
-def test_a_local_write_never_reads_the_docker_installs_key_beside_it(monkeypatch, tmp_path):
-    # Safety: in a shared root, `.env.docker` is ANOTHER install's config. A
-    # local config written there (only ever with --root naming the root) gets
-    # its own key; the Docker install's key is never copied out of its file.
-    from cryptography.fernet import Fernet
-
+@pytest.mark.parametrize("older_local_key", [False, True])
+def test_a_local_write_beside_a_docker_config_runs_on_its_key(
+    monkeypatch, tmp_path, older_local_key
+):
+    # K3, one root, one key: in a shared root (reachable only with --root) a
+    # local process loads `.env.docker` LAST, so the local install runs (and
+    # encrypts its vault) on the Docker file's key. Its own config holds that
+    # same key, so retiring the Docker file later orphans nothing. With a
+    # key in `.env` too, the one that wins at runtime is still `.env.docker`'s
+    # (load order `.env`, `config.env`, `.env.docker`).
     _stub_llm(monkeypatch)
     monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
     root = tmp_path / "shared"
     root.mkdir()
-    docker_key = Fernet.generate_key().decode()
-    (root / ".env.docker").write_text(
+    docker_key = _new_key()
+    docker_file = root / ".env.docker"
+    docker_file.write_text(
         f"NYMERIA_SECRETS_KEY={docker_key}\nLLM_MODEL=docker-model\n", encoding="utf-8"
     )
+    if older_local_key:
+        (root / ".env").write_text(f"NYMERIA_SECRETS_KEY={_new_key()}\n", encoding="utf-8")
+        (root / "config.env").write_text("LLM_MODEL=old-model\n", encoding="utf-8")
+    before = docker_file.read_bytes()
 
     assert setup_main(_key_args(root, "--hosting", "local", "--force")) == 0
 
-    written = [root / name for name in ("config.env", ".env") if (root / name).exists()]
-    assert len(written) == 1
-    key = _written_key(written[0])
-    assert key is not None and key != docker_key
-    assert _written_key(root / ".env.docker") == docker_key  # untouched
+    written = root / "config.env" if older_local_key else None
+    if written is None:
+        candidates = [root / n for n in ("config.env", ".env") if (root / n).exists()]
+        assert len(candidates) == 1
+        written = candidates[0]
+    assert _key_hash(_written_key(written)) == _key_hash(docker_key)
+    assert docker_file.read_bytes() == before  # the Docker config untouched
 
 
-def test_a_shell_exported_key_is_named_but_never_adopted(monkeypatch, tmp_path, capsys):
-    from cryptography.fernet import Fernet
-
+@pytest.mark.parametrize(
+    "hosting,existing,target",
+    [
+        ("local", "config.env", "config.env"),  # a reconfigure of the file itself
+        ("docker", ".env.docker", ".env.docker"),
+        ("docker", "config.env", ".env.docker"),  # a sibling marks the install
+    ],
+)
+def test_an_install_that_ran_on_a_shell_exported_key_adopts_it(
+    monkeypatch, tmp_path, capsys, hosting, existing, target
+):
+    # K1 step 2: the root already holds an install whose files name no key,
+    # so it has been running on the shell's export. Minting would orphan its
+    # vault; writing the export down keeps it and makes the export removable.
     _stub_llm(monkeypatch)
-    shell_key = Fernet.generate_key().decode()
-    monkeypatch.setenv("NYMERIA_SECRETS_KEY", shell_key)
-    # The boot load captures the shell's environment first, as run.py's does.
-    _loaded_from(tmp_path / "launch", "IT32_UNRELATED=1\n")
+    root = tmp_path / "install"
+    root.mkdir()
+    (root / existing).write_text("LLM_MODEL=old-model\n", encoding="utf-8")
+    shell_key = _shell_exports_key(monkeypatch, tmp_path)
+
+    assert setup_main(_key_args(root, "--hosting", hosting)) == 0
+
+    key = _written_key(root / target)
+    assert _key_hash(key) == _key_hash(shell_key)
+    out = capsys.readouterr().out
+    flat = " ".join(out.split())
+    assert flat.count(_SHELL_NOTICE) == 1
+    assert f"now written into {target}" in flat
+    assert "no longer needs the export" in flat
+    assert shell_key not in out  # never a key value
+
+
+@pytest.mark.parametrize(
+    "hosting_args,filename,says",
+    [
+        (("--hosting", "local"), "config.env", "The file's key wins over the export whenever this install starts"),
+        (("--hosting", "docker"), ".env.docker", "The file's key wins over the export whenever this install starts"),
+        (
+            ("--hosting", "docker", "--docker-stack", "full"),
+            ".env.docker",
+            "a docker compose command run from a shell that still exports "
+            "NYMERIA_SECRETS_KEY starts this stack on the exported key instead",
+        ),
+    ],
+)
+def test_a_fresh_root_beside_a_shell_export_mints_its_own_key_with_one_notice(
+    monkeypatch, tmp_path, capsys, hosting_args, filename, says
+):
+    # K1 step 3: a NEW install never takes a key it was not running on, and
+    # the run says so ONCE: the full stack's shadow warning must not add a
+    # second, conflicting "unset NYMERIA_SECRETS_KEY" (one key message).
+    _stub_llm(monkeypatch)
+    shell_key = _shell_exports_key(monkeypatch, tmp_path)
     root = tmp_path / "new"
+
+    assert setup_main(_key_args(root, *hosting_args)) == 0
+
+    key = _written_key(root / filename)
+    _assert_real_key(key)
+    assert _key_hash(key) != _key_hash(shell_key)
+    out = capsys.readouterr().out
+    flat = " ".join(out.split())
+    assert flat.count(_SHELL_NOTICE) == 1
+    assert f"this new install gets its own key in {filename}" in flat
+    assert says in flat
+    assert "unset NYMERIA_SECRETS_KEY" not in flat
+    assert "NYMERIA_SECRETS_KEY with a value different" not in flat
+    assert shell_key not in out and key not in out  # never a key value
+
+
+def test_without_a_shell_export_an_install_with_no_key_gets_a_new_one(
+    monkeypatch, tmp_path, capsys
+):
+    # K1, no export: unchanged. An existing root whose files name no key, and
+    # a shell that exports none, mints (and says nothing about a shell key).
+    # The key the LAUNCH root's file put in os.environ is not a shell export:
+    # adopting it would copy another install's vault key (#451).
+    _stub_llm(monkeypatch)
+    monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    launch_key = _new_key()
+    _loaded_from(tmp_path / "launch", f"NYMERIA_SECRETS_KEY={launch_key}\n")
+    root = tmp_path / "install"
+    root.mkdir()
+    (root / "config.env").write_text("LLM_MODEL=old-model\n", encoding="utf-8")
 
     assert setup_main(_key_args(root)) == 0
 
     key = _written_key(root / "config.env")
-    assert key is not None and key != shell_key
-    out = capsys.readouterr().out
-    flat = " ".join(out.split())
-    assert "Your shell exports NYMERIA_SECRETS_KEY" in flat
-    assert "the file's value wins over the export" in flat
-    assert shell_key not in out and key not in out  # never a key value
+    _assert_real_key(key)
+    assert _key_hash(key) != _key_hash(launch_key)
+    assert _SHELL_NOTICE not in " ".join(capsys.readouterr().out.split())
 
 
 def test_an_exported_roots_key_never_reaches_a_fresh_docker_config_at_the_checkout(
@@ -1306,8 +1441,6 @@ def test_an_exported_roots_key_never_reaches_a_fresh_docker_config_at_the_checko
     # whose config the boot load read (its key now in os.environ); a Docker
     # run with no --root writes the checkout's `.env.docker`, which must get a
     # key of its own.
-    from cryptography.fernet import Fernet
-
     from nymeria.setup import environment as environment_mod
 
     _stub_llm(monkeypatch)
@@ -1316,12 +1449,41 @@ def test_an_exported_roots_key_never_reaches_a_fresh_docker_config_at_the_checko
     checkout.mkdir()
     monkeypatch.setattr(environment_mod, "source_checkout_root", lambda: checkout)
     exported = tmp_path / "exported"
-    exported_key = Fernet.generate_key().decode()
+    exported_key = _new_key()
     _loaded_from(exported, f"NYMERIA_SECRETS_KEY={exported_key}\n")
     monkeypatch.setenv("NYMERIA_PROJECT_ROOT", str(exported))
 
     assert setup_main(_key_args(None, "--hosting", "docker")) == 0
 
     key = _written_key(checkout / ".env.docker")
-    assert key is not None and key != exported_key
-    assert _written_key(exported / ".env") == exported_key  # the other install untouched
+    _assert_real_key(key)
+    assert _key_hash(key) != _key_hash(exported_key)
+    # The other install untouched.
+    assert _key_hash(_written_key(exported / ".env")) == _key_hash(exported_key)
+
+
+def test_a_missing_model_names_the_init_command_for_this_root(monkeypatch, tmp_path):
+    # P1: the error path's "Re-run `nymeria init`" reached the DEFAULT install
+    # after `init --root B`; it names B. (A provider with no default model and
+    # no model picked: the interactive wizard can arrive here; headless runs
+    # require --model before finalize.)
+    import shlex
+
+    from nymeria.onboarding import HostingOption
+    from nymeria.setup.state import WizardState
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "my root"
+    state = WizardState(
+        hosting=HostingOption.LOCAL, root=root, provider="302ai", model="",
+        api_key="x-test", skip_llm_test=True,
+    )
+    console, buf = _capture_console()
+
+    rc = finalize_mod.finalize(state, console=console, non_interactive=True)
+
+    flat = " ".join(buf.getvalue().split())
+    assert rc == 2
+    assert "No model set" in flat
+    assert f"`nymeria --root {shlex.quote(str(root))} init`" in flat
+    assert not root.exists() or not any(root.iterdir())  # stopped before any write

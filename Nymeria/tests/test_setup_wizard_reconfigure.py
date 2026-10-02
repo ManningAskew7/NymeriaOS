@@ -1415,7 +1415,10 @@ def _closing_output(monkeypatch, capsys, root, *extra):
     [
         (("--hosting", "local"), ("slim", "cli", "init", "doctor", "telegram-bot")),
         (("--hosting", "local", "--next-action", "cli"), ("cli", "init", "doctor")),
-        (("--hosting", "service"), ("service status", "cli", "init", "doctor")),
+        (
+            ("--hosting", "service"),
+            ("service status", "service uninstall", "cli", "init", "doctor"),
+        ),
     ],
 )
 def test_closing_commands_name_the_root_a_bare_command_would_miss(
@@ -1458,6 +1461,52 @@ def test_printed_roots_are_quoted_for_the_shell_they_are_pasted_into():
         r'"C:\Users\A User\nymeria"'
     )
     assert finalize_mod._shell_arg(r"C:\plain", windows=True) == r"C:\plain"
+
+
+def test_the_external_access_retry_names_the_root(monkeypatch, tmp_path):
+    from nymeria.onboarding import ExternalAccess
+    from nymeria.setup.state import WizardState
+
+    _launched_with_root(monkeypatch, None)
+    root = tmp_path / "b"
+    state = WizardState(
+        hosting=HostingOption.LOCAL, root=root, external_access=ExternalAccess.TAILSCALE
+    )
+    console, buf = _capture_console()
+
+    finalize_mod.print_external_access_summary(state, console)
+
+    out = " ".join(buf.getvalue().split())
+    assert "Not set up in this run" in out
+    assert f"`nymeria --root {root} init external_access`" in out
+
+
+def test_a_port_change_behind_a_tunnel_names_the_external_access_command_for_the_root(
+    monkeypatch, tmp_path
+):
+    from nymeria.onboarding import ExternalAccess
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.state import WizardState
+
+    _launched_with_root(monkeypatch, None)
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(finalize_mod, "_maybe_install_local_rag", lambda *a, **k: None)
+    monkeypatch.setattr(finalize_mod, "_finalize_server_browser_guarded", lambda *a, **k: None)
+    root = tmp_path / "b"
+    state = WizardState(
+        hosting=HostingOption.LOCAL, root=root, provider="anthropic",
+        model="claude-test-model", api_key="sk-ant-x", skip_llm_test=True,
+        api_port=8297, external_access=ExternalAccess.TAILSCALE,
+        public_url="https://box.example.ts.net",
+    )
+    state.extras["api_port_on_disk"] = 8296
+    console, buf = _capture_console()
+
+    finalize(state, console=console, non_interactive=True)
+
+    out = " ".join(buf.getvalue().split())
+    assert "still forwards to the old port" in out
+    assert f"(`nymeria --root {root} init external_access`)" in out
 
 
 # --- #101 entry 6: a local config never lands beside .env.docker by accident -
@@ -1567,6 +1616,66 @@ def test_the_interactive_wizard_asks_before_writing_beside_a_docker_config(
         assert "Nothing was written" in out
 
 
+@pytest.mark.parametrize("hosting", ["local", "service"])
+@pytest.mark.parametrize("local_file", ["config.env", ".env"])
+def test_a_local_install_already_beside_a_docker_config_reconfigures_without_root(
+    monkeypatch, tmp_path, capsys, hosting, local_file
+):
+    # F2: the guard is for landing beside .env.docker by ACCIDENT. A local
+    # install already placed there (the Source-track layout, #503) is a
+    # reconfigure: it proceeds, headless with no --root, and still gets the
+    # post-write warning. A fresh write there stays refused (the test above).
+    root = _shared_root(tmp_path)
+    (root / local_file).write_text(
+        "LLM_PROVIDER=anthropic\nLLM_MODEL=old-model\n", encoding="utf-8"
+    )
+    _launched_with_root(monkeypatch, root)
+    _stub_llm(monkeypatch)
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-x", "--hosting", hosting, "--non-interactive",
+         "--skip-llm-test"]
+    )
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert rc == 0
+    assert "LLM_MODEL=claude-test-model" in (root / local_file).read_text(encoding="utf-8")
+    assert "Nothing was written" not in out
+    assert "also holds .env.docker" in out  # the post-write warning still fires
+
+
+def test_the_interactive_wizard_never_asks_before_reconfiguring_an_install_already_there(
+    monkeypatch, tmp_path
+):
+    import builtins
+
+    from nymeria.setup.finalize import finalize
+    from nymeria.setup.state import WizardState
+
+    root = _shared_root(tmp_path)
+    (root / "config.env").write_text("LLM_MODEL=old-model\n", encoding="utf-8")
+    _launched_with_root(monkeypatch, root)
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        builtins, "input", lambda *_a: pytest.fail("a reconfigure must not be asked about")
+    )
+    monkeypatch.setattr(finalize_mod, "_maybe_install_local_rag", lambda *a, **k: None)
+    monkeypatch.setattr(finalize_mod, "_finalize_server_browser_guarded", lambda *a, **k: None)
+    state = WizardState(
+        hosting=HostingOption.LOCAL, provider="anthropic", model="claude-test-model",
+        api_key="sk-ant-x", skip_llm_test=True,
+    )
+    console, buf = _capture_console()
+
+    rc = finalize(state, console=console, non_interactive=False, overwrite_confirmed=True)
+
+    out = " ".join(buf.getvalue().split())
+    assert rc == 0
+    assert "Write the local config here anyway?" not in out
+    assert "LLM_MODEL=claude-test-model" in (root / "config.env").read_text(encoding="utf-8")
+
+
 def test_docker_hosting_at_a_checkout_is_not_refused(monkeypatch, tmp_path):
     # E12: the Docker install's own config lives beside compose; a Docker run
     # with no --root reconfigures it exactly as before.
@@ -1585,23 +1694,28 @@ def test_docker_hosting_at_a_checkout_is_not_refused(monkeypatch, tmp_path):
     assert not (checkout / "config.env").exists() and not (checkout / ".env").exists()
 
 
-@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize("case", ["fresh", "named", "placed"])
 def test_the_review_screen_names_the_root_and_the_docker_config_beside_it(
-    monkeypatch, tmp_path, named
+    monkeypatch, tmp_path, case
 ):
     from nymeria.setup.state import WizardState
     from nymeria.setup.steps.review import _summary_markup
 
     root = _shared_root(tmp_path)
+    if case == "placed":  # a local install already lives there (F2)
+        (root / "config.env").write_text("LLM_MODEL=old-model\n", encoding="utf-8")
     _launched_with_root(monkeypatch, root)
-    state = WizardState(hosting=HostingOption.LOCAL, root=root if named else None)
+    state = WizardState(hosting=HostingOption.LOCAL, root=root if case == "named" else None)
 
     markup = " ".join(_summary_markup(state).split())
 
     assert str(root) in markup
     assert "also holds .env.docker" in markup
-    if named:
+    if case == "named":
         assert "it is written anyway" in markup
+    elif case == "placed":
+        assert "this updates the local install already here" in markup
+        assert "finishing asks" not in markup
     else:
         assert "finishing asks before writing here" in markup
         assert "nymeria --root <dir> init" in markup

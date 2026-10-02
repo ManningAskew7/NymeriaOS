@@ -973,16 +973,27 @@ process started with `--root B` reads only B's files, never the default
 root's, and an abbreviated spelling is refused rather than guessed at.
 
 `nymeria init` prints the root it resolved and why on every run, and scopes
-discovery to an exported root, so it never reconfigures another install. A
-new install's `NYMERIA_SECRETS_KEY` comes only from its own root (a hosting
-switch inside one root keeps the key) or is generated; it is never copied
-from another install or from your shell (a shell export is named, never
-printed, because the file's key wins at boot). When the root it wrote is not
-what a bare `nymeria` command would find, the closing commands include
-`--root <dir>`. It refuses to write a local or background-service config
+discovery to an exported root, so it never reconfigures another install.
+An install's `NYMERIA_SECRETS_KEY` comes only from its own root: the key
+already in one of that root's env files (the one that wins at load, so a
+switch from local to Docker hosting in one root keeps the key, and a local
+config written beside a `.env.docker` takes that file's key, which is the one
+it runs on); else, when the root already holds an install, a key your shell
+exports (that install has been running on it, so it is written into the
+config and the export is no longer needed); else a new key. It never copies
+another install's key and never prints one. A new install in a shell that
+exports a different key is told so once. A bare-metal or single-container
+install's file key wins over the export at boot, but the full Docker stack's
+compose file reads `${NYMERIA_SECRETS_KEY}` from the shell before
+`--env-file`: `nymeria init`'s own compose calls pass the file's key, while a
+`docker compose` command run from a shell that still exports another key
+starts the stack on that one. When the root it wrote is not
+what a bare `nymeria` command would find, the printed commands include
+`--root <dir>`. It refuses to write a new local or background-service config
 into a root that holds a `.env.docker` unless `--root` names that root (the
 interactive wizard asks first; headless runs exit with code 2 before
-anything is written), and with `--root` it writes and warns. It suggests
+anything is written); with `--root`, or when it reconfigures a local install
+already there, it writes and warns. It suggests
 removing an installed background service only when that service runs this
 install's root: one per user account, so it may belong to another install.
 At boot, a process that loaded a `.env.docker` outside Docker warns when

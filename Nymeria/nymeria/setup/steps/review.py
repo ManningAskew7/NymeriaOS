@@ -125,23 +125,27 @@ def _environment_heads_up(state: WizardState) -> list[str]:
 def _root_lines(state: WizardState) -> list[str]:
     """Where the config goes, and whether that root holds a Docker install's config.
 
-    The finish step refuses (asks, in this wizard) to write a local config
-    beside a `.env.docker` unless `--root` named the root, because the Docker
-    file loads last and wins (#101 entry 6); saying so here means the question
-    is no surprise, and says how to pick another root instead.
+    The finish step refuses (asks, in this wizard) to write a NEW local
+    config beside a `.env.docker` unless `--root` named the root, because the
+    Docker file loads last and wins (#101 entry 6); saying so here means the
+    question is no surprise, and says how to pick another root instead. A
+    reconfigure of a local install already there is never asked about.
     """
-    from ..finalize import resolve_runtime_root
+    from ..finalize import local_install_beside_docker, resolve_runtime_root
 
     for_docker = state.hosting is HostingOption.DOCKER
     root = resolve_runtime_root(state, for_docker=for_docker)
     lines = [_row("Root", escape(str(root)))]
     if not for_docker and (root / ".env.docker").exists():
-        then = (
-            "--root names this root, so it is written anyway"
-            if state.root is not None
-            else "finishing asks before writing here; for a separate root, quit "
-            "and run `nymeria --root <dir> init`"
-        )
+        if state.root is not None:
+            then = "--root names this root, so it is written anyway"
+        elif local_install_beside_docker(root):
+            then = "this updates the local install already here"
+        else:
+            then = (
+                "finishing asks before writing here; for a separate root, quit "
+                "and run `nymeria --root <dir> init`"
+            )
         lines.append(
             f"[yellow]Heads up: this root also holds .env.docker (a Docker "
             f"install's config), which loads last and overrides a local config: "

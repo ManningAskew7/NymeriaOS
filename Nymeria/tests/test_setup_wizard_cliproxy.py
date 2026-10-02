@@ -1674,6 +1674,8 @@ def test_a_rejection_outside_a_strict_run_is_a_note_not_a_block(monkeypatch, tmp
     assert len(fake.probes) == 1
     assert "rejected the proxy's stored login" in out
     assert "Writing the config anyway" in out
+    # P1 (#101 entry 6): the re-run command reaches THIS root, not the default.
+    assert f"re-run `nymeria --root {root} init`" in " ".join(out.split())
     assert rc == 0
     assert (root / "config.env").exists()
 
