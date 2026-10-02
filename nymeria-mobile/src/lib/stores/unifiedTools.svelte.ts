@@ -116,6 +116,10 @@ function createUnifiedToolsStore() {
     error = null;
     try {
       await api.setUnifiedToolEnabled(toolId, enabled, userId);
+      // Drop the mutation loading state first: loadTools() returns early on
+      // it, which left the list (switch state, #164 badge) stale after every
+      // toggle, so the next flip sent the same value again. Desktop parity.
+      loading = false;
       await loadTools(userId);
       // Sync defaultToolsStore so both stores reflect the change
       defaultToolsStore.resetLoaded();
