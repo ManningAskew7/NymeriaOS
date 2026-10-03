@@ -536,7 +536,7 @@ def test_full_image_local_rag_opt_in_is_a_build_arg() -> None:
 
 
 def test_twitch_chatter_service_is_a_pinned_silent_viewer_on_its_own_env_file() -> None:
-    """The second Twitch bot (tmp/twitch-chatter-deploy-plan.md C1): its own
+    """The second Twitch bot (the silent chatter viewer): its own
     profile, role and commands pinned in compose (env_file cannot override
     them), no broadcaster token, per-bot values from an OPTIONAL env file so a
     stack without the bot still validates, and the original service untouched."""

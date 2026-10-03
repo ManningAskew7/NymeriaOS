@@ -113,8 +113,7 @@ async def verify_login_serves(
     The auth-file list (what "logged in" means everywhere else) keeps a
     revoked or expired token, and a GET /v1/models is answered from the
     proxy's own registry, so neither proves the subscription serves traffic
-    (#101 entry 2; cliproxy.md, "A confirmed login still does not prove the
-    credential works"). This is the backend's own check,
+    (#101 entry 2). This is the backend's own check,
     ``api/routers/cliproxy.py::verify_cliproxy_credential`` (the
     ``/provider test`` probe with the cloak-skip identity and the billing
     block, gatekeeper read-only), not a second probe: raw-HTTP copies of that

@@ -2291,7 +2291,7 @@ def test_twitchio_route_serialises_the_clip_params_we_send():
 
 
 # ===========================================================================
-# Chatter role + stream listener (tmp/twitch-chatter-listener-plan.md)
+# Chatter role + stream listener
 # ===========================================================================
 
 
@@ -2455,8 +2455,8 @@ async def test_clip_stays_tier_gated_in_the_chatter_role(monkeypatch):
 @pytest.mark.asyncio
 async def test_operator_logins_grant_the_control_commands_without_badges(tmp_path):
     for role in ("moderator", "chatter"):
-        bot = make_bot(role=role, operator_logins=frozenset({"manning"}), stop_flag_path=tmp_path / role)
-        operator = _Chatter(name="Alex")  # any casing
+        bot = make_bot(role=role, operator_logins=frozenset({"opsadmin"}), stop_flag_path=tmp_path / role)
+        operator = _Chatter(name="OpsAdmin")  # any casing
         stranger = _Chatter(name="someone")
 
         assert bot._is_privileged(_Ctx("!stop", operator))
@@ -2966,7 +2966,7 @@ async def test_wake_cancels_a_pending_reaction_check_and_a_wake_that_posts_sched
     bot._cancel_reaction_check()
 
 
-# --- Review follow-ups (tmp/twitch-chatter-listener-review-code.md) --------
+# --- Chatter role + listener: review follow-ups ------------------------------
 
 
 @pytest.mark.asyncio
@@ -3102,8 +3102,7 @@ async def test_heartbeat_liveness_recheck_heals_a_missed_online_or_offline():
 
 
 # ---------------------------------------------------------------------------
-# Roaming thread, relay identity, commands switch (2026-09-19,
-# tmp/twitch-chatter-deploy-plan.md R1-R5, K1-K2)
+# Roaming thread, relay identity, commands switch (2026-09-19)
 # ---------------------------------------------------------------------------
 
 

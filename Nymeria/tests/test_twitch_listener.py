@@ -1,9 +1,8 @@
 """Twitch stream listener core (triggers/twitch_listener.py).
 
-Plan: tmp/twitch-chatter-listener-plan.md, behaviors L1-L4. The core is
-SDK-free: the audio source and transcriber are fakes, the clocks and the
-backoff sleep are injected, so every window, gate decision, and fault-policy
-step is observable without streamlink, PyAV, or an STT provider.
+The core is SDK-free: the audio source and transcriber are fakes, the clocks
+and the backoff sleep are injected, so every window, gate decision, and
+fault-policy step is observable without streamlink, PyAV, or an STT provider.
 """
 
 import asyncio

@@ -178,7 +178,7 @@ See `.env.docker.example` for all available options. Key settings:
 # Required
 POSTGRES_PASSWORD=<secure-password>
 REDIS_PASSWORD=<secure-url-safe-password>
-NYMERIA_SERVICE_TOKEN=<admin-service-token>   # see docs/accounts.md
+NYMERIA_SERVICE_TOKEN=<admin-service-token>   # see docs/agent-systems/accounts.md
 
 # LLM (at least one required)
 ANTHROPIC_API_KEY=sk-ant-<token>
@@ -444,7 +444,7 @@ just as they do for local Docker.
 
 ## Security Considerations
 
-1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, bots, STDIO MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing. The HTTP MCP server instead forwards each caller's own token.
+1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/agent-systems/accounts.md`. Worker, bots, STDIO MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing. The HTTP MCP server instead forwards each caller's own token.
 2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` hold secrets and are gitignored. Keep them out of version control, restrict file permissions, and back them up separately from the repo. See the Secrets Management section above.
 3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` and the local Tauri origins for desktop/mobile clients; no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)

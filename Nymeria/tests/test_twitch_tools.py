@@ -1445,8 +1445,7 @@ def test_tools_execute_without_any_bot_process(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Per-thread channel binding + vault sender identity (2026-09-19,
-# tmp/twitch-chatter-deploy-plan.md T1-T4)
+# Per-thread channel binding + vault sender identity (2026-09-19)
 # ---------------------------------------------------------------------------
 
 

@@ -304,7 +304,7 @@ Open devtools → Network → the `/chat` streaming request. Confirm SSE `data:`
 Load the thread history and inspect assistant `steps`:
 
 ```bash
-# $NYMERIA_TOKEN is your per-user account token (`nym_…`); see docs/accounts.md.
+# $NYMERIA_TOKEN is your per-user account token (`nym_…`); see docs/agent-systems/accounts.md.
 curl -s http://localhost:8000/threads/<thread_id>/history \
   -H "Authorization: Bearer $NYMERIA_TOKEN" \
   | jq '.messages[] | select(.role=="assistant") | {content_len:(.content|length), steps}'

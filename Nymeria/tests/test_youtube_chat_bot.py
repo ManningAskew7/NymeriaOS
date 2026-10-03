@@ -1,6 +1,5 @@
 """The Twitch bot's YouTube half: rendering, the shared cursor, the reader
-poller, and the !youtube controls (tmp/youtube-live-chat-plan.md behaviors
-1 to 12 and 18 on the bot side; the API side is test_youtube_live.py).
+poller, and the !youtube controls (the API side is test_youtube_live.py).
 
 ``GOLDEN`` holds prompts produced by the bot code from BEFORE YouTube existed
 (commit e31121eb, generated in a throwaway worktree): every prompt kind must

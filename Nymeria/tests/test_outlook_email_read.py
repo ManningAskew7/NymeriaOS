@@ -243,9 +243,9 @@ def test_conversation_awaiting_your_reply_and_bodies(monkeypatch):
 
 
 def test_conversation_uses_the_shared_mailbox_as_owner(monkeypatch):
-    calls = _fake_graph(monkeypatch, [(True, {"value": [_msg("m1", "2026-09-01T00:00:00Z", sender="sales@_prv_a.com.au")]})])
-    out = oe.outlook_get_conversation.invoke({"conversation_id": "C1", "mailbox": "Sales@_PRV_A.com.au"}, config=_CFG)
-    assert calls[0]["mailbox"] == "Sales@_PRV_A.com.au"
+    calls = _fake_graph(monkeypatch, [(True, {"value": [_msg("m1", "2026-09-01T00:00:00Z", sender="sales@contoso.com")]})])
+    out = oe.outlook_get_conversation.invoke({"conversation_id": "C1", "mailbox": "Sales@Contoso.com"}, config=_CFG)
+    assert calls[0]["mailbox"] == "Sales@Contoso.com"
     assert "you replied last" in out
 
 

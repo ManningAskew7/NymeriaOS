@@ -1,11 +1,10 @@
 """YouTube Live chat core (core/youtube_live.py): detection, reads, writes.
 
-Behaviors from tmp/youtube-live-chat-plan.md (5, 6, 7, 8, 11, 12, 13, 14,
-15, 19, 20). YouTube is faked at the HTTP layer (``request_with_policy``), so
-the module's own transport, error classification, and egress path run for
-real; only the vault lookup (``get_google_credentials`` and
-``resolve_oauth_cache``) is replaced, and the fake insists on each grant's
-literal scope so a scope mix-up cannot pass.
+YouTube is faked at the HTTP layer (``request_with_policy``), so the module's
+own transport, error classification, and egress path run for real; only the
+vault lookup (``get_google_credentials`` and ``resolve_oauth_cache``) is
+replaced, and the fake insists on each grant's literal scope so a scope mix-up
+cannot pass.
 """
 
 from __future__ import annotations

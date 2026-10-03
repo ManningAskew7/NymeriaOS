@@ -115,8 +115,7 @@ def test_an_unresolvable_agent_reads_not_configured_and_health_stays_ok(
 def test_health_never_names_the_provider_or_account(tmp_path, api_client_builder):
     client, _ = _client(tmp_path, api_client_builder)
     body = client.get("/health").json()
-    # A change-detector by design (a leakage control, testing-standards
-    # "build-failing gates"): a new /health field is a deliberate decision
-    # about what an unauthenticated caller may learn, so widen this on
-    # purpose, never in passing.
+    # A change-detector by design (a leakage control): a new /health field
+    # is a deliberate decision about what an unauthenticated caller may
+    # learn, so widen this on purpose, never in passing.
     assert set(body) == {"status", "version", "configured"}

@@ -80,7 +80,7 @@ A modern desktop UI for the NymeriaOS AI agent, built with Tauri 2.x and Svelte 
    - Configuring the backend URL (defaults to `http://localhost:8000`)
    - Pasting your account token  -  the bootstrap admin token from
      `<data_dir>/BOOTSTRAP_TOKEN.txt`, or any per-user token minted via
-     `python3 run.py users add <email>` (see `Nymeria/docs/accounts.md`)
+     `python3 run.py users add <email>` (see `Nymeria/docs/agent-systems/accounts.md`)
    - Testing the connection
 
    After completing setup, you'll be taken directly to the chat interface.

@@ -173,10 +173,10 @@ def test_graph_request_addresses_the_shared_mailbox(monkeypatch):
     _bind_cache(monkeypatch, {"A": _live_account()})
     calls = _stub_policy_client(monkeypatch, lambda m, u, **kw: _resp(200, {"value": []}))
 
-    ok, _ = og.graph_request("u1", "GET", "/me/mailFolders/inbox/messages", mailbox="sales@_prv_a.com.au")
+    ok, _ = og.graph_request("u1", "GET", "/me/mailFolders/inbox/messages", mailbox="sales@contoso.com")
 
     assert ok
-    assert calls[0][1] == f"{og.GRAPH_BASE}/users/sales@_prv_a.com.au/mailFolders/inbox/messages"
+    assert calls[0][1] == f"{og.GRAPH_BASE}/users/sales@contoso.com/mailFolders/inbox/messages"
 
 
 def test_graph_request_defaults_to_the_signed_in_mailbox(monkeypatch):
@@ -434,7 +434,7 @@ def test_resolve_folder_surfaces_graph_errors_and_empty_input(monkeypatch):
 
 def test_rejected_refresh_names_the_account_and_status(monkeypatch):
     _bind_cache(monkeypatch, {"A": {
-        "email": "sales@_prv_a.com.au", "access_token": "old", "refresh_token": "dead",
+        "email": "sales@contoso.com", "access_token": "old", "refresh_token": "dead",
         "expires_at": time.time() - 5,
     }})
     _stub_policy_client(monkeypatch, lambda m, u, **kw: _resp(
@@ -443,11 +443,11 @@ def test_rejected_refresh_names_the_account_and_status(monkeypatch):
     with pytest.raises(og.OutlookTokenError) as exc:
         og.acquire_access_token("u1")
     msg = str(exc.value)
-    assert "sales@_prv_a.com.au" in msg and "400" in msg and "AADSTS70000" in msg
+    assert "sales@contoso.com" in msg and "400" in msg and "AADSTS70000" in msg
     assert "request_credential" in msg
 
     ok, err = og.graph_request("u1", "GET", "/me/messages")
-    assert not ok and "sales@_prv_a.com.au" in err
+    assert not ok and "sales@contoso.com" in err
     assert "No authenticated" not in err
 
 
@@ -485,10 +485,10 @@ def test_graph_request_names_the_shared_mailbox_on_403_and_404(monkeypatch, stat
     # 404 "Default folder Inbox not found", which reads like a bug in the tool.
     _bind_cache(monkeypatch, {"A": _live_account()})
     _stub_policy_client(monkeypatch, lambda m, u, **kw: _resp(status, {"error": {"code": code, "message": message}}, text="x"))
-    ok, err = og.graph_request("u1", "GET", "/me/mailFolders/inbox/messages", mailbox="sales@_prv_a.com.au")
+    ok, err = og.graph_request("u1", "GET", "/me/mailFolders/inbox/messages", mailbox="sales@contoso.com")
     assert not ok
     assert err == (
-        f"API Error ({status}): {code}: {message} (shared mailbox sales@_prv_a.com.au: the signed-in account "
+        f"API Error ({status}): {code}: {message} (shared mailbox sales@contoso.com: the signed-in account "
         "may not have been granted access to it in Exchange, or the address is wrong)"
     )
     ok, err = og.graph_request("u1", "GET", "/me/mailFolders/inbox/messages")
