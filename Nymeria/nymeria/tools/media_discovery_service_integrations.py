@@ -62,7 +62,10 @@ _GOOGLE_BOOKS = register_provider_spec(
 _YOUTUBE = register_provider_spec(
     ProviderCredentialSpec(
         provider="youtube",
-        aliases=("youtube_data", "youtube_data_api", "google_youtube"),
+        # Not "google_youtube": that name is the OAuth provider of the Twitch
+        # bot's YouTube Live chat tools (config/oauth_providers.py), whose
+        # token record must never be read as this API key.
+        aliases=("youtube_data", "youtube_data_api"),
         groups=(
             CredentialFieldGroup(
                 role="base_url",

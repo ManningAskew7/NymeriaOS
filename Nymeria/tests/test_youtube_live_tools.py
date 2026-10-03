@@ -54,6 +54,22 @@ def test_every_youtube_tool_receives_the_run_config():
         assert _get_runnable_config_param(t.func) == "config", t.name
 
 
+def test_the_tools_never_take_the_youtube_api_key_credential():
+    """The YouTube Data API key family (provider "youtube") is another
+    credential: tool_search's setup status, the enable warning and the
+    auth-failure guidance must not point these OAuth tools at it (found live:
+    "youtube needs_setup"), and its key lookups must not claim the
+    google_youtube OAuth provider name, whose token record is no API key."""
+    from nymeria.tools import credential_registry as cr
+
+    names = [t.name for t in tools.YOUTUBE_LIVE_TOOLS]
+    assert all(name.startswith("youtube_chat_") for name in names)
+    assert cr.auth_status_for_tools(names, "alice") == {}
+    assert cr.get_provider_spec("google_youtube") is None
+    key_spec = cr.spec_for_tool("youtube_search")  # the key family keeps its spec
+    assert key_spec is not None and key_spec.provider == "youtube"
+
+
 # ---------------------------------------------------------------------------
 # Behavior 16: send splits at 200, at most 2 parts, refuses longer
 # ---------------------------------------------------------------------------
@@ -160,7 +176,7 @@ def test_writes_refuse_when_nothing_is_live_without_spending_a_write(fake):  # n
     result = tools.youtube_chat_send.func(message="hi", config=_cfg())
     assert result.startswith("[Error]") and "No live YouTube broadcast" in result
     assert not [c for c in fake.calls if c["method"] in ("POST", "DELETE")]
-    status = tools.youtube_live_status.func(config=_cfg())
+    status = tools.youtube_chat_status.func(config=_cfg())
     assert status.startswith("Not live on YouTube")
 
 
@@ -274,6 +290,6 @@ def test_status_reports_the_attached_stream(live):
         "snippet": {"title": "Silk live", "channelTitle": "Silk", "channelId": STREAMER_CH},
         "liveStreamingDetails": {"activeLiveChatId": "chat-1", "concurrentViewers": "321"},
     }
-    status = tools.youtube_live_status.func(config=_cfg())
+    status = tools.youtube_chat_status.func(config=_cfg())
     assert '"concurrent_viewers": "321"' in status and '"live": true' in status
     assert '"url": "https://www.youtube.com/watch?v=vid00000001"' in status

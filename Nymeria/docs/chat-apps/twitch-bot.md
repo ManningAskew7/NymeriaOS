@@ -626,7 +626,7 @@ dry run, or a streamer who uses one channel).
    (`up -d twitch-bot`).
 5. On the thread: enable `youtube_chat_send`, `youtube_chat_timeout`,
    `youtube_chat_ban`, `youtube_chat_unban`, `youtube_chat_delete_message`,
-   `youtube_chat_get_chatter_log`, `youtube_live_status`, and add a YouTube
+   `youtube_chat_get_chatter_log`, `youtube_chat_status`, and add a YouTube
    paragraph to the system prompt, for example:
 
 ```
@@ -686,7 +686,7 @@ details carry `youtube`, `youtube_video`, `youtube_pinned`, and
 
 ### YouTube tools (7)
 
-The write tools and `youtube_live_status` act as the bot channel in the live
+The write tools and `youtube_chat_status` act as the bot channel in the live
 chat the reader is attached to (or a freshly detected one, so they work
 without the bot running), resolving the `google_youtube` grant of the
 calling account. `youtube_chat_get_chatter_log` reads only the local log and
@@ -700,7 +700,7 @@ needs no grant.
 | `youtube_chat_unban` | Lift a timeout or ban the bot made (others: YouTube Studio) |
 | `youtube_chat_delete_message` | Delete one message by its `[msg:...]` id |
 | `youtube_chat_get_chatter_log` | One chatter's recent YouTube lines, fenced, from the API-side log (no quota) |
-| `youtube_live_status` | Attached stream: title, channel, live viewers, start time |
+| `youtube_chat_status` | Attached stream: title, channel, live viewers, start time |
 
 The chatter log is written by the API as it reads (`users/<account>/
 youtube_chatlog/<streamer channel id, lowercased>/`, same JSONL store and
@@ -913,7 +913,7 @@ See the Messaging Platforms table in `docs/configuration.md` for every
 | `nymeria/triggers/youtube_chat.py` | The bot's YouTube reader: polls the API on its cadence, dedupes, pauses on `!stop` (SDK-free) |
 | `nymeria/core/youtube_live.py` | API-side YouTube Data API client: detection, attachment, chat reads, normalization, writes, ban ledger, the YouTube chat log feed |
 | `nymeria/api/routers/youtube_live.py` | `POST /youtube/live-chat/poll` (the reader's route, acting as the caller) |
-| `nymeria/tools/youtube_live.py` | The 7 `youtube_chat_*` / `youtube_live_status` tools |
+| `nymeria/tools/youtube_live.py` | The 7 `youtube_chat_*` tools |
 
 ## Debugging
 

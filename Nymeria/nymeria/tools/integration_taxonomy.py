@@ -202,6 +202,11 @@ SERVICE_REGISTRY: Dict[str, Dict[str, str]] = {
     "google_books": {"label": "Google Books", "group": "media_entertainment"},
     "spotify": {"label": "Spotify", "group": "media_entertainment"},
     "youtube": {"label": "YouTube", "group": "media_entertainment"},
+    # The Twitch bot's YouTube Live chat tools (tools/youtube_live.py) run on
+    # the google_youtube OAuth grant, not the YouTube Data API key: their own
+    # service key keeps credential_registry.spec_for_tool from handing them
+    # the "youtube" API-key spec (a wrong "needs setup" and wrong auth hints).
+    "youtube_chat": {"label": "YouTube Live chat", "group": "media_entertainment"},
     "affinity": {"label": "Affinity", "group": "crm_sales"},
     "agilecrm": {"label": "Agile CRM", "group": "crm_sales"},
     "clearbit": {"label": "Clearbit", "group": "crm_sales"},

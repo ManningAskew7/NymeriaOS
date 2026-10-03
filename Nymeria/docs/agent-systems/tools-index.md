@@ -1275,12 +1275,12 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `youtube_chat_delete_message` | `nymeria/tools/youtube_live.py` | Delete one message from the live YouTube chat. |
 | `youtube_chat_get_chatter_log` | `nymeria/tools/youtube_live.py` | One YouTube chatter's recent messages in the streamer's live chats. |
 | `youtube_chat_send` | `nymeria/tools/youtube_live.py` | Send a message to the live YouTube chat as the bot channel. |
+| `youtube_chat_status` | `nymeria/tools/youtube_live.py` | Whether the streamer is live on YouTube, and the stream's title and viewers. |
 | `youtube_chat_timeout` | `nymeria/tools/youtube_live.py` | Time out a chatter in the live YouTube chat (a temporary ban). |
 | `youtube_chat_unban` | `nymeria/tools/youtube_live.py` | Lift a timeout or ban the BOT made in the live YouTube chat. |
 | `youtube_get_channels` | `nymeria/tools/media_discovery_service_integrations.py` | Get YouTube channel metadata by channel ID or legacy username. |
 | `youtube_get_videos` | `nymeria/tools/media_discovery_service_integrations.py` | Get YouTube video metadata for one or more video IDs. |
 | `youtube_list_playlist_items` | `nymeria/tools/media_discovery_service_integrations.py` | List items in a YouTube playlist. |
-| `youtube_live_status` | `nymeria/tools/youtube_live.py` | Whether the streamer is live on YouTube, and the stream's title and viewers. |
 | `youtube_search` | `nymeria/tools/media_discovery_service_integrations.py` | Search YouTube videos, channels, or playlists with the Data API. |
 | `zammad_create_record` | `nymeria/tools/support_service_integrations.py` | Create a Zammad record. |
 | `zammad_get_record` | `nymeria/tools/support_service_integrations.py` | Get a Zammad record by ID. |

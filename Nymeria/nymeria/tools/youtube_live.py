@@ -287,7 +287,7 @@ def youtube_chat_get_chatter_log(
 
 
 @tool
-def youtube_live_status(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
+def youtube_chat_status(config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
     """Whether the streamer is live on YouTube, and the stream's title and viewers.
 
     Reports the live chat the YouTube tools act in (the one the bot's reader
@@ -313,7 +313,7 @@ YOUTUBE_LIVE_TOOLS = [
     youtube_chat_unban,
     youtube_chat_delete_message,
     youtube_chat_get_chatter_log,
-    youtube_live_status,
+    youtube_chat_status,
 ]
 
 

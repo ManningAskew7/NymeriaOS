@@ -1050,7 +1050,7 @@ def _infer_security_level(
     if category == ToolCategory.TWITCH:
         return SecurityLevel.SAFE if tool_name.startswith(("twitch_read", "twitch_get")) else SecurityLevel.MODERATE
     if category == ToolCategory.YOUTUBE_LIVE:
-        read_only = tool_name in {"youtube_chat_get_chatter_log", "youtube_live_status"}
+        read_only = tool_name in {"youtube_chat_get_chatter_log", "youtube_chat_status"}
         return SecurityLevel.SAFE if read_only else SecurityLevel.MODERATE
     if category == ToolCategory.SKILLS:
         return SecurityLevel.MODERATE if tool_name in {"install_skill", "skill_manage"} else SecurityLevel.SAFE
