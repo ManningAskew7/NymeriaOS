@@ -184,6 +184,7 @@ except ImportError:
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .outlook_organize import OUTLOOK_ORGANIZE_TOOLS
 from .twitch import TWITCH_TOOLS
+from .youtube_live import YOUTUBE_LIVE_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_order import run_tools_in_order
 from .tool_invoke import tool_invoke, TOOL_INVOKE_TOOLS
@@ -1962,6 +1963,7 @@ __all__ = [
     "WEB_SEARCH_SERVICE_TOOLS",
     "WORKFLOW_INFO_TOOLS",
     "WORK_TRACKING_SERVICE_TOOLS",
+    "YOUTUBE_LIVE_TOOLS",
     "actionnetwork_add_person_tag",
     "actionnetwork_create_attendance",
     "actionnetwork_create_event",

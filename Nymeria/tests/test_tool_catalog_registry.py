@@ -39,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1279
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1286
 
 
 def test_catalog_key_equals_tool_name():
@@ -53,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1298
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1305
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -1621,9 +1621,16 @@ BASELINE_CATALOG_NAMES = [
     "yourls_get_db_stats",
     "yourls_get_url_stats",
     "yourls_shorten_url",
+    "youtube_chat_ban",
+    "youtube_chat_delete_message",
+    "youtube_chat_get_chatter_log",
+    "youtube_chat_send",
+    "youtube_chat_timeout",
+    "youtube_chat_unban",
     "youtube_get_channels",
     "youtube_get_videos",
     "youtube_list_playlist_items",
+    "youtube_live_status",
     "youtube_search",
     "zammad_create_record",
     "zammad_get_record",
@@ -2922,9 +2929,16 @@ BASELINE_STATIC_NAMES = [
     "yourls_get_db_stats",
     "yourls_get_url_stats",
     "yourls_shorten_url",
+    "youtube_chat_ban",
+    "youtube_chat_delete_message",
+    "youtube_chat_get_chatter_log",
+    "youtube_chat_send",
+    "youtube_chat_timeout",
+    "youtube_chat_unban",
     "youtube_get_channels",
     "youtube_get_videos",
     "youtube_list_playlist_items",
+    "youtube_live_status",
     "youtube_search",
     "zammad_create_record",
     "zammad_get_record",

@@ -51,6 +51,7 @@ from ..core.twitch_chatlog import CHATLOG_BATCH_MAX, fence_chat
 from ..core.twitch_clips import CLIP_URL_BASE, parse_clip_args
 from .bot_helpers import SeenEventCache
 from .twitch_listener import StreamListener, StreamlinkAudioSource, check_available
+from .youtube_chat import YouTubeChatPoller
 
 try:  # pragma: no cover - twitchio ships in the optional nymeriaos[twitch] extra.
     import twitchio
@@ -86,6 +87,17 @@ ROLE_CHATTER = "chatter"
 STREAM_TAG = "STREAM"  # transcribed broadcast audio (twitch_listener.py)
 ECHO_TAG = "YOU"  # the bot's own chat messages, echoed into the timeline
 STATUS_TAG = "STATUS"  # stream went live / offline
+
+#: Where a buffered line came from. YouTube lines (a multistreamer's other
+#: chat, read by ``youtube_chat.py`` through the API) share the buffer and the
+#: delivery cursor but render in their own prompt section.
+PLATFORM_TWITCH = "twitch"
+PLATFORM_YOUTUBE = "youtube"
+TWITCH_SECTION_LABEL = "[Twitch chat]"
+YOUTUBE_SECTION_LABEL = "[YouTube chat]"
+#: Tool names the closing menus offer for a reply, per platform present.
+TWITCH_REPLY_TOOL = "twitch_send"
+YOUTUBE_REPLY_TOOL = "youtube_chat_send"
 
 #: EventSub types the listener rides (no scope needed).
 STREAM_ONLINE_SUBSCRIPTION_TYPE = "stream.online"
@@ -169,6 +181,7 @@ class ChatMessage:
     badges: List[str] = field(default_factory=list)
     is_system: bool = False  # True for mod actions, bans, deletions etc.
     system_tag: str = "MOD"  # Rendered as [TAG] on system lines ([MOD], [CLIP])
+    platform: str = PLATFORM_TWITCH  # PLATFORM_YOUTUBE: the YouTube section
 
 
 class ChatBuffer:
@@ -245,6 +258,18 @@ def format_chat_context(messages: List[ChatMessage]) -> str:
         if msg.is_system:
             # Mod actions render as: [08:52] [MOD] fuzzyoce banned scrappypad
             lines.append(f"[{ts}] [{msg.system_tag}] {text}")
+        elif msg.platform == PLATFORM_YOUTUBE:
+            # YouTube has no name lookup: the moderation tools take the
+            # chatter's channel id, so every line carries it. Badges arrive
+            # already normalized (broadcaster, mod, member, verified) and the
+            # name has lost its brackets and parentheses API-side, so it can
+            # forge neither a badge nor an id.
+            prefix = f"[{ts}]"
+            if msg.badges:
+                prefix += f" ({','.join(msg.badges)})"
+            ident = f" [yt:{msg.user_id}]" if msg.user_id else ""
+            mid = f" [msg:{msg.message_id}]" if msg.message_id else ""
+            lines.append(f"{prefix} {msg.display_name}{ident}{mid}: {text}")
         else:
             badge_str = _format_badges(msg.badges)
             prefix = f"[{ts}]"
@@ -253,6 +278,90 @@ def format_chat_context(messages: List[ChatMessage]) -> str:
             mid = f" [msg:{msg.message_id}]" if msg.message_id else ""
             lines.append(f"{prefix} {msg.display_name}{mid}: {text}")
     return "\n".join(lines)
+
+
+def render_chat_blocks(messages: List[ChatMessage]) -> str:
+    """The fenced chat block(s) of a delivery.
+
+    Without YouTube lines this is exactly the single fenced block every
+    prompt carried before YouTube existed (byte-identical). With them, the
+    Twitch lines (chat, [STREAM], [MOD], ...) and the YouTube lines each get
+    a labeled fence of their own, Twitch first, so the agent never has to
+    guess which chat a line (and the tool that answers it) belongs to.
+    """
+    youtube = [m for m in messages if m.platform == PLATFORM_YOUTUBE]
+    if not youtube:
+        return fence_chat(format_chat_context(messages))
+    twitch = [m for m in messages if m.platform != PLATFORM_YOUTUBE]
+    blocks = []
+    if twitch:
+        blocks.append(f"{TWITCH_SECTION_LABEL}\n{fence_chat(format_chat_context(twitch))}")
+    blocks.append(f"{YOUTUBE_SECTION_LABEL}\n{fence_chat(format_chat_context(youtube))}")
+    return "\n\n".join(blocks)
+
+
+def reply_tools(messages: List[ChatMessage]) -> str:
+    """The reply tool(s) a closing menu names: YouTube's only when the
+    delivery holds YouTube lines (so Twitch-only prompts stay unchanged)."""
+    if any(m.platform == PLATFORM_YOUTUBE for m in messages):
+        return f"{TWITCH_REPLY_TOOL} (Twitch) or {YOUTUBE_REPLY_TOOL} (YouTube)"
+    return TWITCH_REPLY_TOOL
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def twitch_origin_id(messages: List[ChatMessage]) -> str:
+    """The newest Twitch line's message id in a delivery, or ''.
+
+    A turn's origin is a Twitch message (the turn-origin registry is Twitch
+    keyed), so a newer YouTube line never stands in for it.
+    """
+    return next(
+        (m.message_id for m in reversed(messages) if m.message_id and m.platform == PLATFORM_TWITCH),
+        "",
+    )
+
+
+def youtube_chat_message(item: Dict[str, Any]) -> ChatMessage:
+    """One line from the API's YouTube reader as a buffered message.
+
+    A chatter's text is a chat line (channel id as both name key and id); the
+    bot channel's own text is a [YOU] echo; events (Super Chats, memberships,
+    YouTube mod actions) are system lines under the tag the API chose.
+    """
+    when = _parse_iso(item.get("published_at")) or datetime.now(timezone.utc)
+    text = str(item.get("text") or "")
+    if item.get("kind") == "chat" and not item.get("is_self"):
+        channel_id = str(item.get("author_channel_id") or "")
+        return ChatMessage(
+            username=channel_id or "unknown",
+            display_name=str(item.get("author_name") or "unknown"),
+            message=text,
+            timestamp=when,
+            user_id=channel_id,
+            message_id=str(item.get("id") or ""),
+            badges=[str(b) for b in item.get("badges") or []],
+            platform=PLATFORM_YOUTUBE,
+        )
+    tag = ECHO_TAG if item.get("is_self") else str(item.get("tag") or "EVENT")
+    return ChatMessage(
+        username="system",
+        display_name="system",
+        message=text,
+        timestamp=when,
+        user_id="0",
+        is_system=True,
+        system_tag=tag,
+        platform=PLATFORM_YOUTUBE,
+    )
 
 
 def mention_as_ask(text: str, bot_login: Optional[str]) -> Optional[str]:
@@ -336,14 +445,14 @@ def compose_ask_prompt(
         sections.append(
             f"[{len(seen_tail)} earlier messages, already seen, for context. "
             f"{delivery_notes(seen_tail)}]\n"
-            f"{fence_chat(format_chat_context(seen_tail))}"
+            f"{render_chat_blocks(seen_tail)}"
         )
     if new_messages:
         sections.append(
             f"[{len(new_messages)} new chat messages since last check, "
             f"now {_now_stamp(now)}. "
             f"{delivery_notes(new_messages)}]\n"
-            f"{fence_chat(format_chat_context(new_messages))}"
+            f"{render_chat_blocks(new_messages)}"
         )
     who = f"{chatter_name} ({asker_tags})" if asker_tags else chatter_name
     sections.append(f"Question from {who}{_where(channel)}: {question}")
@@ -379,8 +488,8 @@ def compose_pulse_prompt(
         f"[Chat pulse: {len(messages)} new messages{_where(channel)} since last check, "
         f"now {_now_stamp(now)}. "
         f"{delivery_notes(messages)}]\n"
-        f"{fence_chat(format_chat_context(messages))}\n\n"
-        f"Decide what this batch warrants: reply in chat with twitch_send, {moderate}"
+        f"{render_chat_blocks(messages)}\n\n"
+        f"Decide what this batch warrants: reply in chat with {reply_tools(messages)}, {moderate}"
         "use your info or research "
         "tools when more context would sharpen a later reply, or take no action."
     )
@@ -400,9 +509,9 @@ def compose_reaction_prompt(
         f"[Reaction check: {len(messages)} new lines{_where(channel)} since your last look; your chat "
         f"message went out at {_now_stamp(sent_at)}, now {_now_stamp(now)}. "
         f"{delivery_notes(messages)}]\n"
-        f"{fence_chat(format_chat_context(messages))}\n\n"
+        f"{render_chat_blocks(messages)}\n\n"
         "This is what followed your message. Decide what it warrants: follow up "
-        "in chat with twitch_send, keep what you learned for later, or let it be."
+        f"in chat with {reply_tools(messages)}, keep what you learned for later, or let it be."
     )
 
 
@@ -418,9 +527,9 @@ def compose_wake_prompt(
         f"[Wake: the broadcast audio{_where(channel)} just mentioned \"{heard}\". "
         f"{len(messages)} new lines, now {_now_stamp(now)}. "
         f"{delivery_notes(messages)}]\n"
-        f"{fence_chat(format_chat_context(messages))}\n\n"
+        f"{render_chat_blocks(messages)}\n\n"
         "Your name came up on stream. Decide what it warrants: answer in chat "
-        "with twitch_send, use your info or research tools first when that would "
+        f"with {reply_tools(messages)}, use your info or research tools first when that would "
         "sharpen the answer, or take no action."
     )
 
@@ -449,6 +558,10 @@ def chatter_can_ask(chatter: Any, role: str = ROLE_MODERATOR) -> bool:
 
 #: Tools whose success means chat visibly heard from the bot this turn.
 _CHAT_SEND_TOOLS = frozenset({"twitch_send", "twitch_announce"})
+#: The YouTube reply tool: its success schedules the reaction check like a
+#: Twitch send, but never counts as answering a Twitch !ask (the asker is on
+#: Twitch and would not see it).
+_YOUTUBE_SEND_TOOLS = frozenset({YOUTUBE_REPLY_TOOL})
 
 #: Platform-wide tool-error convention: failed tool calls return "[Error]...".
 _TOOL_ERROR_PREFIX = "[Error]"
@@ -474,8 +587,10 @@ class _TwitchSSEHandler:
         self.error_text = ""
         self.send_attempts = 0
         self.send_successes = 0
+        self.youtube_send_successes = 0
         self.last_send_at: Optional[datetime] = None
         self._send_call_ids: set = set()
+        self._youtube_call_ids: set = set()
 
     async def flush_text(self, final: bool = False) -> None:
         return None
@@ -500,12 +615,17 @@ class _TwitchSSEHandler:
             self.send_attempts += 1
             if call_id:
                 self._send_call_ids.add(call_id)
+        elif name in _YOUTUBE_SEND_TOOLS and call_id:
+            self._youtube_call_ids.add(call_id)
 
     async def on_tool_result(self, call_id: str, result: str, attachments: List[str]) -> None:
-        if call_id in self._send_call_ids and not (result or "").lstrip().startswith(
-            _TOOL_ERROR_PREFIX
-        ):
+        if (result or "").lstrip().startswith(_TOOL_ERROR_PREFIX):
+            return
+        if call_id in self._send_call_ids:
             self.send_successes += 1
+            self.last_send_at = datetime.now(timezone.utc)
+        elif call_id in self._youtube_call_ids:
+            self.youtube_send_successes += 1
             self.last_send_at = datetime.now(timezone.utc)
 
     async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
@@ -574,6 +694,8 @@ class NymeriaTwitchBot(_BotBase):
         stt_factory: Optional[Callable[[], Any]] = None,
         thread_id: Optional[str] = None,
         chat_commands: bool = True,
+        youtube_enabled: bool = False,
+        youtube_poll_seconds: int = 30,
     ):
         super().__init__(
             client_id=client_id,
@@ -671,6 +793,21 @@ class NymeriaTwitchBot(_BotBase):
         # echoed as the agent's own words.
         self._process_sent: deque[str] = deque(maxlen=64)
         self._last_live_check_at = float("-inf")
+        # YouTube half (multistreamers): the reader polls the API, which
+        # reads the live YouTube chat with this account's vault grants; its
+        # lines join the same buffer and cursor. None when not enabled.
+        self._youtube: Optional[YouTubeChatPoller] = (
+            YouTubeChatPoller(
+                api,
+                user_id=user_id,
+                on_messages=self._on_youtube_messages,
+                poll_seconds=youtube_poll_seconds,
+                is_paused=lambda: self._stopped,
+                stream_live=lambda: self._stream_live,
+            )
+            if youtube_enabled
+            else None
+        )
         self._restore_stop_flag()
 
         # Register commands explicitly (TwitchIO v3 doesn't auto-discover from
@@ -723,6 +860,10 @@ class NymeriaTwitchBot(_BotBase):
         async def cmd_help(ctx: commands.Context) -> None:
             await bot_self._handle_help(ctx)
 
+        @commands.command(name="youtube")
+        async def cmd_youtube(ctx: commands.Context) -> None:
+            await bot_self._handle_youtube(ctx)
+
         self.add_command(cmd_ask)
         self.add_command(cmd_clip)
         self.add_command(cmd_status)
@@ -732,6 +873,7 @@ class NymeriaTwitchBot(_BotBase):
         self.add_command(cmd_start)
         self.add_command(cmd_context)
         self.add_command(cmd_help)
+        self.add_command(cmd_youtube)
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -783,11 +925,15 @@ class NymeriaTwitchBot(_BotBase):
                 self._pulse_interval,
                 self._pulse_min_messages,
             )
+        if self._youtube is not None:
+            self._youtube.start()
+            logger.info("YouTube chat reader started (as Nymeria user %s)", self._user_id)
 
         print(f"\nTwitch bot ready! Watching #{self._channel_name} as a {self._role}")
         print(f"  Thread: {self._thread_id} (Nymeria user {self._user_id})")
         print(f"  Pulse: {'enabled' if self._pulse_enabled else 'disabled'}")
         print(f"  Commands: {'enabled' if self._chat_commands else 'disabled'}")
+        print(f"  YouTube chat: {'enabled' if self._youtube is not None else 'disabled'}")
         if self._listen_enabled:
             live = (
                 "unknown" if self._stream_live is None
@@ -844,8 +990,10 @@ class NymeriaTwitchBot(_BotBase):
 
         Chat is the one subscription every role needs. The moderator role
         adds the moderation and AutoMod events (best-effort); the chatter
-        role, a plain viewer account, never attempts them. Listening adds
-        stream.online/offline and starts the listener if the stream is
+        role, a plain viewer account, never attempts them. Listening or the
+        YouTube reader adds stream.online/offline (the listener starts and
+        stops on them; the reader searches for the YouTube stream every
+        minute while Twitch is live) and checks whether the stream is
         already live.
         """
         try:
@@ -865,7 +1013,7 @@ class NymeriaTwitchBot(_BotBase):
         if self._role == ROLE_MODERATOR:
             await self._subscribe_moderation_events()
             await self._subscribe_automod_events()
-        if self._listen_enabled:
+        if self._listen_enabled or self._youtube is not None:
             await self._subscribe_stream_status_events()
             self._stream_live = await self._check_stream_live()
             await self._start_listener()
@@ -905,9 +1053,15 @@ class NymeriaTwitchBot(_BotBase):
         missing = sorted(t for t in self._tracked_subs if t not in present_types)
         client_connected = bool(self._broadcaster_id and CHAT_SUBSCRIPTION_TYPE in present_types)
         healthy = client_connected and api_ok and not self._stopped
+        # The YouTube reader is reported, never health-flipping: Twitch chat
+        # is the bot's job, YouTube is best-effort on top of it.
+        youtube = (
+            self._youtube.heartbeat_details() if self._youtube is not None else {"youtube": "disabled"}
+        )
         return (
             "ok" if healthy else "unhealthy",
             {
+                **youtube,
                 "client_connected": client_connected,
                 "api_ok": api_ok,
                 "broadcaster_resolved": self._broadcaster_id is not None,
@@ -1168,6 +1322,8 @@ class NymeriaTwitchBot(_BotBase):
         reaction_task = self._reaction_task
         self._cancel_reaction_check(force=True)
         await self._stop_listener()
+        if self._youtube is not None:
+            await self._youtube.stop()
         for task in (self._pulse_task, self._health_task, self._chatlog_task, reaction_task):
             if task and not task.done():
                 task.cancel()
@@ -1554,7 +1710,7 @@ class NymeriaTwitchBot(_BotBase):
     def _last_chat_message_id(self) -> str:
         """The newest buffered chat line's Twitch message id, or ''."""
         for msg in reversed(list(self._buffer._buffer)):
-            if not msg.is_system and msg.message_id:
+            if not msg.is_system and msg.message_id and msg.platform == PLATFORM_TWITCH:
                 return msg.message_id
         return ""
 
@@ -1834,11 +1990,12 @@ class NymeriaTwitchBot(_BotBase):
 
         pulse = f"on ({self._pulse_interval}s)" if self._pulse_enabled else "off"
         listening = f" | Listening: {self._listener_state()}" if self._listen_enabled else ""
+        youtube = f" | YouTube: {self._youtube.status_text()}" if self._youtube is not None else ""
         stopped = " | STOPPED" if self._stopped else ""
         pending = self._buffer.total_appended - self._last_delivered
         await self._say(ctx, 
             f"Uptime: {uptime_str} | Buffer: {len(self._buffer)} msgs "
-            f"({pending} unseen) | Pulse: {pulse}{listening}{stopped}"
+            f"({pending} unseen) | Pulse: {pulse}{listening}{youtube}{stopped}"
         )
 
     async def _handle_clear(self, ctx: Any) -> None:
@@ -1961,6 +2118,8 @@ class NymeriaTwitchBot(_BotBase):
             return
         self._stopped = False
         await self._start_listener()  # no-op unless listening is on and the stream is live
+        if self._youtube is not None:
+            self._youtube.wake()  # resume reading now rather than at the next idle tick
         if self._clear_stop_flag() is False:
             await self._say(ctx, 
                 "Bot resumed, but the stop marker could not be removed: the bot "
@@ -2003,7 +2162,61 @@ class NymeriaTwitchBot(_BotBase):
                 " | !context: Token usage | !clear: Reset history"
                 " | !stop/!start: Kill switch"
             )
+            if self._youtube is not None:
+                msg += " | !youtube <url>/auto/on/off: YouTube chat"
         await self._say(ctx, msg)
+
+    async def _handle_youtube(self, ctx: Any) -> None:
+        """``!youtube [<url|id>|auto|on|off]``: the YouTube reader's controls.
+
+        Mods, the broadcaster, and operator logins. A video link (or id)
+        pins the reader to that stream, for when auto-detection lags or is
+        not set up; ``auto`` returns to detection; ``off``/``on`` stop and
+        resume reading (no YouTube API calls while off). Bare ``!youtube``
+        reports the state.
+        """
+        if not self._is_privileged(ctx):
+            return  # silently ignore non-privileged users, like !pulse
+        poller = self._youtube
+        if poller is None:
+            await self._say(ctx, "YouTube chat is not enabled on this bot.")
+            return
+        text = ((ctx.message.text if ctx.message else None) or "").strip()
+        arg = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        lowered = arg.lower()
+        if not arg:
+            await self._say(ctx, f"YouTube: {poller.status_text()} | Usage: !youtube <video url>/auto/on/off")
+            return
+        if lowered == "off":
+            poller.set_enabled(False)
+            await self._say(ctx, "YouTube chat reading off. !youtube on resumes it.")
+            return
+        if lowered == "on":
+            poller.set_enabled(True)
+            await self._say(ctx, "YouTube chat reading on.")
+            return
+        if lowered == "auto":
+            poller.unpin()
+            await self._say(ctx, "YouTube: back to auto-detecting the live stream.")
+            return
+        from ..core.youtube_live import parse_video_id
+
+        video_id = parse_video_id(arg)
+        if video_id is None:
+            await self._say(ctx, "Usage: !youtube <video url or id> | auto | on | off")
+            return
+        poller.pin(video_id)
+        await self._say(ctx, f"YouTube: attaching to video {video_id}.")
+        logger.info(
+            "YouTube reader pinned to %s via !youtube by %s",
+            video_id,
+            ctx.chatter.name if ctx.chatter else "?",
+        )
+
+    def _on_youtube_messages(self, items: List[Dict[str, Any]]) -> None:
+        """The reader's new lines: into the shared buffer, oldest first."""
+        for item in items:
+            self._buffer.append(youtube_chat_message(item))
 
     # -----------------------------------------------------------------
     # Kill switch persistence and abort
@@ -2165,11 +2378,14 @@ class NymeriaTwitchBot(_BotBase):
         return True
 
     async def event_stream_online(self, payload: Any) -> None:
-        """stream.online: start listening (and tell the agent)."""
+        """stream.online: start listening, look for the YouTube stream now
+        (a multistream goes live on both), and tell the agent."""
         if self._stream_live is True:
             return  # duplicate delivery (two sockets) or the ready check already saw it
         self._stream_live = True
         self._buffer_system_line("Stream went live", tag=STATUS_TAG)
+        if self._youtube is not None:
+            self._youtube.wake()
         await self._start_listener()
 
     async def event_stream_offline(self, payload: Any) -> None:
@@ -2255,7 +2471,8 @@ class NymeriaTwitchBot(_BotBase):
             self._reaction_chain = 0
         if self._closing_down:
             return
-        if handler is None or not handler.send_successes or self._reaction_check_seconds <= 0:
+        sent = handler is not None and (handler.send_successes or handler.youtube_send_successes)
+        if handler is None or not sent or self._reaction_check_seconds <= 0:
             return
         if kind == "reaction" and self._reaction_chain >= REACTION_CHAIN_CAP:
             logger.info("Reaction chain cap reached; waiting for a pulse, ask, or wake turn")
@@ -2318,7 +2535,7 @@ class NymeriaTwitchBot(_BotBase):
             return "nothing"
         messages = self._collect_pulse_delivery()
         prompt = compose_reaction_prompt(messages, sent_at, channel=self._prompt_channel())
-        origin_id = next((m.message_id for m in reversed(messages) if m.message_id), "")
+        origin_id = twitch_origin_id(messages)
         error, _handler = await self._run_agent_turn(
             prompt, label="reaction", origin_message_id=origin_id, kind="reaction"
         )
@@ -2398,9 +2615,7 @@ class NymeriaTwitchBot(_BotBase):
         self._cancel_reaction_check()  # the pulse delivers the same unseen lines
         messages = self._collect_pulse_delivery()
         prompt = compose_pulse_prompt(messages, role=self._role, channel=self._prompt_channel())
-        origin_id = next(
-            (m.message_id for m in reversed(messages) if m.message_id), ""
-        )
+        origin_id = twitch_origin_id(messages)
         error, _handler = await self._run_agent_turn(
             prompt, label="pulse", origin_message_id=origin_id, kind="pulse"
         )

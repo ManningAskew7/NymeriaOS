@@ -1443,6 +1443,14 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
             else "disabled"
         )
     )
+    print(
+        "  - YouTube chat: "
+        + (
+            f"enabled (read every {settings.youtube_chat_poll_seconds}s while live)"
+            if settings.youtube_chat_enabled
+            else "disabled"
+        )
+    )
     print("  - Auth: service token")
 
     def _stt_factory():
@@ -1485,6 +1493,8 @@ def run_twitch_bot(args: argparse.Namespace) -> None:
         user_id=settings.twitch_nymeria_user_id or "default",
         thread_id=settings.twitch_thread_id,
         chat_commands=settings.twitch_chat_commands,
+        youtube_enabled=settings.youtube_chat_enabled,
+        youtube_poll_seconds=settings.youtube_chat_poll_seconds,
     )
 
     _install_exit_handlers("\nShutdown signal received, stopping Twitch bot...")

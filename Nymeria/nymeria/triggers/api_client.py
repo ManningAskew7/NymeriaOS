@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _CHAT_TIMEOUT = httpx.Timeout(connect=10, read=300, write=10, pool=10)
 _SSE_TIMEOUT = httpx.Timeout(connect=10, read=None, write=10, pool=10)
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
+_YOUTUBE_POLL_TIMEOUT = httpx.Timeout(connect=10, read=90, write=10, pool=10)
 # A relayed workflow run blocks until the engine finishes; its wall clock is
 # clamped to 3600s per definition, so read must outlast that.
 _WORKFLOW_TIMEOUT = httpx.Timeout(connect=10, read=3700, write=10, pool=10)
@@ -276,6 +277,32 @@ class NymeriaAPIClient:
             "/twitch/chat-log",
             json={"channel": channel, "messages": messages},
             act_as=user_id,
+        )
+
+    async def youtube_live_chat_poll(
+        self,
+        *,
+        user_id: str,
+        page_token: Optional[str] = None,
+        video_id: Optional[str] = None,
+        pinned_video_id: Optional[str] = None,
+    ) -> dict:
+        """One YouTube Live chat reader poll as ``user_id`` (see core/youtube_live.py).
+
+        The read timeout covers a detection pass (a few Google calls, each
+        bounded at 20 s API-side) without letting a stuck call hold the
+        reader's loop for minutes.
+        """
+        return await self._request(
+            "POST",
+            "/youtube/live-chat/poll",
+            json_body={
+                "page_token": page_token,
+                "video_id": video_id,
+                "pinned_video_id": pinned_video_id,
+            },
+            act_as=user_id,
+            timeout=_YOUTUBE_POLL_TIMEOUT,
         )
 
     async def run_workflow(

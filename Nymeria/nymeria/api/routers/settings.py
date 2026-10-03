@@ -343,6 +343,8 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "twitch_nymeria_user_id",
         "twitch_thread_id",
         "twitch_chat_commands",
+        "youtube_chat_enabled",
+        "youtube_chat_poll_seconds",
     ),
 }
 

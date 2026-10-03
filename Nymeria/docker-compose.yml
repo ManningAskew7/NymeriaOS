@@ -654,6 +654,11 @@ services:
       TWITCH_LISTEN_WINDOW_SECONDS: ${TWITCH_LISTEN_WINDOW_SECONDS:-12}
       TWITCH_LISTEN_WAKE_WORDS: ${TWITCH_LISTEN_WAKE_WORDS:-}
       TWITCH_REACTION_CHECK_SECONDS: ${TWITCH_REACTION_CHECK_SECONDS:-75}
+      # YouTube half (multistreamers): the bot reads the live YouTube chat
+      # through the API with the relay account's google_youtube vault grants,
+      # so no Google credential is passed here.
+      YOUTUBE_CHAT_ENABLED: ${YOUTUBE_CHAT_ENABLED:-false}
+      YOUTUBE_CHAT_POLL_SECONDS: ${YOUTUBE_CHAT_POLL_SECONDS:-30}
       STT_PROVIDER: ${STT_PROVIDER:-none}
       STT_BASE_URL: ${STT_BASE_URL:-}
       STT_API_KEY: ${STT_API_KEY:-}

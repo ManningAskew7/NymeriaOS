@@ -301,6 +301,8 @@ class ServerSettingsUpdate(BaseModel):
     twitch_nymeria_user_id: Optional[str] = None
     twitch_thread_id: Optional[str] = Field(default=None, max_length=200)
     twitch_chat_commands: Optional[bool] = None
+    youtube_chat_enabled: Optional[bool] = None
+    youtube_chat_poll_seconds: Optional[int] = Field(default=None, ge=10, le=300)
     twitch_respond_mode: Optional[str] = None
     twitch_system_prompt: Optional[str] = Field(default=None, max_length=50000)
 

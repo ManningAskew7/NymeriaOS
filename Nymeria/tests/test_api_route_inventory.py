@@ -316,6 +316,7 @@ EXPECTED_ROUTES = [
     ('/workflows/templates/{template_id}/install', ('POST',)),
     ('/workflows/{workflow_id}/execute', ('POST',)),
     ('/workspace/download', ('GET',)),
+    ('/youtube/live-chat/poll', ('POST',)),
 ]
 
 

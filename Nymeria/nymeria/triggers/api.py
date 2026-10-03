@@ -63,6 +63,7 @@ from ..api.routers.threads import create_threads_router
 from ..api.routers.todos import create_todos_router
 from ..api.routers.tools import create_tools_router
 from ..api.routers.twitch_chatlog import create_twitch_chatlog_router
+from ..api.routers.youtube_live import create_youtube_live_router
 from ..api.routers.teams_bot import create_teams_bot_router
 from ..api.routers.unified_tools import create_unified_tools_router
 from ..api.routers.user_tools import create_user_tools_router
@@ -1131,6 +1132,7 @@ def create_api_app(
         )
     )
     app.include_router(create_twitch_chatlog_router(verify_api_key, _authed_user_id, get_settings))
+    app.include_router(create_youtube_live_router(verify_api_key, _authed_user_id, get_settings))
     app.include_router(create_commands_router(_make_rate_limited_auth("commands"), get_agent, get_settings))
     app.include_router(
         create_autonomous_stream_router(

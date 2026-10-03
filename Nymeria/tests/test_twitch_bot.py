@@ -179,6 +179,8 @@ def make_bot(**overrides):
     bot._roaming = False
     bot._chat_commands = True
     bot._thread_channel_mismatch = None
+    # YouTube half (2026-10): off unless a test attaches a poller.
+    bot._youtube = None
     _fake_helix(bot, {}, [])  # Twitch lists nothing unless a test says otherwise
     for key, value in overrides.items():
         setattr(bot, f"_{key}", value)
@@ -3300,6 +3302,7 @@ def test_run_py_wires_identity_thread_and_commands_into_the_bot(monkeypatch, tmp
             twitch_listen_window_seconds=12, twitch_listen_wake_words=None,
             twitch_reaction_check_seconds=75, stt_provider="none", data_dir=tmp_path,
             twitch_nymeria_user_id=None, twitch_thread_id=None, twitch_chat_commands=True,
+            youtube_chat_enabled=False, youtube_chat_poll_seconds=30,
         )
         base.update(over)
         return SimpleNamespace(**base)
@@ -3315,12 +3318,14 @@ def test_run_py_wires_identity_thread_and_commands_into_the_bot(monkeypatch, tmp
     run_mod.run_twitch_bot(args)
     monkeypatch.setattr(config_mod, "get_settings", lambda: settings(
         twitch_nymeria_user_id="twitch-chatter", twitch_thread_id="twitch_chatter",
-        twitch_chat_commands=False,
+        twitch_chat_commands=False, youtube_chat_enabled=True, youtube_chat_poll_seconds=45,
     ))
     run_mod.run_twitch_bot(args)
 
     default, roaming = built
     assert (default["user_id"], default["thread_id"], default["chat_commands"]) == ("default", None, True)
+    assert (default["youtube_enabled"], roaming["youtube_enabled"]) == (False, True)
+    assert roaming["youtube_poll_seconds"] == 45
     assert default["stop_flag_path"].name == "twitch-foo-stopped"
     assert (roaming["user_id"], roaming["thread_id"], roaming["chat_commands"]) == (
         "twitch-chatter", "twitch_chatter", False

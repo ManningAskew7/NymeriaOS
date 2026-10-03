@@ -91,11 +91,29 @@ def normalize_entry(raw: Any, *, now: Optional[datetime] = None) -> Optional[dic
     }
 
 
+#: Store namespaces: the per-user directory each platform's log lives in.
+#: The YouTube log (fed API-side by ``core/youtube_live.py``) keys channels
+#: and chatters by YouTube channel id instead of a Twitch login.
+TWITCH_NAMESPACE = "twitch_chatlog"
+YOUTUBE_NAMESPACE = "youtube_chatlog"
+_NAMESPACES = frozenset({TWITCH_NAMESPACE, YOUTUBE_NAMESPACE})
+
+
 class ChatLogStore:
     """Append-only per-day JSONL files for one user's channels."""
 
-    def __init__(self, data_dir: Path, user_id: str, *, retention_days: int = DEFAULT_RETENTION_DAYS):
-        self._root = Path(data_dir) / "users" / safe_path_segment(user_id) / "twitch_chatlog"
+    def __init__(
+        self,
+        data_dir: Path,
+        user_id: str,
+        *,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+        namespace: str = TWITCH_NAMESPACE,
+    ):
+        if namespace not in _NAMESPACES:
+            raise ValueError(f"unknown chat log namespace {namespace!r}")
+        self._root = Path(data_dir) / "users" / safe_path_segment(user_id) / namespace
+        self._namespace = namespace
         self._retention_days = max(1, int(retention_days))
         self._lock = threading.Lock()
         # The bot retries a failed batch whole, so a redelivered id is normal.
@@ -157,6 +175,22 @@ class ChatLogStore:
             self.rotate(channel)
         return stored, dropped
 
+    def latest_channel(self) -> str:
+        """The channel key written to most recently, or '' when none is logged.
+
+        Lets a lookup still find history after the live chat that fed it has
+        ended (the YouTube tool keys by the streamer's channel id)."""
+        if not self._root.is_dir():
+            return ""
+        best, best_mtime = "", -1.0
+        for channel_dir in self._root.iterdir():
+            if not channel_dir.is_dir():
+                continue
+            mtime = max((f.stat().st_mtime for f in channel_dir.glob("*.jsonl")), default=-1.0)
+            if mtime > best_mtime:
+                best, best_mtime = channel_dir.name, mtime
+        return best if best_mtime >= 0 else ""
+
     def rotate(self, channel: str, *, now: Optional[datetime] = None) -> int:
         """Delete day files older than the retention; returns how many."""
         channel_dir = self._channel_dir(channel)
@@ -186,8 +220,14 @@ class ChatLogStore:
         hours: int = 24,
         now: Optional[datetime] = None,
     ) -> list[dict[str, Any]]:
-        """That chatter's lines inside the window, newest first, at most ``limit``."""
-        wanted = login.strip().lstrip("@").lower()
+        """That chatter's lines inside the window, newest first, at most ``limit``.
+
+        Twitch matches the login or the display name (both are the account's
+        own, case-insensitive). YouTube matches the channel id EXACTLY: its
+        display names are free text, so one could pose as another chatter's id.
+        """
+        by_id = self._namespace == YOUTUBE_NAMESPACE
+        wanted = login.strip() if by_id else login.strip().lstrip("@").lower()
         if not wanted:
             return []
         limit = max(1, min(MAX_QUERY_LIMIT, int(limit)))
@@ -213,7 +253,10 @@ class ChatLogStore:
                     entry = json.loads(line)
                 except ValueError:
                     continue
-                if entry.get("user_login") != wanted and str(entry.get("display_name", "")).lower() != wanted:
+                if by_id:
+                    if entry.get("user_id") != wanted:
+                        continue
+                elif entry.get("user_login") != wanted and str(entry.get("display_name", "")).lower() != wanted:
                     continue
                 when = _parse_timestamp(entry.get("timestamp"))
                 if when is None or when < since or when > current + timedelta(minutes=5):
@@ -246,17 +289,25 @@ def render_chatter_log(login: str, entries: list[dict[str, Any]], *, hours: int)
     return header + "\n" + fence_chat("\n".join(lines))
 
 
-_STORES: dict[tuple[str, str], ChatLogStore] = {}
+_STORES: dict[tuple[str, str, str], ChatLogStore] = {}
 _STORES_LOCK = threading.Lock()
 
 
-def get_chat_log_store(data_dir: Path, user_id: str, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> ChatLogStore:
-    """Process-wide store per (data_dir, user): one seen-cache per user."""
-    key = (str(Path(data_dir).resolve()), user_id)
+def get_chat_log_store(
+    data_dir: Path,
+    user_id: str,
+    *,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+    namespace: str = TWITCH_NAMESPACE,
+) -> ChatLogStore:
+    """Process-wide store per (data_dir, user, namespace): one seen-cache each."""
+    key = (str(Path(data_dir).resolve()), user_id, namespace)
     with _STORES_LOCK:
         store = _STORES.get(key)
         if store is None:
-            store = ChatLogStore(data_dir, user_id, retention_days=retention_days)
+            store = ChatLogStore(
+                data_dir, user_id, retention_days=retention_days, namespace=namespace
+            )
             _STORES[key] = store
         else:
             store.retention_days = retention_days  # a settings change applies on the next call

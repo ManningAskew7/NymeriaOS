@@ -1550,6 +1550,26 @@ class Settings(BaseSettings):
             "reader that acts only through the pulse, the reaction check, and the wake"
         ),
     )
+    # YouTube half of the Twitch bot (multistreamers): the bot reads the live
+    # YouTube chat through the API with the relay account's google_youtube
+    # vault grants (no Google credentials in the bot itself).
+    youtube_chat_enabled: bool = Field(
+        default=False,
+        description=(
+            "Twitch bot: also read the streamer's live YouTube chat into every prompt "
+            "as a separate section (needs the google_youtube vault grant, plus "
+            "google_youtube_readonly from the streamer for auto-detection)"
+        ),
+    )
+    youtube_chat_poll_seconds: int = Field(
+        default=30,
+        ge=10,
+        le=300,
+        description=(
+            "Twitch bot: seconds between YouTube live chat reads while attached "
+            "(each read is 1 to 5 units of the 10,000/day YouTube API quota)"
+        ),
+    )
 
     # Messaging Platform Credentials - Slack
     slack_webhook_url: Optional[str] = Field(

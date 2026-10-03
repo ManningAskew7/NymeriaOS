@@ -34,6 +34,7 @@ class ToolCategory(str, Enum):
     CALENDAR = "calendar"
     GOOGLE_DOCS = "google_docs"
     TWITCH = "twitch"
+    YOUTUBE_LIVE = "youtube_live"
     SKILLS = "skills"
     INTEGRATIONS = "integrations"
     CUSTOM = "custom"
@@ -138,6 +139,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
         ),
     ),
     (ToolCategory.TWITCH, ("TWITCH_TOOLS",)),
+    (ToolCategory.YOUTUBE_LIVE, ("YOUTUBE_LIVE_TOOLS",)),
     (ToolCategory.SKILLS, ("SEARCH_SKILLS_TOOLS",)),
     (
         ToolCategory.INTEGRATIONS,
@@ -1010,7 +1012,7 @@ def _infer_security_level(
 ) -> SecurityLevel:
     if category == ToolCategory.SELF_MODIFY:
         return SecurityLevel.SENSITIVE
-    if tool_name == "twitch_ban":
+    if tool_name in {"twitch_ban", "youtube_chat_ban"}:
         return SecurityLevel.SENSITIVE
     if category in {ToolCategory.PROFILE, ToolCategory.TODO}:
         return SecurityLevel.SAFE
@@ -1047,6 +1049,9 @@ def _infer_security_level(
         )
     if category == ToolCategory.TWITCH:
         return SecurityLevel.SAFE if tool_name.startswith(("twitch_read", "twitch_get")) else SecurityLevel.MODERATE
+    if category == ToolCategory.YOUTUBE_LIVE:
+        read_only = tool_name in {"youtube_chat_get_chatter_log", "youtube_live_status"}
+        return SecurityLevel.SAFE if read_only else SecurityLevel.MODERATE
     if category == ToolCategory.SKILLS:
         return SecurityLevel.MODERATE if tool_name in {"install_skill", "skill_manage"} else SecurityLevel.SAFE
     if category == ToolCategory.INTEGRATIONS:

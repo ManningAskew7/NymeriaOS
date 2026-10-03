@@ -1194,6 +1194,8 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TWITCH_LISTEN_WINDOW_SECONDS` | `12` | Seconds of stream audio per STT request (5 to 30); silent windows are never sent |
 | `TWITCH_LISTEN_WAKE_WORDS` | - | Comma-separated extra words that wake the bot when heard on stream; its own login and display name always do |
 | `TWITCH_REACTION_CHECK_SECONDS` | `75` | Delay after a successful chat send before the bot re-reads chat and stream for the reaction (0 disables) |
+| `YOUTUBE_CHAT_ENABLED` | `false` | Twitch bot: also read the streamer's live YouTube chat into every prompt (needs the relay account's `google_youtube` vault grant, plus `google_youtube_readonly` from the streamer for auto-detection; `docs/chat-apps/twitch-bot.md`, YouTube chat) |
+| `YOUTUBE_CHAT_POLL_SECONDS` | `30` | Twitch bot: seconds between YouTube chat reads while attached (10 to 300; each read spends 1 to 5 units of the 10,000/day YouTube API quota) |
 | `TWITCH_NYMERIA_USER_ID` | `default` | Nymeria account the bot relays as (thread, credential vault, memories, chat log); the service token must be an admin's |
 | `TWITCH_THREAD_ID` | `twitch_<channel>` | Thread the bot drives. Set it (keep the `twitch_` prefix: shared-channel thread semantics) for one ROAMING thread that follows the bot between channels (prompt headers then name the channel). The API-side tools act in the thread's `twitch_channel` binding, else `TWITCH_CHANNEL`; a thread bound elsewhere refuses the env credentials and needs the account's own vault record |
 | `TWITCH_CHAT_COMMANDS` | `true` | Serve the `!` commands and the `@mention` ask. `false`: a silent reader that acts only through the pulse, the reaction check, and the wake |

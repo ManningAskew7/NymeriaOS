@@ -9,7 +9,7 @@ dynamically constructed ones: the per-thread `Skill` meta-tool,
 callable-thread and kit-template tools, custom HTTP/Python tools,
 `mcp__*` tools, or workflow tools.
 
-**1284 tools found.**
+**1291 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1271,9 +1271,16 @@ callable-thread and kit-template tools, custom HTTP/Python tools,
 | `yourls_get_db_stats` | `nymeria/tools/bookmark_link_service_integrations.py` | Get YOURLS database stats. |
 | `yourls_get_url_stats` | `nymeria/tools/bookmark_link_service_integrations.py` | Get YOURLS stats for a short URL. |
 | `yourls_shorten_url` | `nymeria/tools/bookmark_link_service_integrations.py` | Create a short URL with YOURLS. |
+| `youtube_chat_ban` | `nymeria/tools/youtube_live.py` | Permanently ban a chatter from the live YouTube chat. |
+| `youtube_chat_delete_message` | `nymeria/tools/youtube_live.py` | Delete one message from the live YouTube chat. |
+| `youtube_chat_get_chatter_log` | `nymeria/tools/youtube_live.py` | One YouTube chatter's recent messages in the streamer's live chats. |
+| `youtube_chat_send` | `nymeria/tools/youtube_live.py` | Send a message to the live YouTube chat as the bot channel. |
+| `youtube_chat_timeout` | `nymeria/tools/youtube_live.py` | Time out a chatter in the live YouTube chat (a temporary ban). |
+| `youtube_chat_unban` | `nymeria/tools/youtube_live.py` | Lift a timeout or ban the BOT made in the live YouTube chat. |
 | `youtube_get_channels` | `nymeria/tools/media_discovery_service_integrations.py` | Get YouTube channel metadata by channel ID or legacy username. |
 | `youtube_get_videos` | `nymeria/tools/media_discovery_service_integrations.py` | Get YouTube video metadata for one or more video IDs. |
 | `youtube_list_playlist_items` | `nymeria/tools/media_discovery_service_integrations.py` | List items in a YouTube playlist. |
+| `youtube_live_status` | `nymeria/tools/youtube_live.py` | Whether the streamer is live on YouTube, and the stream's title and viewers. |
 | `youtube_search` | `nymeria/tools/media_discovery_service_integrations.py` | Search YouTube videos, channels, or playlists with the Data API. |
 | `zammad_create_record` | `nymeria/tools/support_service_integrations.py` | Create a Zammad record. |
 | `zammad_get_record` | `nymeria/tools/support_service_integrations.py` | Get a Zammad record by ID. |

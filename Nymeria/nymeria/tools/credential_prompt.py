@@ -186,7 +186,8 @@ async def request_credential(
     Args:
         provider: Service identifier. For OAuth, must be in the registry
             (``google_calendar``, ``google_gmail``, ``google_docs``,
-            ``google_analytics``, ``google_business_profile``, ``outlook``).
+            ``google_analytics``, ``google_business_profile``,
+            ``google_youtube``, ``google_youtube_readonly``, ``outlook``).
             For API-key modes any lowercase identifier works.
         kind: ``"api_key"`` (default), ``"pat"``, ``"oauth"``, or ``"form"``.
         account_label: Optional label for multi-account scenarios

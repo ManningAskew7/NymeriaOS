@@ -131,6 +131,25 @@ GOOGLE_BUSINESS_PROFILE_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/userinfo.profile",
 )
 
+# YouTube Live chat (the Twitch bot's YouTube half, ``core/youtube_live.py``).
+# Two grants by design: the BOT channel's full ``youtube`` scope (read chat,
+# post, delete, ban; ``youtube.force-ssl`` would also do), and the
+# BROADCASTER's read-only grant, used only to find the live broadcast. Both
+# are Google "sensitive" scopes: a consent screen left in Testing status
+# issues refresh tokens that die after 7 days, so the operator's project
+# must be In production.
+GOOGLE_YOUTUBE_SCOPES: tuple[str, ...] = (
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+)
+
+GOOGLE_YOUTUBE_READONLY_SCOPES: tuple[str, ...] = (
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+)
+
 OUTLOOK_SCOPES: tuple[str, ...] = (
     "offline_access",
     "User.Read",
@@ -266,6 +285,43 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         extra_authorize_params=_GOOGLE_AUTH_CODE_EXTRA,
         notes="Business Profile management scope.",
     ),
+    "google_youtube": OAuthProviderDescriptor(
+        provider_id="google_youtube",
+        display_name="YouTube (bot channel)",
+        auth_uri=_GOOGLE_AUTH_URI,
+        token_uri=GOOGLE_TOKEN_URI,
+        userinfo_uri=_GOOGLE_USERINFO_URI,
+        scopes=GOOGLE_YOUTUBE_SCOPES,
+        supported_flows=_AUTH_CODE_ONLY,
+        default_flow="auth_code",
+        client_config_file_env="GOOGLE_OAUTH_CREDENTIALS",
+        uses_pkce=True,
+        extra_authorize_params=_GOOGLE_AUTH_CODE_EXTRA,
+        notes=(
+            "The channel the youtube_chat_* tools post and moderate as. Sign in "
+            "with the bot's Google account and pick the bot channel (a brand "
+            "account) on Google's channel picker; the streamer makes it a "
+            "moderator of their live chat."
+        ),
+    ),
+    "google_youtube_readonly": OAuthProviderDescriptor(
+        provider_id="google_youtube_readonly",
+        display_name="YouTube (read-only, streamer)",
+        auth_uri=_GOOGLE_AUTH_URI,
+        token_uri=GOOGLE_TOKEN_URI,
+        userinfo_uri=_GOOGLE_USERINFO_URI,
+        scopes=GOOGLE_YOUTUBE_READONLY_SCOPES,
+        supported_flows=_AUTH_CODE_ONLY,
+        default_flow="auth_code",
+        client_config_file_env="GOOGLE_OAUTH_CREDENTIALS",
+        uses_pkce=True,
+        extra_authorize_params=_GOOGLE_AUTH_CODE_EXTRA,
+        notes=(
+            "The streamer's read-only grant: lets the YouTube chat reader find "
+            "their live broadcast. Grants no write access. Send the link to "
+            "the streamer, who signs in with the channel they stream on."
+        ),
+    ),
     "outlook": OAuthProviderDescriptor(
         provider_id="outlook",
         display_name="Microsoft Outlook",
@@ -319,6 +375,8 @@ __all__ = [
     "GOOGLE_DOCS_SCOPES",
     "GOOGLE_ANALYTICS_SCOPES",
     "GOOGLE_BUSINESS_PROFILE_SCOPES",
+    "GOOGLE_YOUTUBE_SCOPES",
+    "GOOGLE_YOUTUBE_READONLY_SCOPES",
     "OUTLOOK_SCOPES",
     # The token endpoints are exported because they are a SECURITY boundary,
     # not a convenience: a token endpoint receives whatever proves the grant,

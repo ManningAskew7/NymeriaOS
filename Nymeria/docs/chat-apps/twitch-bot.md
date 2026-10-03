@@ -17,6 +17,10 @@ Nymeria's Twitch integration has two halves that share the `TWITCH_*` settings:
   Twitch Helix API directly with their own OAuth tokens, executing wherever
   the agent runs. They work on any thread that enables them, with or without
   the bot process running.
+- **The YouTube half** (optional, for streamers who multistream): the same
+  bot also reads the streamer's live YouTube chat into every prompt as a
+  separate section, and the `youtube_chat_*` tools reply and moderate there
+  (YouTube chat below).
 
 ## Architecture
 
@@ -30,6 +34,8 @@ Docker: nymeria-twitch-bot (profile: twitch, thin client)
   ├─ !commands (ask/clip/status/pulse/context/clear/stop/start/help;
   │    TWITCH_CHAT_COMMANDS=false turns them all off)
   ├─ Pulse loop, reaction check (after a send), name wake (from [STREAM])
+  ├─ YouTube reader (optional): POST /youtube/live-chat/poll every ~30 s,
+  │    lines buffered as the [YouTube chat] section
   └─────┐
         │  POST /chat (SSE, dropped-turn recovery)
         ▼
@@ -418,6 +424,7 @@ something in the batch clearly warranted a look, a search, or a note.
 | `!context` | Mods, Broadcaster, operator logins | None | Context window token usage and compaction count |
 | `!stop` / `!start` | Mods, Broadcaster, operator logins | None | Kill switch: aborts the running turn, drains queued prompts, cancels a pending reaction check, stops the stream listener (no STT spend), and blocks new ones until !start. Survives bot restarts (marker file, see Reliability Notes). `!start` resumes listening if the stream is live |
 | `!help` | Everyone | None | List commands (shows control commands to those who hold them) |
+| `!youtube [<video url>/auto/on/off]` | Mods, Broadcaster, operator logins | None | YouTube reader controls (only with `YOUTUBE_CHAT_ENABLED`): a link pins the reader to that stream, `auto` returns to detection, `off`/`on` stop and resume reading (no YouTube API calls while off); bare `!youtube` reports the state |
 
 Backend slash commands are deliberately NOT reachable from Twitch chat (a
 public surface); the `twitch` command surface stays out of global discovery.
@@ -546,6 +553,160 @@ only ever fires from a `[STREAM]` line.
   produces, e.g. `silk gpt,silky`) relays a wake turn immediately with the
   unseen lines. 30 s cooldown; never while stopped; chat mentions are not
   wakes (they are `!ask` territory) and the echo is the bot itself.
+
+## YouTube chat (multistreaming)
+
+For a streamer live on Twitch and YouTube at once, one agent can watch and
+moderate both chats. The bot reads the live YouTube chat through the API and
+buffers it beside Twitch chat (same buffer, same at-most-once cursor), so
+YouTube lines reach every pulse, `!ask`, reaction check, and wake, count
+toward the pulse minimum, and render in their own fenced section:
+
+```
+[Chat pulse: 5 new messages since last check, now 09:42:02 UTC. ...]
+[Twitch chat]
+<untrusted_chat_messages>
+[09:41:07] (mod) Alice [msg:...]: hello
+[09:41:07] [STREAM] the streamer said hi
+</untrusted_chat_messages>
+
+[YouTube chat]
+<untrusted_chat_messages>
+[09:41:10] (mod,member) bob [yt:UC...] [msg:LCC....]: hey from yt
+[09:41:10] [YOU] my earlier YouTube reply
+[09:41:12] [SUPERCHAT] bob [yt:UC...] sent a Super Chat (A$5.00): gg
+</untrusted_chat_messages>
+
+Decide what this batch warrants: reply in chat with twitch_send (Twitch) or youtube_chat_send (YouTube), ...
+```
+
+A delivery with no YouTube lines is byte-identical to a Twitch-only bot's.
+YouTube has no name lookup, so every chat line carries the chatter's channel
+id (`[yt:UC...]`), which the moderation tools take; display names lose
+brackets and parentheses, so a name can pose as neither an id nor a badge.
+Badges read `broadcaster`,
+`mod`, `member`, `verified`. Event lines: `[YOU]` (the bot channel's own
+messages), `[SUPERCHAT]`, `[MEMBER]`, `[GIFT]`, and `[MOD]` (YouTube bans and
+timeouts, by anyone). Deleted messages, polls, and members-only mode flips
+are not shown. YouTube viewers cannot `!ask` (yet): they are answered at
+pulse pace.
+
+**Identity.** The bot posts and moderates as its OWN YouTube channel (a
+brand account, say), which the streamer adds as a moderator of their chat.
+Two Google grants live in the credential vault of the account the bot relays
+as (`TWITCH_NYMERIA_USER_ID`, default the owner):
+
+| Grant (OAuth provider) | Scope | Who authorizes | Used for |
+|---|---|---|---|
+| `google_youtube` | `youtube` | The bot channel's owner, picking the bot channel on Google's channel picker | Reading chat, posting, deleting, timeouts, bans |
+| `google_youtube_readonly` | `youtube.readonly` | The streamer (send them the link) | Finding their live broadcast (one 1-unit call) |
+
+Without the streamer's grant the reader can still attach to a video a mod
+pins with `!youtube <url>`, or to a broadcast on the bot channel itself (a
+dry run, or a streamer who uses one channel).
+
+**Setup.**
+
+1. In the Google Cloud project behind `GOOGLE_OAUTH_CREDENTIALS`, enable
+   "YouTube Data API v3" and add the `youtube` and `youtube.readonly` scopes
+   on the consent screen's Data Access page. Publish the consent screen **In
+   production**: in Testing status Google issues refresh tokens that die
+   after 7 days, so the bot would go silently unauthorized every week.
+   Unverified is fine for personal use (each authorizing account clicks
+   through an "unverified app" warning once; 100 accounts lifetime).
+2. Create the bot's YouTube channel; the streamer makes it a moderator of
+   their chat.
+3. From a turn on the relay account (the desktop app as the owner), call
+   `request_credential(provider="google_youtube", kind="oauth")` and open
+   the link signed in as the bot's Google account; then
+   `request_credential(provider="google_youtube_readonly", kind="oauth")`
+   and send that link to the streamer. Both need `NYMERIA_PUBLIC_URL`.
+4. Set `YOUTUBE_CHAT_ENABLED=true` (and optionally
+   `YOUTUBE_CHAT_POLL_SECONDS`) in `.env.docker` and recreate the bot
+   (`up -d twitch-bot`).
+5. On the thread: enable `youtube_chat_send`, `youtube_chat_timeout`,
+   `youtube_chat_ban`, `youtube_chat_unban`, `youtube_chat_delete_message`,
+   `youtube_chat_get_chatter_log`, `youtube_live_status`, and add a YouTube
+   paragraph to the system prompt, for example:
+
+```
+## YouTube
+The stream is also live on YouTube. Lines under [YouTube chat] come from
+YouTube viewers: answer them with youtube_chat_send (twitch_send only reaches
+Twitch), and moderate them with the youtube_chat_* tools, passing the UC...
+id from the chatter's [yt:...] tag (and [msg:...] to delete). The same
+moderation standards and privilege rules apply; YouTube badges are
+broadcaster, mod, member, verified. Every YouTube send or moderation action
+spends shared API quota (about 200 a day), so one message per pulse at most,
+and check youtube_chat_get_chatter_log before a non-obvious timeout. YouTube
+messages max 200 characters, no links.
+```
+
+**Detection and cadence.** The bot polls `POST /youtube/live-chat/poll`
+every `YOUTUBE_CHAT_POLL_SECONDS` (default 30) while attached, never faster
+than YouTube suggests. While nothing is live it re-checks every 60 s when
+the Twitch stream is known live (a multistreamer goes live on both) and
+every 5 minutes otherwise. With the reader on, the bot subscribes to
+Twitch's stream.online/offline (listener or not), and a Twitch go-live
+searches YouTube at once. Detection order: a pinned video, else the
+streamer's active broadcast, else the bot channel's own; a failing streamer
+grant falls through to the bot channel and is named in the status detail.
+When the chat ends, or cannot be read (the bot is not a moderator yet, a
+members-only chat), the reader detaches and detects again; a chat is never
+reused across videos. Attaching mid-stream delivers only the last 2 minutes
+of chat (the whole first page still goes to the chatter log). While the bot
+is `!stop`ped the reader makes no calls at all.
+
+**Quota.** The YouTube Data API allows 10,000 units a day per Google Cloud
+project, resetting at midnight Pacific (17:00 to 19:00 Sydney, depending on
+daylight saving). Reading costs 1 unit per poll by Google's table (budget 5
+until measured), so a 5-hour stream at 30 s is 600 to 3,000 units. Looking
+for a stream is up to 2 calls (1 unit each) per check: about 580 units over
+an idle day, and 120 an hour while Twitch is live and YouTube is not found.
+Every send, delete, timeout, ban, and unban costs 50, so a day holds
+roughly 150 to 200 writes. On
+exhaustion the reader idles until the reset (`!status` says when) and the
+tools return a readable quota error.
+
+**Limits.** YouTube chat takes 200 characters per message (the send tool
+splits into at most 2 and refuses longer) and rejects links and HTML. The
+owner and moderators cannot be timed out, banned, or have messages deleted.
+YouTube's API can lift only a ban whose id its own ban call returned, and
+lists no bans, so `youtube_chat_unban` lifts only the bot's own timeouts and
+bans (recorded for 30 days under the account's data dir); anything else is
+lifted in YouTube Studio.
+
+`!status` shows `YouTube:` one of `live (<title>)` (`, pinned` when
+pinned), `not live`, `waiting for <id> to go live`, `pinned video <id> not
+found`, `cannot read the chat (<state>), retrying`, `not authorized`,
+`quota used up (resets in ~Xh Ym)`, `rate limited by YouTube, retrying`,
+`error, retrying (<detail>)`, `paused`, `off`, or `starting`; the heartbeat
+details carry `youtube`, `youtube_video`, `youtube_pinned`, and
+`youtube_detail`. The reader never affects health.
+
+### YouTube tools (7)
+
+The write tools and `youtube_live_status` act as the bot channel in the live
+chat the reader is attached to (or a freshly detected one, so they work
+without the bot running), resolving the `google_youtube` grant of the
+calling account. `youtube_chat_get_chatter_log` reads only the local log and
+needs no grant.
+
+| Tool | Description |
+|------|-------------|
+| `youtube_chat_send` | Post as the bot channel (200 chars, split into at most 2; 50 units each) |
+| `youtube_chat_timeout` | Temporary ban, 10 to 86400 s (default 300), by channel id |
+| `youtube_chat_ban` | Permanent ban by channel id (security level SENSITIVE) |
+| `youtube_chat_unban` | Lift a timeout or ban the bot made (others: YouTube Studio) |
+| `youtube_chat_delete_message` | Delete one message by its `[msg:...]` id |
+| `youtube_chat_get_chatter_log` | One chatter's recent YouTube lines, fenced, from the API-side log (no quota) |
+| `youtube_live_status` | Attached stream: title, channel, live viewers, start time |
+
+The chatter log is written by the API as it reads (`users/<account>/
+youtube_chatlog/<streamer channel id, lowercased>/`, same JSONL store and
+retention as the Twitch log, `TWITCH_CHATLOG_RETENTION_DAYS`), so it covers
+only what the reader saw. Lookups match the chatter's channel id exactly,
+never a display name (anyone can take one).
 
 ## Moderation Event Awareness
 
@@ -749,6 +910,10 @@ See the Messaging Platforms table in `docs/configuration.md` for every
 | `docker-compose.yml` | `twitch-bot` service (profile: twitch) and `twitch-chatter` (profile: twitch-chatter; role and commands pinned, per-bot values from the optional `.env.twitch-chatter`) |
 | `.env.twitch-chatter.example` | Per-bot env file template for the second bot |
 | `tools/twitch_auth.py` | OAuth helper: URL generation (`--role chatter` for the 4-scope viewer token), code exchange, token validation |
+| `nymeria/triggers/youtube_chat.py` | The bot's YouTube reader: polls the API on its cadence, dedupes, pauses on `!stop` (SDK-free) |
+| `nymeria/core/youtube_live.py` | API-side YouTube Data API client: detection, attachment, chat reads, normalization, writes, ban ledger, the YouTube chat log feed |
+| `nymeria/api/routers/youtube_live.py` | `POST /youtube/live-chat/poll` (the reader's route, acting as the caller) |
+| `nymeria/tools/youtube_live.py` | The 7 `youtube_chat_*` / `youtube_live_status` tools |
 
 ## Debugging
 

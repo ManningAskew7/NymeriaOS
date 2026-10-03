@@ -584,6 +584,40 @@ account's log is invisible. The agent-side view of the same data is the
 {"channel": "silk", "login": "alice", "hours": 24, "count": 1, "entries": [{"message_id": "…", "user_login": "alice", "display_name": "Alice", "user_id": "5", "text": "hi", "timestamp": "2026-09-06T05:48:00+00:00", "badges": ["subscriber"]}]}
 ```
 
+---
+
+### YouTube Live Chat Reader
+
+```http
+POST /youtube/live-chat/poll
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"page_token": "…", "video_id": "dQw4w9WgXcQ", "pinned_video_id": null}
+```
+
+The Twitch bot's YouTube reader (multistreamers; `chat-apps/twitch-bot.md`,
+YouTube chat). Reads the CALLER's live YouTube chat with the caller's own
+vault grants (`google_youtube`, plus `google_youtube_readonly` for
+detection): attaches to `pinned_video_id` when given, else the streamer's or
+the bot channel's active broadcast, and returns one page. `page_token` is
+honored only when `video_id` names the current attachment (a token from an
+earlier chat starts the new one fresh); a fresh page returns only its last
+2 minutes. Every chatter line and Super Chat on the page, windowed or not,
+is also appended to the caller's YouTube chat log. All three fields are
+optional; the video ids must be 11-character YouTube ids (else 422).
+Anything but `live` is still a 200 with a readable `detail`: `ended` (the
+chat ended; it may carry the last page's `messages`), or a failure
+(`not_live`, `unauthorized`, `quota_exhausted` with `retry_after_seconds`,
+`rate_limited`, `forbidden`, `not_found`, `invalid`, `error`). `ended`,
+`forbidden`, `not_found` and `invalid` drop the attachment, so the next poll
+detects again.
+
+**Response:**
+```json
+{"state": "live", "video_id": "dQw4w9WgXcQ", "title": "Live!", "channel_id": "UC…", "attached_via": "broadcaster", "messages": [{"id": "LCC.…", "kind": "chat", "tag": null, "author_channel_id": "UC…", "author_name": "bob", "badges": ["mod"], "text": "hi", "published_at": "2026-10-03T09:41:10Z", "is_self": false}], "next_page_token": "…", "poll_after_seconds": 6.0, "retry_after_seconds": null, "detail": ""}
+```
+
 ### Chat (Streaming)
 
 ```http
