@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy · NymeriaOS</title>
+<meta name="description" content="How the Nymeria app operated by Manning Askew handles Google and YouTube data.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2ede2">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#12151d">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23f2ede2'/%3E%3Ctext x='32' y='47' text-anchor='middle' font-family='Georgia,serif' font-size='44' fill='%23241f16'%3EN%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('nymeria-theme');if(t==='light'||t==='midnight'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}</script>
+<style>
+@font-face { font-family: 'EB Garamond'; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/eb-garamond-normal-400-latin-ext.woff2") format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'EB Garamond'; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/eb-garamond-normal-400-latin.woff2") format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/ibm-plex-mono-normal-400-latin.woff2") format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/ibm-plex-mono-normal-500-latin.woff2") format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+/* Same palette as the landing page: midnight by default, cream under a
+   light OS preference unless the visitor chose midnight on the front page. */
+:root { --bg:#12151d; --ink:#e7e1cf; --soft:#7e7f76; --line:#2a2f3c; --accent:#5da893; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="midnight"]) { --bg:#f2ede2; --ink:#241f16; --soft:#7a7263; --line:#d8d0bd; --accent:#2e6f63; } }
+:root[data-theme="light"] { --bg:#f2ede2; --ink:#241f16; --soft:#7a7263; --line:#d8d0bd; --accent:#2e6f63; }
+:root[data-theme="midnight"] { --bg:#12151d; --ink:#e7e1cf; --soft:#7e7f76; --line:#2a2f3c; --accent:#5da893; }
+html, body { margin:0; padding:0; background:var(--bg); color:var(--ink); }
+a { color:var(--ink); text-decoration:none; border-bottom:1px solid var(--line); }
+a:hover, a:focus-visible { color:var(--accent); border-color:var(--accent); }
+a:focus-visible { outline:1px dashed var(--accent); outline-offset:3px; }
+::selection { background:var(--accent); color:var(--bg); }
+.frame { position:fixed; inset:10px; border:1px solid var(--line); pointer-events:none; z-index:50; }
+.frame.inner { inset:15px; opacity:0.5; }
+.page { box-sizing:border-box; max-width:44rem; margin:0 auto; padding-block:clamp(36px,6vh,64px); padding-inline:clamp(28px,5vw,48px); display:flex; flex-direction:column; gap:40px; }
+.mono { font-family:'IBM Plex Mono',monospace; }
+header { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+.brand { font-size:13px; font-weight:500; letter-spacing:0.38em; border:none; }
+.meta { font-size:9px; letter-spacing:0.3em; color:var(--soft); }
+.title { display:flex; flex-direction:column; gap:14px; }
+h1 { margin:0; font-family:'EB Garamond',Georgia,serif; font-weight:400; font-size:clamp(34px,6vw,52px); line-height:1.08; letter-spacing:0.04em; text-transform:uppercase; text-wrap:balance; }
+.rule { width:52px; height:1px; background:var(--soft); opacity:0.6; }
+article { display:flex; flex-direction:column; gap:30px; font-family:'EB Garamond',Georgia,serif; font-size:19px; line-height:1.6; }
+section { display:flex; flex-direction:column; gap:10px; }
+h2 { margin:0; font-family:'IBM Plex Mono',monospace; font-weight:500; font-size:10px; letter-spacing:0.32em; text-transform:uppercase; color:var(--soft); }
+p, ul { margin:0; max-width:65ch; }
+ul { padding-left:1.1em; display:flex; flex-direction:column; gap:6px; }
+li::marker { color:var(--soft); }
+strong { font-weight:400; color:var(--accent); }
+footer { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; border-top:1px solid var(--line); padding-top:20px; }
+footer a { font-size:10px; letter-spacing:0.3em; border:none; }
+@media (max-width: 560px) { article { font-size:17px; } }
+</style>
+</head>
+<body>
+<div class="frame"></div><div class="frame inner"></div>
+<div class="page">
+  <header class="mono">
+    <a class="brand" href="/">NYMERIA·OS</a>
+    <span class="meta">EFFECTIVE 3 OCTOBER 2026</span>
+  </header>
+
+  <div class="title">
+    <h1>Privacy Policy</h1>
+    <div class="rule"></div>
+  </div>
+
+  <article>
+    <section>
+      <h2>Who this covers</h2>
+      <p>This policy covers the Nymeria app operated by Manning Askew: the Nymeria assistant servers he runs for himself and for the people he sets them up for, and the Google sign-in screen named "Nymeria" that connects a Google account to them. NymeriaOS is also open-source software that anyone can run. If you run your own copy with your own Google Cloud project, you are its operator and this policy does not cover it.</p>
+    </section>
+
+    <section>
+      <h2>What Google data the app can access</h2>
+      <p>Only what you approve on Google's consent screen, and only for the integrations you choose to connect:</p>
+      <ul>
+        <li>Your Google account's email address and name, to label the connection.</li>
+        <li>YouTube, through the YouTube API Services. For a moderator bot's channel: reading live chat messages, posting messages, deleting messages, and timing out or banning chatters. For a streamer who grants read-only access: checking whether you are live and finding your live chat.</li>
+        <li>Google Calendar, Gmail, Google Docs, Drive, Sheets, Slides, Tasks, Contacts, Google Chat, Google Analytics, and Google Business Profile, each only if you connect it, to read, draft, create, or change the items you ask the assistant to work with.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>How it is used</h2>
+      <p>Your Google data is used only to do what you ask the assistant to do, or what you set it up to do, such as moderating your YouTube live chat. To produce a response, the content a request needs (a chat message, or an email you asked about) is sent to the AI model provider that powers the assistant: Anthropic (Claude) or OpenAI. Google user data is not used to develop, improve, or train AI models, and it is never used for advertising.</p>
+      <p>The app's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+    </section>
+
+    <section>
+      <h2>Where it is kept, and for how long</h2>
+      <ul>
+        <li>Sign-in tokens are stored encrypted on the server Nymeria runs on, currently in Sydney, Australia. They are deleted when you remove the connection or ask for it.</li>
+        <li>YouTube live chat messages are kept in a chat log for 14 days, and never more than 30 days, so the bot can review a chatter's recent messages before it moderates.</li>
+        <li>A record of the bans and timeouts the bot issued on YouTube is kept for 30 days, so it can lift them.</li>
+        <li>Conversations with the assistant, which can include content from your connected services, stay on the server until they are deleted.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Sharing</h2>
+      <p>Your data is not sold, rented, or traded, and there are no advertisers or analytics trackers. It is shared only with Google, when the assistant acts on your account, and with the AI model provider as described above, or when the law requires it.</p>
+    </section>
+
+    <section>
+      <h2>YouTube</h2>
+      <p>The YouTube features use the YouTube API Services. By using them you agree to the <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>, and Google's handling of your data is described in the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
+    </section>
+
+    <section>
+      <h2>Removing access and deleting data</h2>
+      <p>You can remove Nymeria's access at any time from your Google Account's <a href="https://myaccount.google.com/permissions">third-party connections page</a>, or at <a href="https://security.google.com/settings/security/permissions">Google's security settings page</a>. Once access is removed, the app can read nothing further from your account. To have the data already stored about you deleted, use the contact below; it is removed within 30 days.</p>
+    </section>
+
+    <section>
+      <h2>Changes and contact</h2>
+      <p>If this policy changes, this page is updated and its effective date changes with it. Questions and deletion requests: <a href="mailto:privacy@nymeriaos.com">privacy@nymeriaos.com</a>.</p>
+    </section>
+  </article>
+
+  <footer class="mono">
+    <a href="/">BACK TO THE FRONT</a>
+    <span class="meta">© MMXXVI NYMERIA</span>
+  </footer>
+</div>
+</body>
+</html>

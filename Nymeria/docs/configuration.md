@@ -1187,7 +1187,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TWITCH_PULSE_INTERVAL` | `300` | Seconds between pulse checks |
 | `TWITCH_PULSE_MIN_MESSAGES` | `10` | Minimum unseen messages before a pulse fires |
 | `TWITCH_COMMAND_CONTEXT_COUNT` | `50` | Already-seen context lines added to a thin !ask prompt (hard-capped at 25) |
-| `TWITCH_CHATLOG_RETENTION_DAYS` | `14` | Days of per-chatter chat log the API keeps for `twitch_get_chatter_log` (one JSONL file per channel per day) |
+| `TWITCH_CHATLOG_RETENTION_DAYS` | `14` | Days of per-chatter chat log the API keeps for `twitch_get_chatter_log` (one JSONL file per channel per day); the YouTube chat log uses it too but never keeps more than 30 days (YouTube API policy) |
 | `TWITCH_BOT_ROLE` | `moderator` | `moderator` (mod EventSub subscriptions, moderation in the pulse menu, `!ask` for the sub tier) or `chatter` (a plain viewer account in any channel: chat-only subscriptions, `!ask` open to everyone; token from `tools/twitch_auth.py url --role chatter`) |
 | `TWITCH_OPERATOR_LOGINS` | - | Comma-separated Twitch logins (case-insensitive) allowed `!stop`/`!start`/`!pulse`/`!clear`/`!context` without a mod badge; channel mods and the broadcaster keep them |
 | `TWITCH_LISTEN_ENABLED` | `false` | Transcribe the live broadcast audio into the chat buffer as `[STREAM]` lines using the `STT_*` provider (the compose file passes `STT_*` to the twitch-bot service); needs `nymeriaos[twitch]` (streamlink + av). Either role |

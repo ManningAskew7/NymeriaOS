@@ -704,8 +704,9 @@ needs no grant.
 
 The chatter log is written by the API as it reads (`users/<account>/
 youtube_chatlog/<streamer channel id, lowercased>/`, same JSONL store and
-retention as the Twitch log, `TWITCH_CHATLOG_RETENTION_DAYS`), so it covers
-only what the reader saw. Lookups match the chatter's channel id exactly,
+retention setting as the Twitch log, `TWITCH_CHATLOG_RETENTION_DAYS`, but
+never more than 30 days, YouTube's API data limit and the promise on
+nymeriaos.com/privacy), so it covers only what the reader saw. Lookups match the chatter's channel id exactly,
 never a display name (anyone can take one).
 
 ## Moderation Event Awareness

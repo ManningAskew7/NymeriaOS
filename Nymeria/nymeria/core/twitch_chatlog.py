@@ -97,6 +97,10 @@ def normalize_entry(raw: Any, *, now: Optional[datetime] = None) -> Optional[dic
 TWITCH_NAMESPACE = "twitch_chatlog"
 YOUTUBE_NAMESPACE = "youtube_chatlog"
 _NAMESPACES = frozenset({TWITCH_NAMESPACE, YOUTUBE_NAMESPACE})
+#: Hard retention ceilings per namespace, whatever the setting says. YouTube's
+#: API policy allows keeping API data at most 30 days, and the published
+#: privacy policy (nymeriaos.com/privacy) promises the same.
+_MAX_RETENTION_DAYS = {YOUTUBE_NAMESPACE: 30}
 
 
 class ChatLogStore:
@@ -114,7 +118,7 @@ class ChatLogStore:
             raise ValueError(f"unknown chat log namespace {namespace!r}")
         self._root = Path(data_dir) / "users" / safe_path_segment(user_id) / namespace
         self._namespace = namespace
-        self._retention_days = max(1, int(retention_days))
+        self._retention_days = self._clamp_retention(retention_days)
         self._lock = threading.Lock()
         # The bot retries a failed batch whole, so a redelivered id is normal.
         # Lazy import: core modules reach into triggers/ only at call time
@@ -129,7 +133,12 @@ class ChatLogStore:
 
     @retention_days.setter
     def retention_days(self, value: int) -> None:
-        self._retention_days = max(1, int(value))
+        self._retention_days = self._clamp_retention(value)
+
+    def _clamp_retention(self, value: int) -> int:
+        days = max(1, int(value))
+        ceiling = _MAX_RETENTION_DAYS.get(self._namespace)
+        return min(days, ceiling) if ceiling else days
 
     def _channel_dir(self, channel: str) -> Path:
         return self._root / safe_path_segment(channel.strip().lstrip("#").lower(), default="channel")

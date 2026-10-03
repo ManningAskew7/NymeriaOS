@@ -541,6 +541,40 @@ def test_chatters_lines_are_logged_and_the_bots_own_are_not(fake):
     assert not (fake.data_dir / "users" / "alice" / "twitch_chatlog").exists()  # type: ignore[attr-defined]
 
 
+def test_the_youtube_log_never_keeps_more_than_30_days_whatever_the_setting(tmp_path):
+    """YouTube's API policy (and the published privacy policy) cap stored
+    chat at 30 days; the shared retention setting goes to 365 for Twitch."""
+    now = datetime.now(timezone.utc)
+
+    def seed(store: Any, channel: str) -> Any:
+        day_dir = tmp_path / "users" / "alice" / store_ns(store) / channel.lower()
+        day_dir.mkdir(parents=True, exist_ok=True)
+        for age in (29, 31):
+            (day_dir / f"{(now - timedelta(days=age)).date().isoformat()}.jsonl").write_text("{}\n")
+        return day_dir
+
+    def store_ns(store: Any) -> str:
+        return store._root.name
+
+    youtube = chatlog_module.get_chat_log_store(
+        tmp_path, "alice", retention_days=365, namespace=chatlog_module.YOUTUBE_NAMESPACE
+    )
+    yt_dir = seed(youtube, STREAMER_CH)
+    youtube.rotate(STREAMER_CH, now=now)
+    kept = sorted(p.stem for p in yt_dir.glob("*.jsonl"))
+    assert kept == [(now - timedelta(days=29)).date().isoformat()]
+    # A settings change on a later call cannot lift the cap either.
+    again = chatlog_module.get_chat_log_store(
+        tmp_path, "alice", retention_days=90, namespace=chatlog_module.YOUTUBE_NAMESPACE
+    )
+    assert again.retention_days == 30
+
+    twitch = chatlog_module.get_chat_log_store(tmp_path, "alice", retention_days=365)
+    tw_dir = seed(twitch, "silk")
+    twitch.rotate("silk", now=now)
+    assert len(list(tw_dir.glob("*.jsonl"))) == 2  # Twitch keeps its own setting
+
+
 # ---------------------------------------------------------------------------
 # Behavior 15: bans are recorded so unban works, even after a restart
 # ---------------------------------------------------------------------------
